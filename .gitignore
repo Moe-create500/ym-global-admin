@@ -1,0 +1,12 @@
+node_modules/
+.next/
+.env
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.db.backup-*
+*.db.corrupt*
+database.sqlite
+.DS_Store
+tsconfig.tsbuildinfo
