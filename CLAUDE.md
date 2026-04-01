@@ -17,10 +17,24 @@
 5. **ALWAYS backup before any DB operation**: `cp dev.db dev.db.backup-$(date +%Y%m%d-%H%M%S)`
 6. **ALWAYS verify integrity**: `sqlite3 dev.db 'PRAGMA integrity_check;'`
 
+## CRITICAL GITHUB / CREATIVES RULES
+- **GitHub repo**: `https://github.com/Moe-create500/ym-global-admin`
+- **Partner owns creatives**: Partner edits creative files directly on GitHub `main` and deploys from there
+- **NEVER edit creative files** without explicit user approval:
+  - `src/app/dashboard/creatives/` — partner's territory
+  - `src/app/api/creatives/` — partner's territory
+  - `src/app/api/batches/[id]/generate-creatives/` — partner's territory
+- **ALWAYS `git pull origin main` before making ANY changes** — to get partner's latest creatives
+- **ALWAYS `git add -A && git commit && git push origin main` after ANY changes** — so partner's next deploy includes your work
+- **ALWAYS deploy via `./deploy.sh`** — it handles git pull, push, rsync, build, and restart automatically
+- **NEVER deploy manually with rsync** — you WILL overwrite partner's creative changes
+- **If there's a merge conflict in creative files**: STOP and ask the user. Do NOT resolve it yourself.
+
 ## Deploy
 ```bash
 ./deploy.sh
 ```
+This script automatically: pulls from GitHub → commits & pushes your changes → rsyncs to server → builds → restarts PM2.
 
 ## Sync
 - Auto-sync runs every 30 min via `src/instrumentation.ts`
