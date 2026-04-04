@@ -6,7 +6,7 @@ import StoreSelector from '@/components/StoreSelector';
 import { cents } from '@/lib/format';
 import { buildProductImagePlan } from '@/lib/creative-taxonomy';
 
-interface Store { id: string; name: string; }
+interface Store { id: string; name: string; shopify_domain?: string; }
 
 interface Ad {
   adId: string;
@@ -332,6 +332,9 @@ function CreativesContent() {
   const [fbLandingUrl, setFbLandingUrl] = useState('');
   const [fbAdStatus, setFbAdStatus] = useState<'PAUSED' | 'ACTIVE'>('PAUSED');
   const [fbPageId, setFbPageId] = useState('');
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
+  const [bulkPushMode, setBulkPushMode] = useState(false);
+  const [bulkPushProgress, setBulkPushProgress] = useState('');
 
   // Fetch error state
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -713,14 +716,33 @@ function CreativesContent() {
     setPushCreative(creative);
     setPushError('');
     setPushSuccess('');
-    setFbHeadline(creative.title || '');
-    setFbPrimaryText('');
-    setFbLandingUrl('');
     setFbAdStatus('PAUSED');
     setFbCampaignMode('existing');
     setFbAdSetMode('existing');
     setFbAdSets([]);
     setFbSelectedAdSet('');
+
+    // Auto-fill headline from creative title
+    setFbHeadline(creative.title || '');
+
+    // Auto-fill primary text from the script inside the description
+    const desc = creative.description || '';
+    const scriptMatch = desc.match(/Script:\s*([\s\S]*?)(?:\n\n|Scene structure:|B-roll:|Presenter:|$)/);
+    const script = scriptMatch ? scriptMatch[1].trim() : '';
+    if (script) {
+      setFbPrimaryText(script);
+    } else {
+      // Fallback: use the creative angle or a clean version of the title
+      setFbPrimaryText(creative.angle ? `${creative.title} — ${creative.angle}` : creative.title || '');
+    }
+
+    // Auto-fill landing URL from the store's Shopify domain
+    const store = stores.find((s: Store) => s.id === storeFilter);
+    if (store?.shopify_domain) {
+      setFbLandingUrl(`https://${store.shopify_domain}`);
+    } else {
+      setFbLandingUrl('');
+    }
 
     setLoadingCampaigns(true);
     try {
@@ -791,6 +813,94 @@ function CreativesContent() {
     } catch (err: any) {
       setPushError(err.message);
     }
+    setPushLoading(false);
+  }
+
+  function toggleBulkSelect(id: string) {
+    setBulkSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  async function openBulkPushModal() {
+    // Use first selected creative for default headline/text
+    const selected = creatives.filter(c => bulkSelected.has(c.id) && c.nb_status === 'completed' && c.file_url);
+    if (selected.length === 0) return;
+    const first = selected[0];
+    setBulkPushMode(true);
+    setBulkPushProgress('');
+    openPushModal(first);
+  }
+
+  async function handleBulkPushToFB() {
+    if (!storeFilter) return;
+    const selected = creatives.filter(c => bulkSelected.has(c.id) && c.nb_status === 'completed' && c.file_url);
+    if (selected.length === 0) return;
+
+    setPushLoading(true);
+    setPushError('');
+    setPushSuccess('');
+
+    const results: string[] = [];
+    const errors: string[] = [];
+    // Track created IDs locally (React state updates are async)
+    let useCampaignId = fbCampaignMode === 'existing' ? fbSelectedCampaign : '';
+    let useAdSetId = fbAdSetMode === 'existing' ? fbSelectedAdSet : '';
+
+    for (let i = 0; i < selected.length; i++) {
+      const c = selected[i];
+      setBulkPushProgress(`Pushing ${i + 1}/${selected.length}: ${c.title}...`);
+      try {
+        const isFirst = i === 0;
+        const res = await fetch('/api/creatives/push-to-fb', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            creativeId: c.id,
+            storeId: storeFilter,
+            campaignMode: isFirst ? fbCampaignMode : 'existing',
+            existingCampaignId: isFirst && fbCampaignMode === 'existing' ? fbSelectedCampaign : (!isFirst ? useCampaignId : undefined),
+            newCampaign: isFirst && fbCampaignMode === 'new' ? { name: fbNewCampaignName, objective: fbNewCampaignObjective, status: fbAdStatus } : undefined,
+            adSetMode: isFirst ? fbAdSetMode : 'existing',
+            existingAdSetId: isFirst && fbAdSetMode === 'existing' ? fbSelectedAdSet : (!isFirst ? useAdSetId : undefined),
+            newAdSet: isFirst && fbAdSetMode === 'new' ? {
+              name: fbNewAdSetName,
+              dailyBudgetCents: Math.round(parseFloat(fbNewAdSetBudget) * 100),
+              countries: fbNewAdSetCountries.split(',').map((s: string) => s.trim().toUpperCase()),
+              optimizationGoal: 'OFFSITE_CONVERSIONS',
+            } : undefined,
+            headline: fbHeadline,
+            primaryText: fbPrimaryText,
+            ctaType: fbCtaType,
+            landingPageUrl: fbLandingUrl,
+            adStatus: fbAdStatus,
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Push failed');
+
+        // Capture created IDs for subsequent items
+        if (isFirst && data.fbCampaignId) useCampaignId = data.fbCampaignId;
+        if (isFirst && data.fbAdSetId) useAdSetId = data.fbAdSetId;
+
+        results.push(data.fbAdId);
+      } catch (err: any) {
+        errors.push(`${c.title}: ${err.message}`);
+      }
+    }
+
+    setBulkPushProgress('');
+    if (results.length > 0) {
+      setPushSuccess(`${results.length}/${selected.length} ads created successfully!`);
+    }
+    if (errors.length > 0) {
+      setPushError(errors.join('\n'));
+    }
+    setBulkSelected(new Set());
+    setBulkPushMode(false);
     setPushLoading(false);
   }
 
@@ -1131,14 +1241,23 @@ function CreativesContent() {
         <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={(e) => { if (e.target === e.currentTarget && !pushLoading) setPushCreative(null); }}>
           <div className="bg-slate-900 border border-blue-900/50 rounded-xl p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-white">Push to Facebook</h2>
-              <button onClick={() => !pushLoading && setPushCreative(null)} className="text-slate-400 hover:text-white text-sm">✕</button>
+              <h2 className="text-sm font-semibold text-white">{bulkPushMode ? `Push ${bulkSelected.size} Videos to Facebook` : 'Push to Facebook'}</h2>
+              <button onClick={() => { if (!pushLoading) { setPushCreative(null); setBulkPushMode(false); } }} className="text-slate-400 hover:text-white text-sm">✕</button>
             </div>
 
             {/* Creative preview */}
             <div className="bg-slate-800 rounded-lg p-3 mb-4">
-              <p className="text-xs text-white font-medium truncate">{pushCreative.title}</p>
-              <p className="text-[10px] text-slate-400">{pushCreative.template_id} · {pushCreative.angle || 'no angle'}</p>
+              {bulkPushMode ? (
+                <>
+                  <p className="text-xs text-white font-medium">{bulkSelected.size} videos selected</p>
+                  <p className="text-[10px] text-slate-400 mt-1">{creatives.filter(c => bulkSelected.has(c.id)).map(c => c.title).join(', ')}</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-white font-medium truncate">{pushCreative.title}</p>
+                  <p className="text-[10px] text-slate-400">{pushCreative.template_id} · {pushCreative.angle || 'no angle'}</p>
+                </>
+              )}
             </div>
 
             {pushSuccess ? (
@@ -1146,7 +1265,8 @@ function CreativesContent() {
                 <div className="px-3 py-2 bg-emerald-900/20 border border-emerald-800 rounded-lg">
                   <p className="text-xs text-emerald-400">{pushSuccess}</p>
                 </div>
-                <button onClick={() => setPushCreative(null)} className="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium rounded-lg">Close</button>
+                {pushError && <div className="px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg"><p className="text-xs text-red-400 whitespace-pre-wrap">{pushError}</p></div>}
+                <button onClick={() => { setPushCreative(null); setBulkPushMode(false); setBulkSelected(new Set()); }} className="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium rounded-lg">Close</button>
               </div>
             ) : (
               <div className="space-y-3">
@@ -1243,12 +1363,13 @@ function CreativesContent() {
                   <input value={fbLandingUrl} onChange={e => setFbLandingUrl(e.target.value)} placeholder="https://yourstore.com/product" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
                 </div>
 
-                {pushError && <div className="px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg"><p className="text-xs text-red-400">{pushError}</p></div>}
+                {pushError && <div className="px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg"><p className="text-xs text-red-400 whitespace-pre-wrap">{pushError}</p></div>}
+                {bulkPushProgress && <div className="px-3 py-2 bg-blue-900/20 border border-blue-800 rounded-lg"><p className="text-xs text-blue-400">{bulkPushProgress}</p></div>}
 
                 <div className="flex gap-2 pt-1">
-                  <button onClick={() => setPushCreative(null)} disabled={pushLoading} className="flex-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg">Cancel</button>
-                  <button onClick={handlePushToFB} disabled={pushLoading || !fbHeadline || !fbLandingUrl} className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg">
-                    {pushLoading ? 'Pushing...' : 'Push to Facebook'}
+                  <button onClick={() => { setPushCreative(null); setBulkPushMode(false); }} disabled={pushLoading} className="flex-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg">Cancel</button>
+                  <button onClick={bulkPushMode ? handleBulkPushToFB : handlePushToFB} disabled={pushLoading || !fbHeadline || !fbLandingUrl} className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg">
+                    {pushLoading ? (bulkPushMode ? bulkPushProgress || 'Pushing...' : 'Pushing...') : (bulkPushMode ? `Push ${bulkSelected.size} Ads` : 'Push to Facebook')}
                   </button>
                 </div>
               </div>
@@ -1954,9 +2075,39 @@ function CreativesContent() {
               <p className="text-xs text-slate-500 mt-1">Generate videos using Sora, Veo, Hailuo, or NanoBanana</p>
             </div>
           ) : (
+            <>
+            {/* Bulk action bar */}
+            {bulkSelected.size > 0 && (
+              <div className="mb-4 px-4 py-3 bg-blue-900/20 border border-blue-800/50 rounded-xl flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-blue-300 font-medium">{bulkSelected.size} selected</span>
+                  <button onClick={() => setBulkSelected(new Set())} className="text-[10px] text-slate-400 hover:text-white">Clear</button>
+                  <button onClick={() => {
+                    const completedIds = creatives.filter(c => c.nb_status === 'completed' && c.file_url).map(c => c.id);
+                    setBulkSelected(new Set(completedIds));
+                  }} className="text-[10px] text-slate-400 hover:text-white">Select All</button>
+                </div>
+                <button onClick={openBulkPushModal} className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg">
+                  Push {bulkSelected.size} to Facebook
+                </button>
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {creatives.map((c) => (
-                <div key={c.id} className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                <div key={c.id} className={`bg-slate-900 border rounded-xl overflow-hidden relative ${bulkSelected.has(c.id) ? 'border-blue-500 ring-1 ring-blue-500/30' : 'border-slate-800'}`}>
+                  {/* Bulk select checkbox */}
+                  {c.nb_status === 'completed' && c.file_url && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleBulkSelect(c.id); }}
+                      className={`absolute top-2 left-2 z-10 w-6 h-6 rounded border-2 flex items-center justify-center transition-all ${
+                        bulkSelected.has(c.id)
+                          ? 'bg-blue-600 border-blue-500 text-white'
+                          : 'bg-black/50 border-slate-500 text-transparent hover:border-blue-400'
+                      }`}
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                    </button>
+                  )}
                   {/* Thumbnail */}
                   {c.nb_status === 'completed' && c.file_url && c.type === 'video' && !expiredVideos.has(c.id) ? (
                     <video
@@ -2062,6 +2213,7 @@ function CreativesContent() {
                 </div>
               ))}
             </div>
+            </>
           )}
         </>
       )}
