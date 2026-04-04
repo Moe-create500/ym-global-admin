@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
       const soraSize = sizeMap[resolution] || '1280x720';
       const durationNum = parseInt(duration) || 20;
       const soraDuration: '8' | '16' | '20' = durationNum <= 8 ? '8' : durationNum <= 16 ? '16' : '20';
-      const model: 'sora-2' | 'sora-2-pro' = 'sora-2';
+      const model: 'sora-2' | 'sora-2-pro' = 'sora-2-pro';
       let imageBuffer: Buffer | undefined;
 
       if (type === 'image-to-video' && imageUrls?.length > 0) {

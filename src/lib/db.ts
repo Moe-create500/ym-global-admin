@@ -60,6 +60,35 @@ export function getDb(): Database.Database {
     )`);
     _db.exec(`CREATE INDEX IF NOT EXISTS idx_fb_ads_store ON fb_ads(store_id)`);
     _db.exec(`CREATE INDEX IF NOT EXISTS idx_fb_ads_creative ON fb_ads(creative_id)`);
+
+    // Migration: video_pipelines table for B-roll + avatar pipeline
+    _db.exec(`CREATE TABLE IF NOT EXISTS video_pipelines (
+      id TEXT PRIMARY KEY,
+      store_id TEXT NOT NULL,
+      product_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      ad_script TEXT NOT NULL,
+      avatar_id TEXT NOT NULL,
+      voice_id TEXT NOT NULL,
+      broll_count INTEGER NOT NULL DEFAULT 10,
+      broll_prompts TEXT,
+      avatar_creative_id TEXT,
+      avatar_video_id TEXT,
+      completed_clips INTEGER NOT NULL DEFAULT 0,
+      total_clips INTEGER NOT NULL DEFAULT 11,
+      final_creative_id TEXT,
+      final_video_url TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    _db.exec(`CREATE INDEX IF NOT EXISTS idx_video_pipelines_store ON video_pipelines(store_id)`);
+
+    // Migration: add pipeline_id to creatives
+    const creativeCols = _db.prepare("PRAGMA table_info(creatives)").all() as any[];
+    if (!creativeCols.find((c: any) => c.name === 'pipeline_id')) {
+      _db.exec("ALTER TABLE creatives ADD COLUMN pipeline_id TEXT DEFAULT NULL");
+    }
   }
   return _db;
 }
