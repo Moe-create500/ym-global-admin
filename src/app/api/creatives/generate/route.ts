@@ -115,9 +115,15 @@ export async function POST(req: NextRequest) {
         try {
           const { width, height } = getSoraDimensions(soraSize);
 
-          if (imageUrls.length === 1) {
+          // Resolve relative URLs (e.g. /api/products/uploads?file=...) to absolute
+          const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
+          const resolvedUrls = imageUrls.map((u: string) =>
+            u.startsWith('/') ? `${baseUrl}${u}` : u
+          );
+
+          if (resolvedUrls.length === 1) {
             // Single image — use as-is, fill the frame
-            const imgRes = await fetch(imageUrls[0]);
+            const imgRes = await fetch(resolvedUrls[0]);
             if (imgRes.ok) {
               const imgArrayBuf = await imgRes.arrayBuffer();
               imageBuffer = await sharp(Buffer.from(imgArrayBuf))
@@ -128,7 +134,7 @@ export async function POST(req: NextRequest) {
             // Multiple images — composite all into one reference frame
             // Layout: hero image on top (~50%), remaining in grid below
             const fetched: Buffer[] = [];
-            const fetchTasks = imageUrls.slice(0, 9).map(async (url: string) => {
+            const fetchTasks = resolvedUrls.slice(0, 9).map(async (url: string) => {
               try {
                 const res = await fetch(url);
                 if (res.ok) return Buffer.from(await res.arrayBuffer());
