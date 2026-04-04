@@ -69,6 +69,7 @@ interface Creative {
   created_at: string;
   batch_id?: string | null;
   batch_index?: number | null;
+  progress?: number | null;
 }
 
 interface PromptItem {
@@ -522,7 +523,7 @@ function CreativesContent() {
       const res = await fetch(`/api/creatives/generate?id=${id}`);
       const data = await res.json();
       if (data.creative) {
-        setCreatives(prev => prev.map(c => c.id === id ? { ...c, ...data.creative } : c));
+        setCreatives(prev => prev.map(c => c.id === id ? { ...c, ...data.creative, progress: data.progress ?? c.progress } : c));
       }
     } catch {}
   }
@@ -1738,7 +1739,9 @@ function CreativesContent() {
                       {c.nb_status === 'processing' ? (
                         <div className="text-center">
                           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-400 mx-auto mb-2" />
-                          <p className="text-xs text-purple-400">Generating...</p>
+                          <p className="text-xs text-purple-400">
+                            {c.progress != null ? `Generating... ${c.progress}%` : 'Generating...'}
+                          </p>
                         </div>
                       ) : (
                         <svg className="w-12 h-12 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
