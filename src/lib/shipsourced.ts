@@ -1,5 +1,14 @@
+import crypto from 'crypto';
+
 const BASE_URL = process.env.SHIPSOURCED_API_URL || 'https://shipsourcedcenter.com';
 const API_TOKEN = process.env.SHIPSOURCED_API_TOKEN || '';
+const SS_JWT_SECRET = process.env.SHIPSOURCED_JWT_SECRET || '';
+
+/** Sign a cookie value the same way ShipSourced does (HMAC-SHA256 base64url) */
+function signClientCookie(clientId: string): string {
+  const sig = crypto.createHmac('sha256', SS_JWT_SECRET).update(clientId).digest('base64url');
+  return `${clientId}.${sig}`;
+}
 
 async function apiFetch<T>(endpoint: string): Promise<T> {
   const res = await fetch(`${BASE_URL}${endpoint}`, {
@@ -212,8 +221,9 @@ export interface SSProductsResponse {
 }
 
 export async function getClientProducts(clientId: string, page = 1): Promise<SSProductsResponse> {
+  const signedCookie = SS_JWT_SECRET ? signClientCookie(clientId) : clientId;
   const res = await fetch(`${BASE_URL}/api/client/products?source=store&page=${page}&limit=100`, {
-    headers: { 'Cookie': `se_client=${clientId}` },
+    headers: { 'Cookie': `se_client=${signedCookie}` },
     cache: 'no-store',
   });
   if (!res.ok) {
