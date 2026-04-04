@@ -93,6 +93,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Creative video is not ready yet' }, { status: 400 });
   }
 
+  // Load product image for thumbnail fallback
+  let productImageUrl: string | undefined;
+  if (creative.product_id) {
+    const product: any = db.prepare('SELECT image_url FROM products WHERE id = ?').get(creative.product_id);
+    if (product?.image_url) productImageUrl = product.image_url;
+  }
+
   // Load FB profile
   const profile: any = db.prepare(
     'SELECT * FROM fb_profiles WHERE store_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 1'
@@ -241,7 +248,7 @@ export async function POST(req: NextRequest) {
       name: `${headline} - Creative`,
       pageId: profile.fb_page_id,
       videoId: fbVideoId,
-      thumbnailUrl: videoThumbnailUrl,
+      thumbnailUrl: videoThumbnailUrl || productImageUrl || creative.thumbnail_url,
       title: headline,
       message: primaryText || '',
       ctaType: ctaType || 'SHOP_NOW',
