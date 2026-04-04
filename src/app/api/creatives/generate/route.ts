@@ -249,7 +249,7 @@ export async function POST(req: NextRequest) {
       };
       const aspect = aspectMap[resolution] || '16:9';
       const result = await mmGenerateImage(prompt, { aspectRatio: aspect });
-      const imageUrl = result.imageUrl;
+      const imageUrl = result.imageBase64;
 
       db.prepare(`
         INSERT INTO creatives (id, store_id, type, title, description, file_url,
