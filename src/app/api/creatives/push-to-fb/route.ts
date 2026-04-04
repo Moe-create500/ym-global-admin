@@ -173,10 +173,12 @@ export async function POST(req: NextRequest) {
 
     // ── Step 3: Wait for FB video processing ──
     let videoReady = false;
+    let videoThumbnailUrl: string | undefined;
     for (let attempt = 0; attempt < 18; attempt++) { // max 90 seconds
       await new Promise(r => setTimeout(r, 5000));
       try {
         const status = await checkVideoProcessingStatus(fbVideoId, profile.access_token);
+        if (status.thumbnailUrl) videoThumbnailUrl = status.thumbnailUrl;
         if (status.status === 'ready') {
           videoReady = true;
           break;
@@ -239,6 +241,7 @@ export async function POST(req: NextRequest) {
       name: `${headline} - Creative`,
       pageId: profile.fb_page_id,
       videoId: fbVideoId,
+      thumbnailUrl: videoThumbnailUrl,
       title: headline,
       message: primaryText || '',
       ctaType: ctaType || 'SHOP_NOW',

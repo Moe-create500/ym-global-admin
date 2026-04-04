@@ -566,8 +566,20 @@ export async function createAdCreative(
     },
   };
 
+  // FB requires a thumbnail — use provided URL or auto-fetch from the video
   if (opts.thumbnailUrl) {
     videoData.image_url = opts.thumbnailUrl;
+  } else {
+    try {
+      const thumbRes = await fetch(
+        `${FB_GRAPH_URL}/${opts.videoId}?fields=thumbnails&access_token=${accessToken}`
+      );
+      if (thumbRes.ok) {
+        const thumbData = await thumbRes.json();
+        const autoThumb = thumbData.thumbnails?.data?.[0]?.uri;
+        if (autoThumb) videoData.image_url = autoThumb;
+      }
+    } catch {}
   }
   if (opts.linkDescription) {
     videoData.link_description = opts.linkDescription;
@@ -645,11 +657,12 @@ export async function uploadVideoFromBuffer(
 export async function checkVideoProcessingStatus(
   videoId: string,
   accessToken: string
-): Promise<{ status: string }> {
+): Promise<{ status: string; thumbnailUrl?: string }> {
   const res = await fetch(
-    `${FB_GRAPH_URL}/${videoId}?fields=status&access_token=${accessToken}`
+    `${FB_GRAPH_URL}/${videoId}?fields=status,thumbnails&access_token=${accessToken}`
   );
   if (!res.ok) throw new Error(`FB video status check failed: ${await res.text()}`);
   const data = await res.json();
-  return { status: data.status?.video_status || 'processing' };
+  const thumbnailUrl = data.thumbnails?.data?.[0]?.uri || undefined;
+  return { status: data.status?.video_status || 'processing', thumbnailUrl };
 }
