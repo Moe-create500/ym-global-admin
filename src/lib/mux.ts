@@ -53,6 +53,7 @@ export async function muxVideoAudio(
       '-i', videoPath,         // video input
       '-i', audioPath,         // audio input
       '-c:v', 'copy',         // copy video stream (no re-encode)
+      '-af', 'volume=1.8',    // boost audio volume 80%
       '-c:a', 'aac',          // encode audio to AAC
       '-b:a', '256k',         // audio bitrate (HD quality)
       '-shortest',            // match shorter duration
