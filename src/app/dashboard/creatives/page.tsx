@@ -308,6 +308,31 @@ function CreativesContent() {
   // Double down loading state
   const [doublingDown, setDoublingDown] = useState<string | null>(null);
 
+  // Push to FB state
+  const [pushCreative, setPushCreative] = useState<Creative | null>(null);
+  const [pushLoading, setPushLoading] = useState(false);
+  const [pushError, setPushError] = useState('');
+  const [pushSuccess, setPushSuccess] = useState('');
+  const [fbCampaigns, setFbCampaigns] = useState<any[]>([]);
+  const [fbAdSets, setFbAdSets] = useState<any[]>([]);
+  const [loadingCampaigns, setLoadingCampaigns] = useState(false);
+  const [loadingAdSets, setLoadingAdSets] = useState(false);
+  const [fbCampaignMode, setFbCampaignMode] = useState<'existing' | 'new'>('existing');
+  const [fbSelectedCampaign, setFbSelectedCampaign] = useState('');
+  const [fbNewCampaignName, setFbNewCampaignName] = useState('');
+  const [fbNewCampaignObjective, setFbNewCampaignObjective] = useState('OUTCOME_SALES');
+  const [fbAdSetMode, setFbAdSetMode] = useState<'existing' | 'new'>('existing');
+  const [fbSelectedAdSet, setFbSelectedAdSet] = useState('');
+  const [fbNewAdSetName, setFbNewAdSetName] = useState('');
+  const [fbNewAdSetBudget, setFbNewAdSetBudget] = useState('20');
+  const [fbNewAdSetCountries, setFbNewAdSetCountries] = useState('US');
+  const [fbHeadline, setFbHeadline] = useState('');
+  const [fbPrimaryText, setFbPrimaryText] = useState('');
+  const [fbCtaType, setFbCtaType] = useState('SHOP_NOW');
+  const [fbLandingUrl, setFbLandingUrl] = useState('');
+  const [fbAdStatus, setFbAdStatus] = useState<'PAUSED' | 'ACTIVE'>('PAUSED');
+  const [fbPageId, setFbPageId] = useState('');
+
   // Fetch error state
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -682,6 +707,93 @@ function CreativesContent() {
     setDoublingDown(null);
   }
 
+  // ═══ Push to Facebook Functions ═══
+
+  async function openPushModal(creative: Creative) {
+    setPushCreative(creative);
+    setPushError('');
+    setPushSuccess('');
+    setFbHeadline(creative.title || '');
+    setFbPrimaryText('');
+    setFbLandingUrl('');
+    setFbAdStatus('PAUSED');
+    setFbCampaignMode('existing');
+    setFbAdSetMode('existing');
+    setFbAdSets([]);
+    setFbSelectedAdSet('');
+
+    setLoadingCampaigns(true);
+    try {
+      const res = await fetch(`/api/creatives/push-to-fb?storeId=${storeFilter}`);
+      const data = await res.json();
+      if (data.error) { setPushError(data.error); setLoadingCampaigns(false); return; }
+      setFbCampaigns(data.campaigns || []);
+      if (data.profile?.pageId) setFbPageId(data.profile.pageId);
+      if (data.campaigns?.length > 0) {
+        setFbCampaignMode('existing');
+        setFbSelectedCampaign(data.campaigns[0].id);
+      } else {
+        setFbCampaignMode('new');
+      }
+    } catch { setFbCampaigns([]); setFbCampaignMode('new'); }
+    setLoadingCampaigns(false);
+  }
+
+  useEffect(() => {
+    if (fbCampaignMode !== 'existing' || !fbSelectedCampaign || !storeFilter) { setFbAdSets([]); return; }
+    setLoadingAdSets(true);
+    fetch(`/api/creatives/push-to-fb?storeId=${storeFilter}&campaignId=${fbSelectedCampaign}`)
+      .then(r => r.json())
+      .then(d => {
+        setFbAdSets(d.adsets || []);
+        if (d.adsets?.length > 0) { setFbAdSetMode('existing'); setFbSelectedAdSet(d.adsets[0].id); }
+        else setFbAdSetMode('new');
+      })
+      .catch(() => setFbAdSets([]))
+      .finally(() => setLoadingAdSets(false));
+  }, [fbSelectedCampaign, fbCampaignMode, storeFilter]);
+
+  async function handlePushToFB() {
+    if (!pushCreative || !storeFilter) return;
+    setPushLoading(true);
+    setPushError('');
+    setPushSuccess('');
+
+    try {
+      const res = await fetch('/api/creatives/push-to-fb', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          creativeId: pushCreative.id,
+          storeId: storeFilter,
+          campaignMode: fbCampaignMode,
+          existingCampaignId: fbCampaignMode === 'existing' ? fbSelectedCampaign : undefined,
+          newCampaign: fbCampaignMode === 'new' ? { name: fbNewCampaignName, objective: fbNewCampaignObjective, status: fbAdStatus } : undefined,
+          adSetMode: fbAdSetMode,
+          existingAdSetId: fbAdSetMode === 'existing' ? fbSelectedAdSet : undefined,
+          newAdSet: fbAdSetMode === 'new' ? {
+            name: fbNewAdSetName,
+            dailyBudgetCents: Math.round(parseFloat(fbNewAdSetBudget) * 100),
+            countries: fbNewAdSetCountries.split(',').map((c: string) => c.trim().toUpperCase()),
+            optimizationGoal: 'OFFSITE_CONVERSIONS',
+          } : undefined,
+          headline: fbHeadline,
+          primaryText: fbPrimaryText,
+          ctaType: fbCtaType,
+          landingPageUrl: fbLandingUrl,
+          adStatus: fbAdStatus,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Push failed');
+      setPushSuccess(`Ad created! FB Ad ID: ${data.fbAdId}`);
+    } catch (err: any) {
+      setPushError(err.message);
+    }
+    setPushLoading(false);
+  }
+
   // ═══ Creative Generator Functions ═══
 
   // Load account intelligence from backend API
@@ -1011,6 +1123,137 @@ function CreativesContent() {
           >
             Retry
           </button>
+        </div>
+      )}
+
+      {/* Push to Facebook Modal */}
+      {pushCreative && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={(e) => { if (e.target === e.currentTarget && !pushLoading) setPushCreative(null); }}>
+          <div className="bg-slate-900 border border-blue-900/50 rounded-xl p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-white">Push to Facebook</h2>
+              <button onClick={() => !pushLoading && setPushCreative(null)} className="text-slate-400 hover:text-white text-sm">✕</button>
+            </div>
+
+            {/* Creative preview */}
+            <div className="bg-slate-800 rounded-lg p-3 mb-4">
+              <p className="text-xs text-white font-medium truncate">{pushCreative.title}</p>
+              <p className="text-[10px] text-slate-400">{pushCreative.template_id} · {pushCreative.angle || 'no angle'}</p>
+            </div>
+
+            {pushSuccess ? (
+              <div className="space-y-3">
+                <div className="px-3 py-2 bg-emerald-900/20 border border-emerald-800 rounded-lg">
+                  <p className="text-xs text-emerald-400">{pushSuccess}</p>
+                </div>
+                <button onClick={() => setPushCreative(null)} className="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium rounded-lg">Close</button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {/* Campaign */}
+                <div>
+                  <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Campaign</label>
+                  <div className="flex gap-1.5 mb-2">
+                    <button onClick={() => setFbCampaignMode('existing')} className={`flex-1 px-2 py-1 rounded text-[10px] font-medium ${fbCampaignMode === 'existing' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'}`}>Existing</button>
+                    <button onClick={() => setFbCampaignMode('new')} className={`flex-1 px-2 py-1 rounded text-[10px] font-medium ${fbCampaignMode === 'new' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'}`}>New</button>
+                  </div>
+                  {loadingCampaigns ? <p className="text-[10px] text-slate-500">Loading campaigns...</p> :
+                    fbCampaignMode === 'existing' ? (
+                      fbCampaigns.length > 0 ? (
+                        <select value={fbSelectedCampaign} onChange={e => setFbSelectedCampaign(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
+                          {fbCampaigns.map((c: any) => <option key={c.id} value={c.id}>{c.name} ({c.status})</option>)}
+                        </select>
+                      ) : <p className="text-[10px] text-slate-500">No campaigns found. Create a new one.</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <input value={fbNewCampaignName} onChange={e => setFbNewCampaignName(e.target.value)} placeholder="Campaign name" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
+                        <select value={fbNewCampaignObjective} onChange={e => setFbNewCampaignObjective(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
+                          <option value="OUTCOME_SALES">Sales</option>
+                          <option value="OUTCOME_TRAFFIC">Traffic</option>
+                          <option value="OUTCOME_ENGAGEMENT">Engagement</option>
+                          <option value="OUTCOME_LEADS">Leads</option>
+                        </select>
+                      </div>
+                    )
+                  }
+                </div>
+
+                {/* Ad Set */}
+                <div>
+                  <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Ad Set</label>
+                  <div className="flex gap-1.5 mb-2">
+                    <button onClick={() => setFbAdSetMode('existing')} className={`flex-1 px-2 py-1 rounded text-[10px] font-medium ${fbAdSetMode === 'existing' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'}`}>Existing</button>
+                    <button onClick={() => setFbAdSetMode('new')} className={`flex-1 px-2 py-1 rounded text-[10px] font-medium ${fbAdSetMode === 'new' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'}`}>New</button>
+                  </div>
+                  {loadingAdSets ? <p className="text-[10px] text-slate-500">Loading ad sets...</p> :
+                    fbAdSetMode === 'existing' ? (
+                      fbAdSets.length > 0 ? (
+                        <select value={fbSelectedAdSet} onChange={e => setFbSelectedAdSet(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
+                          {fbAdSets.map((a: any) => <option key={a.id} value={a.id}>{a.name} ({a.status})</option>)}
+                        </select>
+                      ) : <p className="text-[10px] text-slate-500">No ad sets found. Create a new one.</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <input value={fbNewAdSetName} onChange={e => setFbNewAdSetName(e.target.value)} placeholder="Ad set name" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
+                        <div className="flex gap-2">
+                          <div className="flex-1">
+                            <label className="text-[9px] text-slate-500 mb-0.5 block">Daily Budget ($)</label>
+                            <input value={fbNewAdSetBudget} onChange={e => setFbNewAdSetBudget(e.target.value)} type="number" min="1" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
+                          </div>
+                          <div className="flex-1">
+                            <label className="text-[9px] text-slate-500 mb-0.5 block">Countries</label>
+                            <input value={fbNewAdSetCountries} onChange={e => setFbNewAdSetCountries(e.target.value)} placeholder="US,CA" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  }
+                </div>
+
+                {/* Ad Details */}
+                <div>
+                  <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Headline</label>
+                  <input value={fbHeadline} onChange={e => setFbHeadline(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Primary Text</label>
+                  <textarea value={fbPrimaryText} onChange={e => setFbPrimaryText(e.target.value)} rows={2} placeholder="Ad copy shown above the video" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
+                </div>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">CTA Button</label>
+                    <select value={fbCtaType} onChange={e => setFbCtaType(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
+                      <option value="SHOP_NOW">Shop Now</option>
+                      <option value="LEARN_MORE">Learn More</option>
+                      <option value="BUY_NOW">Buy Now</option>
+                      <option value="ORDER_NOW">Order Now</option>
+                      <option value="SIGN_UP">Sign Up</option>
+                    </select>
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Status</label>
+                    <div className="flex gap-1">
+                      <button onClick={() => setFbAdStatus('PAUSED')} className={`flex-1 px-2 py-1.5 rounded text-[10px] font-medium ${fbAdStatus === 'PAUSED' ? 'bg-yellow-600 text-white' : 'bg-slate-800 text-slate-400'}`}>Paused</button>
+                      <button onClick={() => setFbAdStatus('ACTIVE')} className={`flex-1 px-2 py-1.5 rounded text-[10px] font-medium ${fbAdStatus === 'ACTIVE' ? 'bg-green-600 text-white' : 'bg-slate-800 text-slate-400'}`}>Active</button>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Landing Page URL</label>
+                  <input value={fbLandingUrl} onChange={e => setFbLandingUrl(e.target.value)} placeholder="https://yourstore.com/product" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
+                </div>
+
+                {pushError && <div className="px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg"><p className="text-xs text-red-400">{pushError}</p></div>}
+
+                <div className="flex gap-2 pt-1">
+                  <button onClick={() => setPushCreative(null)} disabled={pushLoading} className="flex-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg">Cancel</button>
+                  <button onClick={handlePushToFB} disabled={pushLoading || !fbHeadline || !fbLandingUrl} className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg">
+                    {pushLoading ? 'Pushing...' : 'Push to Facebook'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -1798,15 +2041,20 @@ function CreativesContent() {
                           </button>
                         )}
                         {c.file_url && c.nb_status === 'completed' && (
-                          <a
-                            href={mediaUrl(c.file_url)}
-                            download
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[10px] text-emerald-400 hover:text-emerald-300"
-                          >
-                            Download
-                          </a>
+                          <>
+                            <a
+                              href={mediaUrl(c.file_url)}
+                              download
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[10px] text-emerald-400 hover:text-emerald-300"
+                            >
+                              Download
+                            </a>
+                            <button onClick={() => openPushModal(c)} className="text-[10px] text-blue-400 hover:text-blue-300">
+                              Push to FB
+                            </button>
+                          </>
                         )}
                       </div>
                     </div>
@@ -2145,7 +2393,10 @@ function CreativesContent() {
                                         'text-red-400'
                                       }`}>{c.nb_status}</span>
                                       {c.file_url && c.nb_status === 'completed' && (
-                                        <a href={mediaUrl(c.file_url)} download className="text-[9px] text-blue-400 hover:text-blue-300">Download</a>
+                                        <div className="flex gap-2">
+                                          <a href={mediaUrl(c.file_url)} download className="text-[9px] text-blue-400 hover:text-blue-300">Download</a>
+                                          <button onClick={() => openPushModal(c)} className="text-[9px] text-cyan-400 hover:text-cyan-300">Push to FB</button>
+                                        </div>
                                       )}
                                     </div>
                                   </div>

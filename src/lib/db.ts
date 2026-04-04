@@ -39,6 +39,27 @@ export function getDb(): Database.Database {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
     _db.exec(`CREATE INDEX IF NOT EXISTS idx_cfo_snapshots_store ON cfo_snapshots(store_id, snapshot_date)`)
+
+    // Migration: fb_ads table for tracking pushed ads
+    _db.exec(`CREATE TABLE IF NOT EXISTS fb_ads (
+      id TEXT PRIMARY KEY,
+      store_id TEXT NOT NULL,
+      creative_id TEXT,
+      fb_ad_id TEXT,
+      fb_creative_id TEXT,
+      fb_video_id TEXT,
+      fb_campaign_id TEXT,
+      fb_ad_set_id TEXT,
+      name TEXT NOT NULL,
+      headline TEXT,
+      primary_text TEXT,
+      cta_type TEXT,
+      landing_page_url TEXT,
+      status TEXT NOT NULL DEFAULT 'paused',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    _db.exec(`CREATE INDEX IF NOT EXISTS idx_fb_ads_store ON fb_ads(store_id)`);
+    _db.exec(`CREATE INDEX IF NOT EXISTS idx_fb_ads_creative ON fb_ads(creative_id)`);
   }
   return _db;
 }

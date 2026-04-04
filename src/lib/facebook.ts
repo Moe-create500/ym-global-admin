@@ -417,3 +417,239 @@ export async function debugToken(accessToken: string): Promise<{
   const data = await res.json();
   return data.data;
 }
+
+// ═══════════════════════════════════════════════════════
+// Ad Publishing — Campaign, Ad Set, Creative, Ad creation
+// ═══════════════════════════════════════════════════════
+
+export interface FBCampaignSummary {
+  id: string;
+  name: string;
+  objective: string;
+  status: string;
+  daily_budget?: string;
+}
+
+export interface FBAdSetSummary {
+  id: string;
+  name: string;
+  status: string;
+  daily_budget?: string;
+  optimization_goal?: string;
+}
+
+// List existing campaigns for an ad account
+export async function getCampaigns(
+  adAccountId: string,
+  accessToken: string
+): Promise<FBCampaignSummary[]> {
+  const res = await fetch(
+    `${FB_GRAPH_URL}/${adAccountId}/campaigns?fields=id,name,objective,status,daily_budget&filtering=[{"field":"effective_status","operator":"IN","value":["ACTIVE","PAUSED"]}]&limit=100&access_token=${accessToken}`
+  );
+  if (!res.ok) throw new Error(`FB campaigns fetch failed: ${await res.text()}`);
+  const data = await res.json();
+  return data.data || [];
+}
+
+// List existing ad sets for a campaign
+export async function getAdSets(
+  campaignId: string,
+  accessToken: string
+): Promise<FBAdSetSummary[]> {
+  const res = await fetch(
+    `${FB_GRAPH_URL}/${campaignId}/adsets?fields=id,name,status,daily_budget,optimization_goal&filtering=[{"field":"effective_status","operator":"IN","value":["ACTIVE","PAUSED"]}]&limit=100&access_token=${accessToken}`
+  );
+  if (!res.ok) throw new Error(`FB ad sets fetch failed: ${await res.text()}`);
+  const data = await res.json();
+  return data.data || [];
+}
+
+// Create a new campaign
+export async function createCampaign(
+  adAccountId: string,
+  accessToken: string,
+  opts: {
+    name: string;
+    objective: string;
+    status: 'PAUSED' | 'ACTIVE';
+    specialAdCategories?: string[];
+  }
+): Promise<{ id: string }> {
+  const body: any = {
+    name: opts.name,
+    objective: opts.objective,
+    status: opts.status,
+    special_ad_categories: opts.specialAdCategories || [],
+    access_token: accessToken,
+  };
+
+  const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/campaigns`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`FB campaign creation failed: ${await res.text()}`);
+  return res.json();
+}
+
+// Create a new ad set
+export async function createAdSet(
+  adAccountId: string,
+  accessToken: string,
+  opts: {
+    name: string;
+    campaignId: string;
+    dailyBudgetCents: number;
+    targeting: { geo_locations: { countries: string[] }; age_min?: number; age_max?: number };
+    optimizationGoal: string;
+    billingEvent?: string;
+    status: 'PAUSED' | 'ACTIVE';
+    pixelId?: string;
+    customEventType?: string;
+    bidStrategy?: string;
+  }
+): Promise<{ id: string }> {
+  const body: any = {
+    name: opts.name,
+    campaign_id: opts.campaignId,
+    daily_budget: opts.dailyBudgetCents,
+    targeting: opts.targeting,
+    optimization_goal: opts.optimizationGoal,
+    billing_event: opts.billingEvent || 'IMPRESSIONS',
+    status: opts.status,
+    access_token: accessToken,
+  };
+
+  if (opts.pixelId) {
+    body.promoted_object = {
+      pixel_id: opts.pixelId,
+      custom_event_type: opts.customEventType || 'PURCHASE',
+    };
+  }
+
+  if (opts.bidStrategy) {
+    body.bid_strategy = opts.bidStrategy;
+  }
+
+  const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/adsets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`FB ad set creation failed: ${await res.text()}`);
+  return res.json();
+}
+
+// Create an ad creative (video ad)
+export async function createAdCreative(
+  adAccountId: string,
+  accessToken: string,
+  opts: {
+    name: string;
+    pageId: string;
+    videoId: string;
+    thumbnailUrl?: string;
+    title: string;
+    message: string;
+    linkDescription?: string;
+    ctaType: string;
+    ctaLink: string;
+  }
+): Promise<{ id: string }> {
+  const videoData: any = {
+    video_id: opts.videoId,
+    title: opts.title,
+    message: opts.message,
+    call_to_action: {
+      type: opts.ctaType,
+      value: { link: opts.ctaLink },
+    },
+  };
+
+  if (opts.thumbnailUrl) {
+    videoData.image_url = opts.thumbnailUrl;
+  }
+  if (opts.linkDescription) {
+    videoData.link_description = opts.linkDescription;
+  }
+
+  const body = {
+    name: opts.name,
+    object_story_spec: {
+      page_id: opts.pageId,
+      video_data: videoData,
+    },
+    access_token: accessToken,
+  };
+
+  const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/adcreatives`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`FB ad creative creation failed: ${await res.text()}`);
+  return res.json();
+}
+
+// Create an ad (links creative to ad set)
+export async function createAd(
+  adAccountId: string,
+  accessToken: string,
+  opts: {
+    name: string;
+    adsetId: string;
+    creativeId: string;
+    status: 'PAUSED' | 'ACTIVE';
+  }
+): Promise<{ id: string }> {
+  const body = {
+    name: opts.name,
+    adset_id: opts.adsetId,
+    creative: { creative_id: opts.creativeId },
+    status: opts.status,
+    access_token: accessToken,
+  };
+
+  const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/ads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`FB ad creation failed: ${await res.text()}`);
+  return res.json();
+}
+
+// Upload video from buffer (binary upload — no public URL needed)
+export async function uploadVideoFromBuffer(
+  adAccountId: string,
+  accessToken: string,
+  videoBuffer: Buffer,
+  title: string,
+  description?: string
+): Promise<{ id: string }> {
+  const formData = new FormData();
+  formData.append('source', new Blob([videoBuffer as any], { type: 'video/mp4' }), 'video.mp4');
+  formData.append('title', title);
+  if (description) formData.append('description', description);
+  formData.append('access_token', accessToken);
+
+  const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/advideos`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) throw new Error(`FB video upload failed: ${await res.text()}`);
+  return res.json();
+}
+
+// Check video processing status after upload
+export async function checkVideoProcessingStatus(
+  videoId: string,
+  accessToken: string
+): Promise<{ status: string }> {
+  const res = await fetch(
+    `${FB_GRAPH_URL}/${videoId}?fields=status&access_token=${accessToken}`
+  );
+  if (!res.ok) throw new Error(`FB video status check failed: ${await res.text()}`);
+  const data = await res.json();
+  return { status: data.status?.video_status || 'processing' };
+}
