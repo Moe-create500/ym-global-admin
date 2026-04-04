@@ -9,6 +9,7 @@ import {
   createAd,
   uploadVideoFromBuffer,
   checkVideoProcessingStatus,
+  getPages,
 } from '@/lib/facebook';
 import { readFile } from 'fs/promises';
 import path from 'path';
@@ -104,7 +105,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'No ad account selected. Go to Ads > Connect.' }, { status: 400 });
   }
   if (!profile.fb_page_id) {
-    return NextResponse.json({ error: 'No Facebook Page configured. Go to Ads > Connect to set up your page.' }, { status: 400 });
+    // Auto-resolve: fetch first available page and save it
+    try {
+      const pages = await getPages(profile.access_token);
+      if (pages.length > 0) {
+        profile.fb_page_id = pages[0].id;
+        db.prepare('UPDATE fb_profiles SET fb_page_id = ?, fb_page_name = ?, updated_at = datetime(\'now\') WHERE id = ?')
+          .run(pages[0].id, pages[0].name, profile.id);
+        console.log(`[PUSH-TO-FB] Auto-resolved FB page: ${pages[0].name} (${pages[0].id})`);
+      } else {
+        return NextResponse.json({ error: 'No Facebook Page found on this account. Create a Page in Facebook first.' }, { status: 400 });
+      }
+    } catch (err: any) {
+      return NextResponse.json({ error: `Failed to fetch Facebook Pages: ${err.message}` }, { status: 400 });
+    }
   }
 
   const adAccountId = profile.ad_account_id.startsWith('act_')
