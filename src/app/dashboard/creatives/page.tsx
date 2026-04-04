@@ -336,6 +336,24 @@ function CreativesContent() {
   const [bulkPushMode, setBulkPushMode] = useState(false);
   const [bulkPushProgress, setBulkPushProgress] = useState('');
 
+  // Pipeline state
+  const [showPipeline, setShowPipeline] = useState(false);
+  const [plProductId, setPlProductId] = useState('');
+  const [plScript, setPlScript] = useState('');
+  const [plAvatarId, setPlAvatarId] = useState('');
+  const [plVoiceId, setPlVoiceId] = useState('');
+  const [plBrollCount, setPlBrollCount] = useState(10);
+  const [plAvatars, setPlAvatars] = useState<any[]>([]);
+  const [plVoices, setPlVoices] = useState<any[]>([]);
+  const [plLoadingAvatars, setPlLoadingAvatars] = useState(false);
+  const [plStarting, setPlStarting] = useState(false);
+  const [plPipelineId, setPlPipelineId] = useState('');
+  const [plStatus, setPlStatus] = useState('');
+  const [plCompleted, setPlCompleted] = useState(0);
+  const [plTotal, setPlTotal] = useState(11);
+  const [plFinalUrl, setPlFinalUrl] = useState('');
+  const [plError, setPlError] = useState('');
+
   // Fetch error state
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -904,6 +922,80 @@ function CreativesContent() {
     setPushLoading(false);
   }
 
+  // ═══ Pipeline Functions ═══
+
+  async function openPipelineModal() {
+    setShowPipeline(true);
+    setPlError('');
+    setPlStatus('');
+    setPlPipelineId('');
+    setPlFinalUrl('');
+    setPlCompleted(0);
+    setPlScript('');
+    if (plAvatars.length === 0) {
+      setPlLoadingAvatars(true);
+      try {
+        const [avatarRes, voiceRes] = await Promise.all([
+          fetch('/api/creatives/pipeline/avatars').then(r => r.json()),
+          fetch('/api/creatives/pipeline/voices').then(r => r.json()),
+        ]);
+        setPlAvatars(avatarRes.avatars || []);
+        setPlVoices(voiceRes.voices || []);
+        if (avatarRes.avatars?.length > 0) setPlAvatarId(avatarRes.avatars[0].avatar_id);
+        if (voiceRes.voices?.length > 0) setPlVoiceId(voiceRes.voices[0].voice_id);
+      } catch { setPlError('Failed to load avatars/voices'); }
+      setPlLoadingAvatars(false);
+    }
+  }
+
+  async function startPipeline() {
+    if (!storeFilter || !plProductId || !plScript || !plAvatarId || !plVoiceId) return;
+    setPlStarting(true);
+    setPlError('');
+    try {
+      const res = await fetch('/api/creatives/pipeline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storeId: storeFilter,
+          productId: plProductId,
+          adScript: plScript,
+          avatarId: plAvatarId,
+          voiceId: plVoiceId,
+          brollCount: plBrollCount,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to start pipeline');
+      setPlPipelineId(data.pipelineId);
+      setPlStatus('pending');
+      // Start polling
+      pollPipeline(data.pipelineId);
+    } catch (err: any) {
+      setPlError(err.message);
+    }
+    setPlStarting(false);
+  }
+
+  async function pollPipeline(pipelineId: string) {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/creatives/pipeline?id=${pipelineId}`);
+        const data = await res.json();
+        const p = data.pipeline;
+        setPlStatus(p.status);
+        setPlCompleted(p.completedClips);
+        setPlTotal(p.totalClips);
+        if (p.finalVideoUrl) setPlFinalUrl(p.finalVideoUrl);
+        if (p.error) setPlError(p.error);
+        if (p.status === 'completed' || p.status === 'failed') {
+          clearInterval(interval);
+          loadCreatives(); // Refresh creatives list
+        }
+      } catch {}
+    }, 5000);
+  }
+
   // ═══ Creative Generator Functions ═══
 
   // Load account intelligence from backend API
@@ -1372,6 +1464,89 @@ function CreativesContent() {
                     {pushLoading ? (bulkPushMode ? bulkPushProgress || 'Pushing...' : 'Pushing...') : (bulkPushMode ? `Push ${bulkSelected.size} Ads` : 'Push to Facebook')}
                   </button>
                 </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Pipeline Modal */}
+      {showPipeline && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={(e) => { if (e.target === e.currentTarget && !plStarting && plStatus !== 'polling' && plStatus !== 'editing') setShowPipeline(false); }}>
+          <div className="bg-slate-900 border border-purple-900/50 rounded-xl p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-white">Create Ad Pipeline</h2>
+              <button onClick={() => setShowPipeline(false)} className="text-slate-400 hover:text-white text-sm">✕</button>
+            </div>
+
+            {plFinalUrl ? (
+              <div className="space-y-3">
+                <div className="px-3 py-2 bg-emerald-900/20 border border-emerald-800 rounded-lg">
+                  <p className="text-xs text-emerald-400">Pipeline complete! Final video ready.</p>
+                </div>
+                <video src={plFinalUrl} controls className="w-full rounded-lg aspect-[9/16] bg-black" />
+                <button onClick={() => setShowPipeline(false)} className="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium rounded-lg">Close</button>
+              </div>
+            ) : plPipelineId ? (
+              <div className="space-y-3">
+                <div className="px-3 py-2 bg-blue-900/20 border border-blue-800 rounded-lg">
+                  <p className="text-xs text-blue-400 capitalize">{plStatus === 'generating_prompts' ? 'Generating B-roll prompts...' : plStatus === 'generating_clips' ? 'Generating clips...' : plStatus === 'polling' ? `Waiting for clips (${plCompleted}/${plTotal})...` : plStatus === 'editing' ? 'Auto-editing final video...' : plStatus === 'failed' ? 'Pipeline failed' : plStatus}</p>
+                </div>
+                {plStatus !== 'failed' && (
+                  <div className="w-full bg-slate-800 rounded-full h-2">
+                    <div className="bg-purple-600 h-2 rounded-full transition-all" style={{ width: `${plStatus === 'editing' ? 90 : plStatus === 'generating_prompts' ? 5 : plTotal > 0 ? Math.round((plCompleted / plTotal) * 80) + 10 : 10}%` }} />
+                  </div>
+                )}
+                {plError && <div className="px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg"><p className="text-xs text-red-400">{plError}</p></div>}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {plLoadingAvatars ? (
+                  <div className="flex items-center justify-center h-20"><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-purple-400" /></div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Product</label>
+                      <select value={plProductId} onChange={e => setPlProductId(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
+                        <option value="">Select product...</option>
+                        {products.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Ad Script</label>
+                      <textarea value={plScript} onChange={e => setPlScript(e.target.value)} rows={4} placeholder="The full script the avatar will speak to camera..." className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
+                    </div>
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                        <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Avatar</label>
+                        <select value={plAvatarId} onChange={e => setPlAvatarId(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
+                          {plAvatars.map((a: any) => <option key={a.avatar_id} value={a.avatar_id}>{a.avatar_name} ({a.gender})</option>)}
+                        </select>
+                      </div>
+                      <div className="flex-1">
+                        <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Voice</label>
+                        <select value={plVoiceId} onChange={e => setPlVoiceId(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
+                          {plVoices.map((v: any) => <option key={v.voice_id} value={v.voice_id}>{v.name} ({v.gender} · {v.language})</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">B-Roll Clips: {plBrollCount}</label>
+                      <input type="range" min={3} max={10} value={plBrollCount} onChange={e => setPlBrollCount(parseInt(e.target.value))} className="w-full" />
+                      <div className="flex justify-between text-[9px] text-slate-500"><span>3</span><span>10</span></div>
+                    </div>
+
+                    {plError && <div className="px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg"><p className="text-xs text-red-400">{plError}</p></div>}
+
+                    <div className="flex gap-2 pt-1">
+                      <button onClick={() => setShowPipeline(false)} className="flex-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium rounded-lg">Cancel</button>
+                      <button onClick={startPipeline} disabled={plStarting || !plProductId || !plScript || !plAvatarId || !plVoiceId} className="flex-1 px-3 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg">
+                        {plStarting ? 'Starting...' : 'Start Pipeline'}
+                      </button>
+                    </div>
+                    <p className="text-[9px] text-slate-600 text-center">Estimated cost: ~$3 · Creates {plBrollCount} B-roll clips + 1 avatar video → auto-edited final ad</p>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -2067,6 +2242,17 @@ function CreativesContent() {
       {/* Generated Creatives Tab */}
       {tab === 'generated' && (
         <>
+          {/* Pipeline button */}
+          <div className="flex items-center justify-end mb-4">
+            <button
+              onClick={openPipelineModal}
+              disabled={!storeFilter}
+              className="px-4 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg"
+            >
+              Create Ad Pipeline
+            </button>
+          </div>
+
           {loading ? (
             <div className="flex items-center justify-center h-32"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400" /></div>
           ) : creatives.length === 0 ? (
