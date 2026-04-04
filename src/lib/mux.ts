@@ -17,12 +17,12 @@ export interface MuxResult {
 /**
  * Download a file from URL to a local temp path.
  */
-async function downloadToTemp(url: string, ext: string): Promise<string> {
+async function downloadToTemp(url: string, ext: string, headers?: Record<string, string>): Promise<string> {
   const tmpDir = path.join(process.cwd(), 'public', 'uploads');
   await mkdir(tmpDir, { recursive: true });
   const tmpFile = path.join(tmpDir, `tmp_${crypto.randomUUID()}.${ext}`);
 
-  const res = await fetch(url);
+  const res = await fetch(url, headers ? { headers } : undefined);
   if (!res.ok) throw new Error(`Failed to download: ${res.status}`);
   const buffer = Buffer.from(await res.arrayBuffer());
   await writeFile(tmpFile, buffer);
@@ -37,12 +37,13 @@ async function downloadToTemp(url: string, ext: string): Promise<string> {
 export async function muxVideoAudio(
   videoUrl: string,
   audioPath: string,
+  fetchHeaders?: Record<string, string>,
 ): Promise<MuxResult> {
   const tmpDir = path.join(process.cwd(), 'public', 'uploads');
   await mkdir(tmpDir, { recursive: true });
 
   // Download video
-  const videoPath = await downloadToTemp(videoUrl, 'mp4');
+  const videoPath = await downloadToTemp(videoUrl, 'mp4', fetchHeaders);
   const outputFilename = `final_${crypto.randomUUID()}.mp4`;
   const outputPath = path.join(tmpDir, outputFilename);
 

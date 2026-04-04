@@ -38,8 +38,6 @@ function getSoraDimensions(size: '1280x720' | '720x1280' | '1920x1080' | '1080x1
 async function autoFinalize(creativeId: string, videoUrl: string, script: string, db: any) {
   // Skip if already finalized or no script
   if (!script || script.length < 20) return;
-  // Skip Sora URLs that need auth proxy (can't download server-side)
-  if (videoUrl.includes('api.openai.com')) return;
 
   try {
     console.log(`[AUTO-FINALIZE] Starting for ${creativeId}`);
@@ -55,8 +53,13 @@ async function autoFinalize(creativeId: string, videoUrl: string, script: string
     const voPath = path.join(uploadDir, voFilename);
     await writeFile(voPath, ttsResult.audioBuffer);
 
+    // Sora URLs need auth headers to download
+    const fetchHeaders = videoUrl.includes('api.openai.com')
+      ? { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` }
+      : undefined;
+
     // Mux video + audio
-    const muxResult = await muxVideoAudio(videoUrl, voPath);
+    const muxResult = await muxVideoAudio(videoUrl, voPath, fetchHeaders);
 
     // Update creative with final muxed URL
     db.prepare(`
@@ -370,6 +373,8 @@ export async function GET(req: NextRequest) {
         db.prepare("UPDATE creatives SET nb_status = 'completed', file_url = ?, updated_at = datetime('now') WHERE id = ?").run(downloadUrl, id);
         creative.nb_status = 'completed';
         creative.file_url = downloadUrl;
+        // Auto-finalize: add voiceover + mux (runs in background)
+        autoFinalize(id, downloadUrl, creative.description, db).catch(() => {});
       } else if (status.status === 'failed') {
         db.prepare("UPDATE creatives SET nb_status = 'failed', updated_at = datetime('now') WHERE id = ?").run(id);
         creative.nb_status = 'failed';
