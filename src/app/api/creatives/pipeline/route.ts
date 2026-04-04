@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
   db.prepare(`
     INSERT INTO video_pipelines (id, store_id, product_id, status, ad_script, avatar_id, voice_id, broll_count)
     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
-  `).run(pipelineId, storeId, productId, adScript, avatarId, voiceId, brollCount || 10);
+  `).run(pipelineId, storeId, productId, adScript, avatarId, voiceId, brollCount || 7);
 
   const config: PipelineConfig = {
     storeId,
@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
     avatarId,
     voiceId,
     offer,
-    brollCount: brollCount || 10,
+    brollCount: brollCount || 7,
   };
 
   // Run pipeline async (non-blocking)

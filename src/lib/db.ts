@@ -70,7 +70,7 @@ export function getDb(): Database.Database {
       ad_script TEXT NOT NULL,
       avatar_id TEXT NOT NULL,
       voice_id TEXT NOT NULL,
-      broll_count INTEGER NOT NULL DEFAULT 10,
+      broll_count INTEGER NOT NULL DEFAULT 7,
       broll_prompts TEXT,
       avatar_creative_id TEXT,
       avatar_video_id TEXT,

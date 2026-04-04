@@ -342,7 +342,7 @@ function CreativesContent() {
   const [plScript, setPlScript] = useState('');
   const [plAvatarId, setPlAvatarId] = useState('');
   const [plVoiceId, setPlVoiceId] = useState('');
-  const [plBrollCount, setPlBrollCount] = useState(10);
+  const [plBrollCount, setPlBrollCount] = useState(7);
   const [plAvatars, setPlAvatars] = useState<any[]>([]);
   const [plVoices, setPlVoices] = useState<any[]>([]);
   const [plLoadingAvatars, setPlLoadingAvatars] = useState(false);
@@ -962,7 +962,7 @@ function CreativesContent() {
           adScript: plScript,
           avatarId: plAvatarId,
           voiceId: plVoiceId,
-          brollCount: plBrollCount,
+          brollCount: plBrollCount || 7,
         }),
       });
       const data = await res.json();
