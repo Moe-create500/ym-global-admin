@@ -243,7 +243,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const finalPrompt = enrichedPrompts[idx] || p.prompt;
     try {
       const result = await soraCreate(finalPrompt, {
-        model: 'sora-2',
+        model: 'sora-2-pro',
         size: '720x1280',
         seconds: '20',
         ...(productImageBuffer

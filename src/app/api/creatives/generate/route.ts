@@ -48,7 +48,7 @@ async function autoFinalize(creativeId: string, videoUrl: string, script: string
     const voice = 'nova'; // warm female UGC default
 
     // Generate voiceover
-    const ttsResult = await generateSpeech(script.substring(0, 500), { voice, model: 'tts-1', speed: 1.0 });
+    const ttsResult = await generateSpeech(script.substring(0, 4096), { voice, model: 'tts-1-hd', speed: 1.0 });
     const voFilename = `vo_${crypto.randomUUID()}.mp3`;
     const uploadDir = path.join(process.cwd(), 'public', 'uploads');
     await mkdir(uploadDir, { recursive: true });
@@ -108,7 +108,7 @@ export async function POST(req: NextRequest) {
       const soraSize = sizeMap[resolution] || '1280x720';
       const durationNum = parseInt(duration) || 20;
       const soraDuration: '8' | '16' | '20' = durationNum <= 8 ? '8' : durationNum <= 16 ? '16' : '20';
-      const model = resolution === '1080p' || resolution === '1080p-vertical' ? 'sora-2-pro' : 'sora-2';
+      const model: 'sora-2' | 'sora-2-pro' = 'sora-2-pro';
       let imageBuffer: Buffer | undefined;
 
       if (type === 'image-to-video' && imageUrls?.length > 0) {
