@@ -5,6 +5,7 @@ import { getVideoSourceUrl, getPages } from '@/lib/facebook';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 300; // 5 minutes — video download + Twelve Labs indexing + analysis
 
 /**
  * POST /api/creatives/analyze
@@ -55,7 +56,7 @@ export async function POST(req: NextRequest) {
     // Auto-resolve video URL from Facebook if only adId provided
     if (!videoUrl && adId) {
       const adRow: any = db.prepare(
-        'SELECT video_source_url, fb_video_id FROM ad_spend WHERE ad_id = ? AND store_id = ? LIMIT 1'
+        'SELECT video_source_url, fb_video_id, creative_url FROM ad_spend WHERE ad_id = ? AND store_id = ? LIMIT 1'
       ).get(adId, storeId);
 
       if (adRow?.video_source_url) {
@@ -82,9 +83,18 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Fallback: try creative_url if it looks like a video file
+      if (!videoUrl && adRow?.creative_url) {
+        const cu = adRow.creative_url.toLowerCase();
+        if (cu.includes('video') || cu.endsWith('.mp4') || cu.endsWith('.mov') || cu.endsWith('.webm') || cu.includes('/v/') || cu.includes('fbcdn.net/v/')) {
+          videoUrl = adRow.creative_url;
+        }
+      }
+
       if (!videoUrl) {
         return NextResponse.json({
-          error: 'No video found for this ad. This ad may be an image ad, or the video source URL is not available. Try uploading the video file manually.',
+          error: 'Could not auto-resolve video URL. Upload the video file manually using the upload button below.',
+          needsUpload: true,
         }, { status: 400 });
       }
     }

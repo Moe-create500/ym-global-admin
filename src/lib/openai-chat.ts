@@ -62,6 +62,32 @@ export async function chatCompletion(
   };
 }
 
+export async function imageUrlToBase64Png(url: string): Promise<string | null> {
+  try {
+    const sharp = (await import('sharp')).default;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    const pngBuf = await sharp(buf).png().toBuffer();
+    return `data:image/png;base64,${pngBuf.toString('base64')}`;
+  } catch (err) {
+    console.error('Failed to convert image to PNG base64:', url, err);
+    return null;
+  }
+}
+
+export async function imagesToChatParts(urls: string[]): Promise<ChatContentPart[]> {
+  const parts: ChatContentPart[] = [];
+  for (const url of urls) {
+    const base64 = await imageUrlToBase64Png(url);
+    parts.push({
+      type: 'image_url' as const,
+      image_url: { url: base64 || url, detail: 'high' },
+    });
+  }
+  return parts;
+}
+
 export async function generateText(
   systemPrompt: string,
   userPrompt: string,

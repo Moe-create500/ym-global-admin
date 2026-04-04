@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { chatCompletion, ChatContentPart } from '@/lib/openai-chat';
+import { chatCompletion, imagesToChatParts } from '@/lib/openai-chat';
 import { createVideo as soraCreate } from '@/lib/sora';
 import { createVideo as veoCreate } from '@/lib/veo';
 import { createVideo as mmCreateVideo } from '@/lib/minimax';
@@ -132,15 +132,18 @@ IMPORTANT: In your video prompt, describe every product's packaging in EXPLICIT 
 
 Transform this DNA into a video generation prompt that recreates the same ad but with "${product.title}" as the featured product. The primary product image will be provided as the first frame — describe what happens around it and after it.`,
           },
-          ...allProductImages.map((url: string): ChatContentPart => ({
-            type: 'image_url' as const,
-            image_url: { url, detail: 'high' },
-          })),
+          ...(await imagesToChatParts(allProductImages)),
         ],
       },
     ]);
 
-    const parsed = JSON.parse(result.content);
+    let parsed: any;
+    try {
+      const cleaned = result.content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+      parsed = JSON.parse(cleaned);
+    } catch (parseErr: any) {
+      return NextResponse.json({ error: `Failed to parse AI response: ${parseErr.message}` }, { status: 500 });
+    }
     const prompt = parsed.prompt;
     // Use user-selected duration, fall back to ChatGPT suggestion
     const rawDuration = requestedDuration ? parseInt(requestedDuration) : (parseInt(parsed.duration) || limits.max);
