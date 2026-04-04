@@ -213,6 +213,20 @@ PRODUCT IMAGE AS FIRST FRAME: The actual product photo is fed to Sora as the fir
    - Same CTA style
    - Same voice — if winners are casual and emoji-heavy, be casual and emoji-heavy
 
+10. ABSOLUTELY NO TEXT ON VIDEO:
+   - NEVER describe text, words, titles, logos, brand names, captions, subtitles, or any on-screen text in the video prompt
+   - Sora CANNOT render readable text — it ALWAYS comes out garbled, mirrored, and broken
+   - If the product has labels, describe the product visually (colors, shape, size) but NEVER ask for readable text
+   - No title cards, no text overlays, no supers, no "text appears on screen"
+   - The voiceover audio handles ALL messaging — the video is PURELY VISUAL
+   - Instead of text overlays, describe ACTIONS: hands holding the product, pouring, applying, unboxing
+
+11. TIKTOK INFLUENCER FORMAT:
+   - Every video MUST look like a real TikTok creator filmed it on their iPhone
+   - Handheld camera, natural imperfect lighting, real messy environment
+   - The person in the video acts like a casual creator, NOT a model or spokesperson
+   - Think "friend showing you a product on FaceTime" energy
+
 Return JSON with one array:
 - "videoPrompts": array of 5 objects
 

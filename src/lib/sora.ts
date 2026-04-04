@@ -62,6 +62,14 @@ async function soraFetch(endpoint: string, method: 'GET' | 'POST' = 'GET', body?
   return res.json();
 }
 
+/** Global rules appended to EVERY Sora prompt to prevent text rendering and enforce TikTok style */
+const SORA_PROMPT_RULES = `
+
+CRITICAL RULES — MUST FOLLOW:
+- ABSOLUTELY NO TEXT, WORDS, LETTERS, TITLES, LOGOS, BRAND NAMES, LABELS, OR CAPTIONS rendered anywhere in the video frames. The video must be PURELY VISUAL with zero on-screen text. No product labels, no title cards, no subtitles, no watermarks, no overlay text of any kind.
+- TikTok influencer aesthetic: handheld iPhone camera, natural lighting, real environment, casual creator energy. NOT a commercial, NOT a polished ad, NOT cinematic. Think "friend showing you something on FaceTime."
+- If the product has text/labels on its packaging, show the product but do NOT try to render or display readable text — keep it blurred, angled away, or out of focus.`;
+
 export async function createVideo(
   prompt: string,
   options: SoraOptions = {}
@@ -73,13 +81,16 @@ export async function createVideo(
   const size = options.size || '720x1280';
   const seconds = options.seconds || '8';
 
+  // Append global rules to prevent text on video and enforce TikTok style
+  const enhancedPrompt = prompt + SORA_PROMPT_RULES;
+
   let data: any;
 
   if (options.imageBuffer) {
     // Use multipart form-data to send the pre-resized image as input_reference
     const formData = new FormData();
     formData.append('model', model);
-    formData.append('prompt', prompt);
+    formData.append('prompt', enhancedPrompt);
     formData.append('size', size);
     formData.append('seconds', seconds);
     const imgBlob = new Blob([options.imageBuffer as unknown as BlobPart], { type: options.imageMimeType || 'image/png' });
@@ -98,7 +109,7 @@ export async function createVideo(
     data = await res.json();
   } else {
     // JSON request (with optional image URL)
-    const body: any = { model, prompt, size, seconds };
+    const body: any = { model, prompt: enhancedPrompt, size, seconds };
     if (options.imageUrl) {
       body.input_reference = { image_url: options.imageUrl };
     }

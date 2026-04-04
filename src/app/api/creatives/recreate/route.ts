@@ -89,11 +89,12 @@ CREATIVE DNA RULES:
 3. Use the same camera angles and movements
 4. Replicate the same lighting and color tone
 5. Match the content creator energy and speaking style
-6. Keep the same text overlay style and positioning
+6. NEVER include ANY text, words, titles, logos, brand names, labels, captions, or subtitles on screen — Sora CANNOT render readable text (it comes out garbled/mirrored). The video must be PURELY VISUAL. Describe the product's appearance (colors, shape) without asking for readable text on labels.
 7. Reproduce the same emotional arc timing
 8. SWAP the product — describe the NEW product being held, shown, and featured
 9. The prompt should be 300-500 words describing a complete scene — be VERY specific about physical details
 10. Format: vertical 9:16 for Reels/TikTok
+11. TikTok influencer aesthetic — handheld iPhone, natural lighting, real messy environment, casual creator energy. NOT a commercial or cinematic ad.
 
 CRITICAL — PRODUCT APPEARANCE ACCURACY:
 - Study the provided product images and description VERY carefully
