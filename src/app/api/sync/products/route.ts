@@ -50,18 +50,25 @@ export async function POST(req: NextRequest) {
       const sku = p.sku || null;
       const priceCents = Math.round((p.price || 0) * 100);
 
-      // Check if product already exists by shopify_product_id (externalProductId)
-      const existing: any = db.prepare(
+      // Check if product already exists by shopify_product_id or by store_id + sku
+      let existing: any = db.prepare(
         'SELECT id FROM products WHERE store_id = ? AND shopify_product_id = ?'
       ).get(store.id, p.externalProductId);
+
+      if (!existing && sku) {
+        existing = db.prepare(
+          'SELECT id FROM products WHERE store_id = ? AND sku = ?'
+        ).get(store.id, sku);
+      }
 
       if (existing) {
         db.prepare(`
           UPDATE products SET
-            title = ?, sku = ?, image_url = ?, images = ?, price_cents = ?,
+            title = ?, sku = ?, shopify_product_id = COALESCE(shopify_product_id, ?),
+            image_url = ?, images = ?, price_cents = ?,
             status = 'active', synced_at = datetime('now'), updated_at = datetime('now')
           WHERE id = ?
-        `).run(p.name, sku, primaryImage, imagesJson, priceCents, existing.id);
+        `).run(p.name, sku, p.externalProductId, primaryImage, imagesJson, priceCents, existing.id);
         updated++;
       } else {
         db.prepare(`
