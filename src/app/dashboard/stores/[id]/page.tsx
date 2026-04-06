@@ -695,28 +695,16 @@ export default function StoreDetailPage() {
               {ssPayShowForm ? 'Cancel' : '+ Add Payment'}
             </button>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
-            <div>
-              <p className="text-[10px] text-slate-500">SS Balance (Billed)</p>
-              <p className="text-sm font-semibold text-white">{cents(ssCharges.billed_cents)}</p>
-            </div>
-            <div>
-              <p className="text-[10px] text-slate-500">Payments Made</p>
-              <p className="text-sm font-semibold text-emerald-400">{cents(ssTotalPaid)}</p>
-            </div>
-            <div>
-              <p className="text-[10px] text-slate-500">Estimated (Pending)</p>
-              <p className="text-sm font-semibold text-yellow-400">{cents(ssCharges.estimated_cents)}</p>
-            </div>
-            <div>
-              <p className="text-[10px] text-slate-500">Total Owed (Billed + Est. - Paid)</p>
-              <p className="text-sm font-semibold text-orange-400">{cents(ssCharges.billed_cents + ssCharges.estimated_cents - ssTotalPaid)}</p>
-            </div>
+          <div className="grid grid-cols-2 gap-4">
             <div>
               <p className="text-[10px] text-slate-500">Balance Owed</p>
-              <p className={`text-sm font-semibold ${ssCharges.balance_cents > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+              <p className={`text-lg font-semibold ${ssCharges.balance_cents > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
                 {cents(ssCharges.balance_cents)}
               </p>
+            </div>
+            <div>
+              <p className="text-[10px] text-slate-500">Estimated (Unfulfilled Orders)</p>
+              <p className="text-lg font-semibold text-yellow-400">{cents(ssCharges.estimated_cents)}</p>
             </div>
           </div>
 
