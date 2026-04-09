@@ -499,7 +499,8 @@ export async function createAdSet(
   opts: {
     name: string;
     campaignId: string;
-    dailyBudgetCents: number;
+    dailyBudgetCents?: number;
+    dailyBudget?: number;
     targeting: { geo_locations: { countries: string[] }; age_min?: number; age_max?: number };
     optimizationGoal: string;
     billingEvent?: string;
@@ -512,7 +513,7 @@ export async function createAdSet(
   const body: any = {
     name: opts.name,
     campaign_id: opts.campaignId,
-    daily_budget: opts.dailyBudgetCents,
+    daily_budget: opts.dailyBudgetCents || opts.dailyBudget || 3000,
     targeting: opts.targeting,
     optimization_goal: opts.optimizationGoal,
     billing_event: opts.billingEvent || 'IMPRESSIONS',
