@@ -37,6 +37,7 @@ export interface MinimaxVideoStatus {
 
 export interface MinimaxImageResult {
   imageBase64: string;
+  imageUrl: string;
   model: string;
 }
 
@@ -140,6 +141,7 @@ export async function generateImage(
 
   return {
     imageBase64: imageUrl,
+    imageUrl: imageUrl,
     model: 'image-01',
   };
 }
