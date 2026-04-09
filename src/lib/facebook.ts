@@ -502,7 +502,7 @@ export async function createAdSet(
     dailyBudgetCents?: number;
     dailyBudget?: number;
     targeting: { geo_locations: { countries: string[] }; age_min?: number; age_max?: number };
-    optimizationGoal: string;
+    optimizationGoal?: string;
     billingEvent?: string;
     status: 'PAUSED' | 'ACTIVE';
     pixelId?: string;
@@ -515,7 +515,7 @@ export async function createAdSet(
     campaign_id: opts.campaignId,
     daily_budget: opts.dailyBudgetCents || opts.dailyBudget || 3000,
     targeting: opts.targeting,
-    optimization_goal: opts.optimizationGoal,
+    optimization_goal: opts.optimizationGoal || 'OFFSITE_CONVERSIONS',
     billing_event: opts.billingEvent || 'IMPRESSIONS',
     status: opts.status,
     access_token: accessToken,
