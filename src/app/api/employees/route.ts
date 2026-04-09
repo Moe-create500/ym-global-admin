@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { hashPassword } from '@/lib/auth';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -19,19 +20,31 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const { name, email, role, storeIds } = await req.json();
+  const { name, email, password, role, storeIds } = await req.json();
 
   if (!name || !email) {
     return NextResponse.json({ error: 'name and email are required' }, { status: 400 });
   }
 
+  if (!password || password.length < 4) {
+    return NextResponse.json({ error: 'Password is required (minimum 4 characters)' }, { status: 400 });
+  }
+
   const db = getDb();
+
+  // Check for duplicate email
+  const existing = db.prepare('SELECT id FROM employees WHERE email = ? COLLATE NOCASE AND is_active = 1').get(email);
+  if (existing) {
+    return NextResponse.json({ error: 'An employee with this email already exists' }, { status: 400 });
+  }
+
   const id = crypto.randomUUID();
+  const passwordHash = hashPassword(password);
 
   db.prepare(`
-    INSERT INTO employees (id, name, email, role)
-    VALUES (?, ?, ?, ?)
-  `).run(id, name, email, role || 'viewer');
+    INSERT INTO employees (id, name, email, role, password_hash)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(id, name, email, role || 'viewer', passwordHash);
 
   // Data correctors and admins get access to all stores automatically
   const effectiveRole = role || 'viewer';

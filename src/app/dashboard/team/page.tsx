@@ -21,7 +21,8 @@ export default function TeamPage() {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ name: '', email: '', role: 'viewer', storeIds: [] as string[] });
+  const [addError, setAddError] = useState('');
+  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'viewer', storeIds: [] as string[] });
 
   useEffect(() => {
     loadData();
@@ -43,12 +44,19 @@ export default function TeamPage() {
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
-    await fetch('/api/employees', {
+    setAddError('');
+    const res = await fetch('/api/employees', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(form),
     });
-    setForm({ name: '', email: '', role: 'viewer', storeIds: [] });
+    if (!res.ok) {
+      const data = await res.json();
+      setAddError(data.error || 'Failed to add employee');
+      setSaving(false);
+      return;
+    }
+    setForm({ name: '', email: '', password: '', role: 'viewer', storeIds: [] });
     setShowAdd(false);
     setSaving(false);
     loadData();
@@ -95,7 +103,7 @@ export default function TeamPage() {
       {showAdd && (
         <form onSubmit={handleAdd} className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
           <h3 className="text-sm font-semibold text-white mb-4">New Employee</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
             <div>
               <label className="block text-xs text-slate-400 mb-1">Full Name *</label>
               <input
@@ -114,6 +122,18 @@ export default function TeamPage() {
                 value={form.email}
                 onChange={(e) => setForm({ ...form, email: e.target.value })}
                 className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Password *</label>
+              <input
+                type="password"
+                required
+                minLength={4}
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+                placeholder="Min 4 characters"
+                className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 placeholder:text-slate-600"
               />
             </div>
             <div>
@@ -162,6 +182,12 @@ export default function TeamPage() {
             </div>
             )}
           </div>
+
+          {addError && (
+            <div className="bg-red-900/20 border border-red-800/30 text-red-400 px-3 py-2 rounded-lg text-sm mb-4">
+              {addError}
+            </div>
+          )}
 
           <div className="flex justify-end">
             <button type="submit" disabled={saving} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg">
