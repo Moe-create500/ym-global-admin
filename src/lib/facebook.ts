@@ -541,59 +541,89 @@ export async function createAdSet(
   return res.json();
 }
 
-// Create an ad creative (video ad)
+// Create an ad creative (video or image ad)
 export async function createAdCreative(
   adAccountId: string,
   accessToken: string,
   opts: {
     name: string;
     pageId: string;
-    videoId: string;
+    // Video creative fields
+    videoId?: string;
     thumbnailUrl?: string;
-    title: string;
-    message: string;
+    title?: string;
+    message?: string;
     linkDescription?: string;
-    ctaType: string;
-    ctaLink: string;
+    ctaType?: string;
+    ctaLink?: string;
+    // Image creative fields
+    imageHash?: string;
+    headline?: string;
+    primaryText?: string;
+    linkUrl?: string;
+    callToAction?: string;
   }
 ): Promise<{ id: string }> {
-  const videoData: any = {
-    video_id: opts.videoId,
-    title: opts.title,
-    message: opts.message,
-    call_to_action: {
-      type: opts.ctaType,
-      value: { link: opts.ctaLink },
-    },
-  };
+  let body: any;
 
-  // FB requires a thumbnail — use provided URL or auto-fetch from the video
-  if (opts.thumbnailUrl) {
-    videoData.image_url = opts.thumbnailUrl;
+  if (opts.imageHash) {
+    // Image ad creative
+    body = {
+      name: opts.name,
+      object_story_spec: {
+        page_id: opts.pageId,
+        link_data: {
+          image_hash: opts.imageHash,
+          link: opts.linkUrl || opts.ctaLink || '',
+          message: opts.primaryText || opts.message || '',
+          name: opts.headline || opts.title || '',
+          call_to_action: {
+            type: opts.callToAction || opts.ctaType || 'SHOP_NOW',
+            value: { link: opts.linkUrl || opts.ctaLink || '' },
+          },
+        },
+      },
+      access_token: accessToken,
+    };
   } else {
-    try {
-      const thumbRes = await fetch(
-        `${FB_GRAPH_URL}/${opts.videoId}?fields=thumbnails&access_token=${accessToken}`
-      );
-      if (thumbRes.ok) {
-        const thumbData = await thumbRes.json();
-        const autoThumb = thumbData.thumbnails?.data?.[0]?.uri;
-        if (autoThumb) videoData.image_url = autoThumb;
-      }
-    } catch {}
-  }
-  if (opts.linkDescription) {
-    videoData.link_description = opts.linkDescription;
-  }
+    // Video ad creative
+    const videoData: any = {
+      video_id: opts.videoId,
+      title: opts.title || '',
+      message: opts.message || '',
+      call_to_action: {
+        type: opts.ctaType || 'SHOP_NOW',
+        value: { link: opts.ctaLink || '' },
+      },
+    };
 
-  const body = {
-    name: opts.name,
-    object_story_spec: {
-      page_id: opts.pageId,
-      video_data: videoData,
-    },
-    access_token: accessToken,
-  };
+    if (opts.thumbnailUrl) {
+      videoData.image_url = opts.thumbnailUrl;
+    } else if (opts.videoId) {
+      try {
+        const thumbRes = await fetch(
+          `${FB_GRAPH_URL}/${opts.videoId}?fields=thumbnails&access_token=${accessToken}`
+        );
+        if (thumbRes.ok) {
+          const thumbData = await thumbRes.json();
+          const autoThumb = thumbData.thumbnails?.data?.[0]?.uri;
+          if (autoThumb) videoData.image_url = autoThumb;
+        }
+      } catch {}
+    }
+    if (opts.linkDescription) {
+      videoData.link_description = opts.linkDescription;
+    }
+
+    body = {
+      name: opts.name,
+      object_story_spec: {
+        page_id: opts.pageId,
+        video_data: videoData,
+      },
+      access_token: accessToken,
+    };
+  }
 
   const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/adcreatives`, {
     method: 'POST',
