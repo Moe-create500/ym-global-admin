@@ -641,14 +641,15 @@ export async function createAd(
   accessToken: string,
   opts: {
     name: string;
-    adsetId: string;
+    adsetId?: string;
+    adSetId?: string;
     creativeId: string;
     status: 'PAUSED' | 'ACTIVE';
   }
 ): Promise<{ id: string }> {
   const body = {
     name: opts.name,
-    adset_id: opts.adsetId,
+    adset_id: opts.adsetId || opts.adSetId,
     creative: { creative_id: opts.creativeId },
     status: opts.status,
     access_token: accessToken,
