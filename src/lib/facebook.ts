@@ -562,6 +562,7 @@ export async function createAdCreative(
     primaryText?: string;
     linkUrl?: string;
     callToAction?: string;
+    description?: string;
   }
 ): Promise<{ id: string }> {
   let body: any;
