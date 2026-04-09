@@ -1,29 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server';
-import crypto from 'crypto';
 
 const AUTH_COOKIE = 'ym_auth';
 
-function verifyToken(token: string): boolean {
+// HMAC-SHA256 using Web Crypto API (Edge Runtime compatible)
+async function hmacSha256(key: string, message: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(key),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signature = await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(message));
+  return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function verifyToken(token: string): Promise<boolean> {
   const secret = process.env.SESSION_SECRET || process.env.DASHBOARD_PASSWORD || 'ym-global-secret';
   const parts = token.split('.');
   if (parts.length !== 4) return false;
   const [employeeId, role, timestamp, signature] = parts;
   const payload = `${employeeId}.${role}.${timestamp}`;
-  const expected = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+  const expected = await hmacSha256(secret, payload);
   if (signature !== expected) return false;
   const age = Date.now() - parseInt(timestamp, 10);
   return age <= 30 * 24 * 60 * 60 * 1000;
 }
 
-function isValidAuth(token: string): boolean {
+async function isValidAuth(token: string): Promise<boolean> {
   // New session token
-  if (verifyToken(token)) return true;
+  if (await verifyToken(token)) return true;
   // Legacy shared password
   const storedHash = process.env.DASHBOARD_PASSWORD || '';
   return token === storedHash;
 }
 
-export function middleware(req: NextRequest) {
+export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // Public paths
@@ -43,7 +56,7 @@ export function middleware(req: NextRequest) {
   // API routes: check cookie
   if (pathname.startsWith('/api/')) {
     const cookie = req.cookies.get(AUTH_COOKIE)?.value;
-    if (cookie && isValidAuth(cookie)) {
+    if (cookie && await isValidAuth(cookie)) {
       return NextResponse.next();
     }
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -51,7 +64,7 @@ export function middleware(req: NextRequest) {
 
   // Page routes: check cookie
   const cookie = req.cookies.get(AUTH_COOKIE)?.value;
-  if (!cookie || !isValidAuth(cookie)) {
+  if (!cookie || !(await isValidAuth(cookie))) {
     return NextResponse.redirect(new URL('/login', req.url));
   }
 

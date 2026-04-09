@@ -631,6 +631,27 @@ export async function createAd(
   return res.json();
 }
 
+// Upload image to ad account (returns image hash for ad creative)
+export async function uploadAdImage(
+  adAccountId: string,
+  accessToken: string,
+  imageUrl: string
+): Promise<{ hash: string }> {
+  const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/adimages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: imageUrl,
+      access_token: accessToken,
+    }),
+  });
+  if (!res.ok) throw new Error(`FB image upload failed: ${await res.text()}`);
+  const data = await res.json();
+  const images = data.images || {};
+  const firstKey = Object.keys(images)[0];
+  return { hash: images[firstKey]?.hash || '' };
+}
+
 // Upload video from buffer (binary upload — no public URL needed)
 export async function uploadVideoFromBuffer(
   adAccountId: string,
