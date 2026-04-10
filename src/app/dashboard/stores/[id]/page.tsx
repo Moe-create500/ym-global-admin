@@ -121,7 +121,7 @@ export default function StoreDetailPage() {
   const storeId = params.id as string;
 
   const [store, setStore] = useState<Store | null>(null);
-  const [ssCharges, setSsCharges] = useState({ billed_cents: 0, balance_cents: 0, charged_cents: 0, estimated_cents: 0, total_cents: 0 });
+  const [ssCharges, setSsCharges] = useState({ billed_cents: 0, balance_cents: 0, charged_cents: 0, estimated_cents: 0, estimated_order_count: 0, total_cents: 0 });
   const [activeTab, setActiveTab] = useState<'pnl' | 'orders' | 'fulfillment' | 'chargebacks' | 'inventory'>('pnl');
 
   // Chargebacks state
@@ -705,6 +705,7 @@ export default function StoreDetailPage() {
             <div>
               <p className="text-[10px] text-slate-500">Estimated (Unfulfilled Orders)</p>
               <p className="text-lg font-semibold text-yellow-400">{cents(ssCharges.estimated_cents)}</p>
+              <p className="text-[10px] text-slate-500 mt-0.5">{ssCharges.estimated_order_count.toLocaleString()} orders</p>
             </div>
           </div>
 
