@@ -632,9 +632,21 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
         }
 
         // If there's only ONE payment method on the account, we know all charges used it
-        const singleCard = paymentMethods.length === 1 && paymentMethods[0].card_last4
+        let singleCard = paymentMethods.length === 1 && paymentMethods[0].card_last4
           ? { display_string: paymentMethods[0].display_string, card_last4: paymentMethods[0].card_last4 }
           : null;
+
+        // Fallback: if getAccountPaymentMethods returned empty, use getFundingSource (current card)
+        // This is better than no card at all for single-card accounts
+        if (paymentMethods.length === 0) {
+          const fundingSource = await getFundingSource(profile.ad_account_id, profile.access_token);
+          if (fundingSource?.display_string) {
+            const cardMatch = fundingSource.display_string.match(/(\d{4})\s*$/);
+            if (cardMatch) {
+              singleCard = { display_string: fundingSource.display_string, card_last4: cardMatch[1] };
+            }
+          }
+        }
 
         for (const charge of charges) {
           const existingPayment = db.prepare('SELECT id FROM ad_payments WHERE transaction_id = ?').get(charge.transaction_id);
