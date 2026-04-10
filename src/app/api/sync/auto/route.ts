@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getStaleStores, syncStore, syncFacebookAds } from '@/lib/sync';
-import { getNewClientOrders, getClientBillingConfig } from '@/lib/shipsourced';
+import { getNewClientOrders, getClientBillingConfig, getAllClientOrdersList } from '@/lib/shipsourced';
 import { getDisputes } from '@/lib/chargeflow';
 import crypto from 'crypto';
 
@@ -150,6 +150,47 @@ async function pullNewOrders(storeId: string, clientId: string) {
   return { imported };
 }
 
+// Update fulfillment statuses for orders still marked as unfulfilled
+async function updateUnfulfilledStatuses(storeId: string, clientId: string) {
+  const db = getDb();
+
+  // Get order numbers that are still unfulfilled locally
+  const unfulfilled: any[] = db.prepare(
+    "SELECT order_number FROM orders WHERE store_id = ? AND fulfillment_status IN ('unfulfilled', 'partial')"
+  ).all(storeId);
+
+  if (unfulfilled.length === 0) return { updated: 0 };
+
+  const unfulfilledMap = new Map(unfulfilled.map((r: any) => [r.order_number, true]));
+
+  // Pull all orders from ShipSourced and check statuses
+  const ssOrders = await getAllClientOrdersList(clientId);
+
+  const updateStmt = db.prepare(
+    'UPDATE orders SET fulfillment_status = ?, ss_charge_is_estimate = 0 WHERE store_id = ? AND order_number = ?'
+  );
+
+  let updated = 0;
+  for (const order of ssOrders) {
+    const rawExtId = order.externalOrderId || '';
+    const hashIdx = rawExtId.lastIndexOf('#');
+    let orderNumber = hashIdx >= 0 ? rawExtId.slice(hashIdx + 1) : rawExtId;
+    orderNumber = orderNumber.replace(/^(SHIPHERO-|SH-)?/, '').trim();
+    if (!orderNumber || !unfulfilledMap.has(orderNumber)) continue;
+
+    const newStatus = order.status === 'SHIPPED' ? 'fulfilled'
+      : order.status === 'NEW' ? 'unfulfilled'
+      : (order.status || '').toLowerCase();
+
+    if (newStatus !== 'unfulfilled' && newStatus !== 'partial') {
+      updateStmt.run(newStatus, storeId, orderNumber);
+      updated++;
+    }
+  }
+
+  return { updated };
+}
+
 // Called by the dashboard on load to sync stale stores + Facebook ads
 export async function POST() {
   const stale = getStaleStores(60); // stores not synced in last 60 minutes
@@ -167,10 +208,15 @@ export async function POST() {
   ).all();
 
   let totalPulled = 0;
+  let totalStatusUpdated = 0;
   for (const s of activeStores) {
     try {
       const pullResult = await pullNewOrders(s.id, s.shipsourced_client_id);
       totalPulled += pullResult.imported;
+    } catch {}
+    try {
+      const statusResult = await updateUnfulfilledStatuses(s.id, s.shipsourced_client_id);
+      totalStatusUpdated += statusResult.updated;
     } catch {}
   }
 
@@ -260,7 +306,7 @@ export async function POST() {
   const fbResult = await syncFacebookAds(60);
 
   const totalSynced = results.reduce((sum, r) => sum + r.synced, 0);
-  const anythingSynced = stale.length > 0 || fbResult.synced > 0 || totalPulled > 0 || cfImported > 0;
+  const anythingSynced = stale.length > 0 || fbResult.synced > 0 || totalPulled > 0 || cfImported > 0 || totalStatusUpdated > 0;
 
   if (!anythingSynced) {
     return NextResponse.json({ synced: false, message: 'All stores up to date' });
@@ -271,6 +317,7 @@ export async function POST() {
     staleStores: stale.length,
     recordsSynced: totalSynced,
     ordersPulled: totalPulled,
+    ordersStatusUpdated: totalStatusUpdated,
     chargeflowSynced: cfImported,
     fbAdsSynced: fbResult.synced,
     fbInvoicesImported: fbResult.invoicesImported,
