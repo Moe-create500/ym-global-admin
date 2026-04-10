@@ -13,7 +13,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
   const ssBreakdown: any = db.prepare(`
     SELECT
       SUM(CASE WHEN ss_charge_is_estimate = 0 THEN ss_charge_cents ELSE 0 END) as charged_cents,
-      SUM(CASE WHEN ss_charge_is_estimate = 1 THEN ss_charge_cents ELSE 0 END) as estimated_cents,
+      SUM(CASE WHEN ss_charge_is_estimate = 1 AND fulfillment_status IN ('unfulfilled', 'partial') THEN ss_charge_cents ELSE 0 END) as estimated_cents,
       SUM(ss_charge_cents) as total_cents
     FROM orders WHERE store_id = ? AND ss_charge_cents > 0
   `).get(params.id);
