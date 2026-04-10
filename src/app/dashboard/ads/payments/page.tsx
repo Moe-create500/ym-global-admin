@@ -400,7 +400,7 @@ function InvoiceDashboardContent() {
             </button>
             {importResult && (
               <span className={`text-xs ${importResult.success ? 'text-emerald-400' : 'text-red-400'}`}>
-                {importResult.success ? `${importResult.imported} imported, ${importResult.duplicates} duplicates skipped` : importResult.error || 'Failed'}
+                {importResult.success ? `${importResult.imported} imported, ${importResult.updated || 0} updated, ${importResult.duplicates} unchanged` : importResult.error || 'Failed'}
               </span>
             )}
           </div>

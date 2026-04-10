@@ -1,6 +1,6 @@
 import { getDb } from '@/lib/db';
 import { getClientBilling, getClientOrders } from '@/lib/shipsourced';
-import { getAdInsights, getAdCreatives, getBillingCharges, getFundingSource, getVideoSourceUrls, getPages } from '@/lib/facebook';
+import { getAdInsights, getAdCreatives, getBillingCharges, getFundingSource, getAccountPaymentMethods, getVideoSourceUrls, getPages } from '@/lib/facebook';
 import crypto from 'crypto';
 
 /**
@@ -620,19 +620,47 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
       try {
         const chargesFrom = profile.last_sync_at ? from : '2024-01-01';
         const charges = await getBillingCharges(profile.ad_account_id, profile.access_token, chargesFrom);
-        const fundingSource = await getFundingSource(profile.ad_account_id, profile.access_token);
-        const paymentMethod = fundingSource?.display_string || '';
-        const cardMatch = paymentMethod.match(/(\d{4})\s*$/);
-        const cardLast4 = cardMatch ? cardMatch[1] : '';
+
+        // Get ALL payment methods on the account (not just current one)
+        const paymentMethods = await getAccountPaymentMethods(profile.ad_account_id, profile.access_token);
+        // Build a map: funding_source_id → { display_string, card_last4 }
+        const pmById = new Map<string, { display_string: string; card_last4: string }>();
+        for (const pm of paymentMethods) {
+          if (pm.id && pm.card_last4) {
+            pmById.set(pm.id, { display_string: pm.display_string, card_last4: pm.card_last4 });
+          }
+        }
+
+        // If there's only ONE payment method on the account, we know all charges used it
+        const singleCard = paymentMethods.length === 1 && paymentMethods[0].card_last4
+          ? { display_string: paymentMethods[0].display_string, card_last4: paymentMethods[0].card_last4 }
+          : null;
 
         for (const charge of charges) {
           const existingPayment = db.prepare('SELECT id FROM ad_payments WHERE transaction_id = ?').get(charge.transaction_id);
           if (existingPayment) continue;
+
+          // Try to determine which card was used for this specific charge:
+          // 1. If the charge has a funding_source_id, match it to a payment method
+          // 2. If only one payment method exists on the account, use that
+          // 3. Otherwise, leave card as null (unknown) — CSV import can fill it later
+          let chargePaymentMethod = '';
+          let chargeCardLast4 = '';
+          if (charge.funding_source_id && pmById.has(charge.funding_source_id)) {
+            const pm = pmById.get(charge.funding_source_id)!;
+            chargePaymentMethod = pm.display_string;
+            chargeCardLast4 = pm.card_last4;
+          } else if (singleCard) {
+            chargePaymentMethod = singleCard.display_string;
+            chargeCardLast4 = singleCard.card_last4;
+          }
+          // If neither condition met, card_last4 stays empty — much better than wrong card
+
           db.prepare(`
             INSERT INTO ad_payments (id, store_id, platform, date, transaction_id, payment_method, card_last4, amount_cents, currency, status, account_id)
             VALUES (?, ?, 'facebook', ?, ?, ?, ?, ?, ?, 'paid', ?)
           `).run(crypto.randomUUID(), profile.store_id, charge.date,
-            charge.transaction_id, paymentMethod, cardLast4,
+            charge.transaction_id, chargePaymentMethod || null, chargeCardLast4 || null,
             charge.amount_cents, charge.currency, profile.ad_account_id);
           invoicesImported++;
         }

@@ -350,6 +350,7 @@ export interface FBBillingCharge {
   amount_cents: number;
   currency: string;
   transaction_id: string;
+  funding_source_id?: string;
 }
 
 export async function getBillingCharges(
@@ -378,6 +379,7 @@ export async function getBillingCharges(
           amount_cents: extra.new_value,
           currency: extra.currency || 'USD',
           transaction_id: extra.transaction_id,
+          funding_source_id: extra.funding_source_id || extra.payment_method_id || undefined,
         });
       } catch {
         continue;
@@ -388,6 +390,41 @@ export async function getBillingCharges(
   }
 
   return allCharges;
+}
+
+// Get ALL payment methods on an ad account (not just the current one)
+export interface FBPaymentMethod {
+  id: string;
+  display_string: string;
+  type: number;
+  card_last4?: string;
+}
+
+export async function getAccountPaymentMethods(
+  adAccountId: string,
+  accessToken: string
+): Promise<FBPaymentMethod[]> {
+  try {
+    const res = await fetch(
+      `${FB_GRAPH_URL}/${adAccountId}?fields=all_payment_methods{pm_credit_card{display_string,exp_month,exp_year,is_verified}}&access_token=${accessToken}`
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    const methods: FBPaymentMethod[] = [];
+    const creditCards = data.all_payment_methods?.pm_credit_card?.data || [];
+    for (const card of creditCards) {
+      const match = (card.display_string || '').match(/(\d{4})\s*$/);
+      methods.push({
+        id: card.id || '',
+        display_string: card.display_string || '',
+        type: 1,
+        card_last4: match ? match[1] : undefined,
+      });
+    }
+    return methods;
+  } catch {
+    return [];
+  }
 }
 
 // Get ad account funding source (payment method on file)

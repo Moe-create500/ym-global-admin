@@ -5,6 +5,10 @@ import crypto from 'crypto';
 export const dynamic = 'force-dynamic';
 
 // Parse Facebook Meta invoice CSV
+// Handles TWO formats:
+//   Format A (multi-card): Date, Transaction ID, Payment Method, Amount, Currency
+//   Format B (single-card): Date, Transaction ID, Amount, Currency
+//     (has "Payment Method: ..." in header section for the single card)
 function parseFacebookCsv(csvText: string) {
   const lines = csvText.split('\n').map(l => l.trim());
   const payments: Array<{
@@ -19,18 +23,26 @@ function parseFacebookCsv(csvText: string) {
 
   // Extract account ID from header (line 5 typically: "Account: 1258726519186261,...")
   let accountId = '';
-  for (const line of lines.slice(0, 10)) {
-    const match = line.match(/Account:\s*(\d+)/);
-    if (match) {
-      accountId = match[1];
-      break;
+  let defaultPaymentMethod = '';
+  let defaultCardLast4 = '';
+  for (const line of lines.slice(0, 15)) {
+    const accMatch = line.match(/Account:\s*(\d+)/);
+    if (accMatch) {
+      accountId = accMatch[1];
+    }
+    // "Payment Method: American Express ···· 2976" line (single-card accounts)
+    const pmMatch = line.match(/Payment Method:\s*(.+)/);
+    if (pmMatch) {
+      defaultPaymentMethod = pmMatch[1].trim();
+      const cardMatch = defaultPaymentMethod.match(/(\d{4})\s*$/);
+      if (cardMatch) defaultCardLast4 = cardMatch[1];
     }
   }
 
   // Find the header row
   let headerIdx = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].startsWith('Date,Transaction ID,')) {
+    if (lines[i].startsWith('Date,Transaction ID')) {
       headerIdx = i;
       break;
     }
@@ -39,18 +51,31 @@ function parseFacebookCsv(csvText: string) {
     return { payments, accountId, error: 'Could not find header row (Date,Transaction ID,...)' };
   }
 
+  // Detect format: check if header has "Payment Method" column
+  const headerFields = parseCsvLine(lines[headerIdx]);
+  const hasPaymentMethodCol = headerFields.some(h => h.toLowerCase().includes('payment method'));
+
+  // Column indices based on format
+  const pmColIdx = hasPaymentMethodCol ? 2 : -1;
+  const amountColIdx = hasPaymentMethodCol ? 3 : 2;
+  const currencyColIdx = hasPaymentMethodCol ? 4 : 3;
+
   // Parse data rows after header
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const line = lines[i];
-    if (!line || line.startsWith(',,Total')) continue;
+    if (!line || line.toLowerCase().includes('total amount billed')) continue;
 
     // Parse CSV with quoted fields (amounts have commas like "2,000.00")
     const fields = parseCsvLine(line);
-    if (fields.length < 4) continue;
+    if (fields.length < (hasPaymentMethodCol ? 4 : 3)) continue;
 
-    const [dateStr, transactionId, paymentMethod, amountStr, currency] = fields;
+    const dateStr = fields[0];
+    const transactionId = fields[1];
+    const paymentMethod = pmColIdx >= 0 ? fields[pmColIdx] : defaultPaymentMethod;
+    const amountStr = fields[amountColIdx] || '';
+    const currency = fields[currencyColIdx] || 'USD';
 
-    // Skip if no date or transaction ID (summary rows)
+    // Skip if no date or transaction ID (summary/total rows)
     if (!dateStr || !transactionId) continue;
 
     // Skip declined
@@ -70,13 +95,13 @@ function parseFacebookCsv(csvText: string) {
     const amountCents = Math.round(amount * 100);
 
     // Extract card last 4 from payment method
-    const cardMatch = paymentMethod.match(/(\d{4})\s*$/);
-    const cardLast4 = cardMatch ? cardMatch[1] : '';
+    const cardMatch = (paymentMethod || '').match(/(\d{4})\s*$/);
+    const cardLast4 = cardMatch ? cardMatch[1] : (defaultCardLast4 || '');
 
     payments.push({
       date,
       transactionId: transactionId.trim(),
-      paymentMethod: paymentMethod.trim(),
+      paymentMethod: (paymentMethod || defaultPaymentMethod || '').trim(),
       cardLast4,
       amountCents,
       currency: (currency || 'USD').trim(),
@@ -230,31 +255,49 @@ export async function POST(req: NextRequest) {
   }
 
   let imported = 0;
+  let updated = 0;
   let duplicates = 0;
   let skipped = 0;
   const cardTotals: Record<string, { count: number; totalCents: number }> = {};
 
   for (const payment of parsed.payments) {
-    // Check for duplicate transaction
-    const existing = db.prepare(
-      'SELECT id FROM ad_payments WHERE transaction_id = ?'
+    // Check for existing transaction
+    const existing: any = db.prepare(
+      'SELECT id, card_last4, payment_method, amount_cents FROM ad_payments WHERE transaction_id = ?'
     ).get(payment.transactionId);
 
     if (existing) {
-      duplicates++;
-      continue;
+      // Update if card info is wrong/missing or amount differs
+      const needsUpdate = (payment.cardLast4 && existing.card_last4 !== payment.cardLast4) ||
+        (payment.paymentMethod && existing.payment_method !== payment.paymentMethod) ||
+        existing.amount_cents !== payment.amountCents;
+
+      if (needsUpdate) {
+        db.prepare(`
+          UPDATE ad_payments SET card_last4 = ?, payment_method = ?, amount_cents = ?, date = ?
+          WHERE id = ?
+        `).run(
+          payment.cardLast4 || existing.card_last4,
+          payment.paymentMethod || existing.payment_method,
+          payment.amountCents,
+          payment.date,
+          existing.id
+        );
+        updated++;
+      } else {
+        duplicates++;
+      }
+    } else {
+      db.prepare(`
+        INSERT INTO ad_payments (id, store_id, platform, date, transaction_id, payment_method, card_last4, amount_cents, currency, status, account_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'paid', ?)
+      `).run(
+        crypto.randomUUID(), storeId, platform, payment.date,
+        payment.transactionId, payment.paymentMethod, payment.cardLast4,
+        payment.amountCents, payment.currency, payment.accountId
+      );
+      imported++;
     }
-
-    db.prepare(`
-      INSERT INTO ad_payments (id, store_id, platform, date, transaction_id, payment_method, card_last4, amount_cents, currency, status, account_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'paid', ?)
-    `).run(
-      crypto.randomUUID(), storeId, platform, payment.date,
-      payment.transactionId, payment.paymentMethod, payment.cardLast4,
-      payment.amountCents, payment.currency, payment.accountId
-    );
-
-    imported++;
 
     // Track card totals
     const cardKey = payment.cardLast4 || 'unknown';
@@ -272,6 +315,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     success: true,
     imported,
+    updated,
     duplicates,
     skipped,
     total: parsed.payments.length,
