@@ -131,6 +131,19 @@ export async function GET(req: NextRequest) {
     } catch {}
   }
 
+  // Roll up variant SKUs: "SKU-N" means N units of base "SKU"
+  const variantSoldMap: Record<string, number> = {};
+  for (const [sku, qty] of Object.entries(soldMap)) {
+    const match = sku.match(/^(.+)-(\d+)$/);
+    if (match) {
+      const baseSku = match[1];
+      const multiplier = parseInt(match[2]);
+      if (multiplier > 0 && multiplier <= 100) {
+        variantSoldMap[baseSku] = (variantSoldMap[baseSku] || 0) + qty * multiplier;
+      }
+    }
+  }
+
   let inventoryAssetCents = 0;
   let inventoryCostBasis = 0;
   const productMap: Record<string, { purchased: number; cost: number }> = {};
@@ -142,7 +155,7 @@ export async function GET(req: NextRequest) {
   }
   for (const [key, data] of Object.entries(productMap)) {
     const avgCost = data.purchased > 0 ? Math.round(data.cost / data.purchased) : 0;
-    const sold = soldMap[key] || 0;
+    const sold = (soldMap[key] || 0) + (variantSoldMap[key] || 0);
     const remaining = Math.max(0, data.purchased - sold);
     inventoryAssetCents += remaining * avgCost;
     inventoryCostBasis += data.cost;
