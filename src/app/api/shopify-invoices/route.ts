@@ -232,7 +232,7 @@ function parseChargeflowCsv(lines: string[], headers: string[]) {
 
 // POST: Import invoices CSV (auto-detects Shopify or Chargeflow)
 export async function POST(req: NextRequest) {
-  const { storeId, csvText, source: forcedSource, employeeId, fileName } = await req.json();
+  const { storeId, csvText, source: forcedSource, employeeId, fileName, billingInfo } = await req.json();
   if (!storeId || !csvText) {
     return NextResponse.json({ error: 'storeId and csvText required' }, { status: 400 });
   }
@@ -318,8 +318,21 @@ export async function POST(req: NextRequest) {
     imported++;
   }
 
+  // Apply billing info (payment method, card) if provided
+  let billingUpdated = 0;
+  if (billingInfo && typeof billingInfo === 'object') {
+    const updatePayment = db.prepare(
+      'UPDATE shopify_invoices SET payment_method = ?, card_last4 = ?, paid = 1 WHERE store_id = ? AND bill_number = ?'
+    );
+    for (const [billNumber, info] of Object.entries(billingInfo)) {
+      const bi = info as { method: string; card: string | null };
+      const result = updatePayment.run(bi.method || null, bi.card || null, storeId, billNumber);
+      if (result.changes > 0) billingUpdated++;
+    }
+  }
+
   // Rollup app costs into daily_pnl
-  if (imported > 0 || updated > 0) {
+  if (imported > 0 || updated > 0 || billingUpdated > 0) {
     rollUpAppCosts(db, storeId);
   }
 
@@ -334,7 +347,7 @@ export async function POST(req: NextRequest) {
   }
 
   return NextResponse.json({
-    success: true, format, imported, updated, duplicates, totalItems,
+    success: true, format, imported, updated, duplicates, totalItems, billingUpdated,
     total: parsed.invoices.length,
   });
 }
