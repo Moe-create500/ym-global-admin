@@ -79,7 +79,27 @@ export async function GET() {
     else if (pm.includes('paypal')) typeMap[ct.card_last4] = 'paypal';
   }
 
-  // 5. Merge everything per card_last4
+  // 5. Normalize card_last4: extract 4-digit number from compound values like "amex - 2976"
+  function normalizeLast4(raw: string): string | null {
+    if (!raw) return null;
+    const trimmed = raw.trim();
+    // Already a pure 4-digit number
+    if (/^\d{4}$/.test(trimmed)) return trimmed;
+    // Extract 4-digit number from compound like "amex - 2976", "Visa - 2976", "credit_card - 2976"
+    const match = trimmed.match(/(\d{4})/);
+    return match ? match[1] : null; // Skip non-numeric entries like "paypal", "credit"
+  }
+
+  // Also extract card type hint from compound card_last4 values
+  function typeHintFromRaw(raw: string): string | null {
+    const lower = raw.toLowerCase();
+    if (lower.includes('amex')) return 'amex';
+    if (lower.includes('mastercard')) return 'mastercard';
+    if (lower.includes('visa')) return 'visa';
+    return null;
+  }
+
+  // Merge everything per normalized card_last4
   const cardMap: Record<string, {
     card_last4: string;
     card_type: string;
@@ -89,6 +109,10 @@ export async function GET() {
     stores: Set<string>;
     platforms: Record<string, number>;
   }> = {};
+
+  function isValidDate(d: string | null): boolean {
+    return !!d && /^\d{4}-\d{2}-\d{2}/.test(d);
+  }
 
   function ensureCard(last4: string) {
     if (!cardMap[last4]) {
@@ -105,34 +129,49 @@ export async function GET() {
     return cardMap[last4];
   }
 
+  function updateLastUsed(c: typeof cardMap[string], date: string | null) {
+    if (isValidDate(date) && (!c.last_used || date! > c.last_used)) c.last_used = date;
+  }
+
   // Ad payments
   for (const row of adCards) {
-    const c = ensureCard(row.card_last4);
+    const last4 = normalizeLast4(row.card_last4);
+    if (!last4) continue;
+    const c = ensureCard(last4);
     c.total_spent_cents += row.total_cents || 0;
     c.transaction_count += row.txn_count || 0;
     c.platforms[row.platform] = (c.platforms[row.platform] || 0) + (row.total_cents || 0);
-    if (row.last_date && (!c.last_used || row.last_date > c.last_used)) c.last_used = row.last_date;
+    updateLastUsed(c, row.last_date);
     if (row.store_names) row.store_names.split(',').forEach((s: string) => c.stores.add(s));
   }
 
   // Shopify invoices
   for (const row of shopifyCards) {
-    const c = ensureCard(row.card_last4);
+    const last4 = normalizeLast4(row.card_last4);
+    if (!last4) continue;
+    const c = ensureCard(last4);
     c.total_spent_cents += row.total_cents || 0;
     c.transaction_count += row.txn_count || 0;
     c.platforms['shopify'] = (c.platforms['shopify'] || 0) + (row.total_cents || 0);
-    if (row.last_date && (!c.last_used || row.last_date > c.last_used)) c.last_used = row.last_date;
+    updateLastUsed(c, row.last_date);
     if (row.store_names) row.store_names.split(',').forEach((s: string) => c.stores.add(s));
   }
 
-  // Payment log
+  // Payment log — normalize and merge into proper card entries
   for (const row of logCards) {
-    const c = ensureCard(row.card_last4);
+    const last4 = normalizeLast4(row.card_last4);
+    if (!last4) continue;
+    const c = ensureCard(last4);
+    // Apply type hint from compound names like "amex - 2976"
+    if (c.card_type === 'unknown') {
+      const hint = typeHintFromRaw(row.card_last4);
+      if (hint) c.card_type = hint;
+    }
     c.total_spent_cents += row.total_cents || 0;
     c.transaction_count += row.txn_count || 0;
     const platform = row.category === 'ad' ? 'ad_payments' : 'app_payments';
     c.platforms[platform] = (c.platforms[platform] || 0) + (row.total_cents || 0);
-    if (row.last_date && (!c.last_used || row.last_date > c.last_used)) c.last_used = row.last_date;
+    updateLastUsed(c, row.last_date);
     if (row.store_names) row.store_names.split(',').forEach((s: string) => c.stores.add(s));
   }
 
