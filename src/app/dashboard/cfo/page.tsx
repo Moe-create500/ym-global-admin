@@ -31,6 +31,7 @@ interface CFOData {
   };
   liabilities: {
     fulfillment_owed_cents: number;
+    fulfillment_estimated_cents: number;
     ad_spend_pending_cents: number;
     fb_pending_balance_cents: number;
     app_invoices_due_cents: number;
@@ -321,13 +322,21 @@ function CFOContent() {
                   </tr>
                 </thead>
                 <tbody>
-                  {/* Fulfillment / COGS */}
+                  {/* Current Unpaid Fulfillment Bill */}
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                    <td className="px-5 py-3 text-white font-medium">Fulfillment (ShipSourced)</td>
+                    <td className="px-5 py-3 text-white font-medium">Current Unpaid Fulfillment Bill</td>
                     <td className="px-5 py-3 text-slate-400 text-xs">
-                      Balance: {cents(data.details.fulfillment.balance_cents)} · Est ({data.details.fulfillment.estimated_order_count} unfulfilled): {cents(data.details.fulfillment.estimated_cents)}
+                      ShipSourced balance owed
                     </td>
-                    <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(data.liabilities.fulfillment_owed_cents)}</td>
+                    <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(data.details.fulfillment.balance_cents)}</td>
+                  </tr>
+                  {/* Unfulfilled Orders Estimated Bill */}
+                  <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                    <td className="px-5 py-3 text-white font-medium">Unfulfilled Orders Est. Fulfillment Bill</td>
+                    <td className="px-5 py-3 text-slate-400 text-xs">
+                      {data.details.fulfillment.estimated_order_count} unfulfilled orders
+                    </td>
+                    <td className="px-5 py-3 text-right text-orange-400 font-medium">{cents(data.details.fulfillment.estimated_cents)}</td>
                   </tr>
 
                   {/* Ad Invoices Balance Due - Per Platform */}

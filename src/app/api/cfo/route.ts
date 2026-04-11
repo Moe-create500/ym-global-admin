@@ -232,12 +232,13 @@ export async function GET(req: NextRequest) {
   };
 
   const liabilities = {
-    fulfillment_owed_cents: fulfillment.total_owed_cents,
+    fulfillment_owed_cents: fulfillment.balance_cents,
+    fulfillment_estimated_cents: fulfillment.estimated_cents,
     ad_spend_pending_cents: adSpend.balance_due_cents,
     fb_pending_balance_cents: fbPendingBalanceCents,
     app_invoices_due_cents: appInvoices.balance_due_cents,
     loans_payable_cents: loans.borrowed_remaining_cents,
-    total_cents: fulfillment.total_owed_cents + adSpend.balance_due_cents + fbPendingBalanceCents + appInvoices.balance_due_cents + loans.borrowed_remaining_cents,
+    total_cents: fulfillment.balance_cents + fulfillment.estimated_cents + adSpend.balance_due_cents + fbPendingBalanceCents + appInvoices.balance_due_cents + loans.borrowed_remaining_cents,
   };
 
   const equity = assets.total_cents - liabilities.total_cents;
