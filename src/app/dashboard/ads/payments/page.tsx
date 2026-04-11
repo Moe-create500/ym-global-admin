@@ -529,7 +529,7 @@ function InvoiceDashboardContent() {
                           <td className="px-5 py-3 text-slate-400">····{cp.card_last4}</td>
                           <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(cp.amount_cents)}</td>
                           <td className="px-5 py-3 text-slate-400 text-xs">{cp.method || '—'}</td>
-                          <td className="px-5 py-3 text-slate-500 text-xs truncate max-w-[200px]">{cp.notes || '—'}</td>
+                          <td className="px-5 py-3 text-slate-500 text-xs whitespace-pre-wrap">{cp.notes || '—'}</td>
                           <td className="px-5 py-3">
                             <button onClick={() => handleDeleteCardPayment(cp.id)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
                           </td>
