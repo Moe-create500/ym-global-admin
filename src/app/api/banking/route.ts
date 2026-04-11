@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
   const storeId = req.nextUrl.searchParams.get('storeId');
   const db = getDb();
 
-  let where = 'WHERE status = ?';
+  let where = "WHERE status = ? AND account_type != 'credit'";
   const params: any[] = ['active'];
   if (storeId) { where += ' AND store_id = ?'; params.push(storeId); }
 
