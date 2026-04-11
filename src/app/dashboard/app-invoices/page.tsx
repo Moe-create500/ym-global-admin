@@ -465,7 +465,7 @@ function AppInvoicesContent() {
             {importResult && (
               <span className={`text-xs ${importResult.success ? 'text-emerald-400' : 'text-red-400'}`}>
                 {importResult.success
-                  ? `${importResult.imported} invoices imported (${importResult.format}), ${importResult.duplicates} duplicates skipped`
+                  ? `${importResult.imported} imported, ${importResult.updated || 0} updated (${importResult.format}), ${importResult.duplicates} unchanged`
                   : importResult.error || 'Failed'}
               </span>
             )}

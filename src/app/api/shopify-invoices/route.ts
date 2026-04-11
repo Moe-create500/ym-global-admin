@@ -275,9 +275,36 @@ export async function POST(req: NextRequest) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
+  let updated = 0;
   for (const inv of parsed.invoices) {
-    const existing = db.prepare('SELECT id FROM shopify_invoices WHERE store_id = ? AND bill_number = ?').get(storeId, inv.billNumber);
-    if (existing) { duplicates++; continue; }
+    const existing: any = db.prepare('SELECT id, total_cents, card_last4, payment_method FROM shopify_invoices WHERE store_id = ? AND bill_number = ?').get(storeId, inv.billNumber);
+    if (existing) {
+      // Update existing record if new data has better info (amount, card, payment method)
+      const needsUpdate = (inv.totalCents > 0 && existing.total_cents !== inv.totalCents) ||
+        (inv.cardLast4 && existing.card_last4 !== inv.cardLast4) ||
+        (inv.paymentMethod && existing.payment_method !== inv.paymentMethod);
+      if (needsUpdate) {
+        db.prepare(`UPDATE shopify_invoices SET total_cents = ?, payment_method = ?, card_last4 = ?, paid = ? WHERE id = ?`)
+          .run(
+            inv.totalCents > 0 ? inv.totalCents : existing.total_cents,
+            inv.paymentMethod || existing.payment_method,
+            inv.cardLast4 || existing.card_last4,
+            inv.paid ? 1 : 0,
+            existing.id
+          );
+        // Also update line item amounts
+        if (inv.totalCents > 0 && inv.items.length === 1) {
+          const existingItems: any[] = db.prepare('SELECT id FROM shopify_invoice_items WHERE invoice_id = ?').all(existing.id);
+          if (existingItems.length === 1) {
+            db.prepare('UPDATE shopify_invoice_items SET amount_cents = ? WHERE id = ?').run(inv.totalCents, existingItems[0].id);
+          }
+        }
+        updated++;
+      } else {
+        duplicates++;
+      }
+      continue;
+    }
 
     const invoiceId = crypto.randomUUID();
     insertInvoice.run(invoiceId, storeId, inv.billNumber, inv.date, inv.totalCents, inv.items.length,
@@ -292,12 +319,12 @@ export async function POST(req: NextRequest) {
   }
 
   // Rollup app costs into daily_pnl
-  if (imported > 0) {
+  if (imported > 0 || updated > 0) {
     rollUpAppCosts(db, storeId);
   }
 
   return NextResponse.json({
-    success: true, format, imported, duplicates, totalItems,
+    success: true, format, imported, updated, duplicates, totalItems,
     total: parsed.invoices.length,
   });
 }
