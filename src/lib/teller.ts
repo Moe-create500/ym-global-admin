@@ -60,11 +60,11 @@ function singleFetch<T>(accessToken: string, endpoint: string, options: TellerRe
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 async function tellerFetch<T>(accessToken: string, endpoint: string, options: TellerRequestOptions = {}): Promise<T> {
-  for (let attempt = 0; attempt < 4; attempt++) {
-    if (attempt > 0) await sleep(2000 * attempt); // backoff: 2s, 4s, 6s
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (attempt > 0) await sleep(3000 * attempt); // backoff: 3s, 6s, 9s, 12s
     const { data, statusCode, raw } = await singleFetch<T>(accessToken, endpoint, options);
     if (data !== undefined) return data;
-    if (statusCode === 429 && attempt < 3) continue; // retry on rate limit
+    if (statusCode === 429 && attempt < 4) continue; // retry on rate limit
     throw new Error(`Teller API ${statusCode}: ${raw}`);
   }
   throw new Error('Teller API: max retries exceeded');

@@ -76,7 +76,7 @@ export async function POST() {
 
   for (let ai = 0; ai < accounts.length; ai++) {
     const account = accounts[ai];
-    if (ai > 0) await sleep(2000); // pace between accounts
+    if (ai > 0) await sleep(3000); // pace between accounts
     try {
       // Sync balance
       try {
