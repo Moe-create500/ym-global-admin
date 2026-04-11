@@ -51,10 +51,30 @@ interface CFOData {
   };
 }
 
+interface OverviewStore {
+  store_id: string;
+  store_name: string;
+  has_snapshot: boolean;
+  snapshot_date: string | null;
+  assets_cents: number;
+  liabilities_cents: number;
+  equity_cents: number;
+  created_at: string | null;
+  equity_change_cents: number | null;
+}
+
+interface OverviewTotals {
+  total_assets_cents: number;
+  total_liabilities_cents: number;
+  total_equity_cents: number;
+  store_count: number;
+}
+
 function CFOContent() {
   const searchParams = useSearchParams();
   const storeId = searchParams.get('storeId') || '';
 
+  const [tab, setTab] = useState<'overview' | 'store'>(storeId ? 'store' : 'overview');
   const [data, setData] = useState<CFOData | null>(null);
   const [loading, setLoading] = useState(true);
   const [stores, setStores] = useState<{ id: string; name: string }[]>([]);
@@ -68,14 +88,33 @@ function CFOContent() {
   const [snapshotSaved, setSnapshotSaved] = useState('');
   const [snapshots, setSnapshots] = useState<{ id: string; snapshot_date: string; assets_cents: number; liabilities_cents: number; equity_cents: number; created_at: string }[]>([]);
 
+  // Overview state
+  const [overviewStores, setOverviewStores] = useState<OverviewStore[]>([]);
+  const [overviewTotals, setOverviewTotals] = useState<OverviewTotals | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+
   useEffect(() => {
     fetch('/api/stores').then(r => r.json()).then(d => setStores(d.stores || []));
   }, []);
 
   useEffect(() => {
-    if (storeId) loadData();
-    else { setData(null); setLoading(false); }
+    if (storeId) { setTab('store'); }
   }, [storeId]);
+
+  useEffect(() => {
+    if (tab === 'overview') loadOverview();
+    else if (storeId) loadData();
+    else { setData(null); setLoading(false); }
+  }, [tab, storeId]);
+
+  async function loadOverview() {
+    setOverviewLoading(true);
+    const res = await fetch('/api/cfo/overview');
+    const d = await res.json();
+    setOverviewStores(d.stores || []);
+    setOverviewTotals(d.totals || null);
+    setOverviewLoading(false);
+  }
 
   async function loadData() {
     setLoading(true);
@@ -145,12 +184,12 @@ function CFOContent() {
           <div>
             <h1 className="text-2xl font-bold text-white">CFO Dashboard</h1>
             <p className="text-sm text-slate-400 mt-1">
-              {selectedStore ? `${selectedStore.name} — Balance Sheet` : 'Select a store'}
+              {tab === 'overview' ? 'All Stores Overview' : selectedStore ? `${selectedStore.name} — Balance Sheet` : 'Select a store'}
             </p>
           </div>
-          <StoreSelector />
+          {tab === 'store' && <StoreSelector />}
         </div>
-        {data && (
+        {tab === 'store' && data && (
           <div className="flex items-center gap-3">
             {snapshotSaved && (
               <span className="text-xs text-emerald-400">Saved {snapshotSaved}</span>
@@ -169,7 +208,132 @@ function CFOContent() {
         )}
       </div>
 
-      {!storeId ? (
+      {/* Tabs */}
+      <div className="flex gap-1 mb-6 bg-slate-900 border border-slate-800 rounded-lg p-1 w-fit">
+        <button
+          onClick={() => setTab('overview')}
+          className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+            tab === 'overview' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          OVERVIEW CFO&apos;S
+        </button>
+        <button
+          onClick={() => setTab('store')}
+          className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+            tab === 'store' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          Store Detail
+        </button>
+      </div>
+
+      {/* OVERVIEW TAB */}
+      {tab === 'overview' ? (
+        overviewLoading ? (
+          <div className="flex items-center justify-center h-32">
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400" />
+          </div>
+        ) : (
+          <>
+            {/* Overview KPIs */}
+            {overviewTotals && overviewTotals.store_count > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-6">
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Stores with Snapshots</p>
+                  <p className="text-2xl font-bold text-white">{overviewTotals.store_count}</p>
+                </div>
+                <div className="bg-slate-900 border border-emerald-900/50 rounded-xl p-5">
+                  <p className="text-xs text-emerald-500 uppercase tracking-wider mb-2">Total Assets</p>
+                  <p className="text-2xl font-bold text-emerald-400">{cents(overviewTotals.total_assets_cents)}</p>
+                </div>
+                <div className="bg-slate-900 border border-red-900/50 rounded-xl p-5">
+                  <p className="text-xs text-red-500 uppercase tracking-wider mb-2">Total Liabilities</p>
+                  <p className="text-2xl font-bold text-red-400">{cents(overviewTotals.total_liabilities_cents)}</p>
+                </div>
+                <div className={`bg-slate-900 border rounded-xl p-5 ${overviewTotals.total_equity_cents >= 0 ? 'border-blue-900/50' : 'border-orange-900/50'}`}>
+                  <p className="text-xs text-blue-500 uppercase tracking-wider mb-2">Combined Equity</p>
+                  <p className={`text-2xl font-bold ${overviewTotals.total_equity_cents >= 0 ? 'text-blue-400' : 'text-orange-400'}`}>
+                    {cents(overviewTotals.total_equity_cents)}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* All Stores Table */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-800">
+                <h2 className="text-sm font-semibold text-white">All Stores — Most Recent Snapshot</h2>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
+                      <th className="text-left px-5 py-3">Store</th>
+                      <th className="text-left px-5 py-3">Snapshot Date</th>
+                      <th className="text-right px-5 py-3">Assets</th>
+                      <th className="text-right px-5 py-3">Liabilities</th>
+                      <th className="text-right px-5 py-3">Equity</th>
+                      <th className="text-right px-5 py-3">Change</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {overviewStores.filter(s => s.has_snapshot).map(s => (
+                      <tr key={s.store_id} className="border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer"
+                        onClick={() => {
+                          const url = new URL(window.location.href);
+                          url.searchParams.set('storeId', s.store_id);
+                          window.history.pushState({}, '', url.toString());
+                          setTab('store');
+                          window.dispatchEvent(new PopStateEvent('popstate'));
+                          window.location.href = `/dashboard/cfo?storeId=${s.store_id}`;
+                        }}
+                      >
+                        <td className="px-5 py-3 text-white font-medium">{s.store_name}</td>
+                        <td className="px-5 py-3 text-slate-400 text-xs">
+                          {s.snapshot_date}
+                          {s.created_at && <span className="text-slate-600 ml-2">{s.created_at.slice(11, 16)}</span>}
+                        </td>
+                        <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(s.assets_cents)}</td>
+                        <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(s.liabilities_cents)}</td>
+                        <td className={`px-5 py-3 text-right font-bold ${s.equity_cents >= 0 ? 'text-blue-400' : 'text-orange-400'}`}>
+                          {cents(s.equity_cents)}
+                        </td>
+                        <td className="px-5 py-3 text-right">
+                          {s.equity_change_cents !== null ? (
+                            <span className={`text-xs font-medium ${s.equity_change_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                              {s.equity_change_cents >= 0 ? '+' : ''}{cents(s.equity_change_cents)}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-slate-600">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                    {overviewStores.filter(s => !s.has_snapshot).length > 0 && (
+                      <>
+                        <tr>
+                          <td colSpan={6} className="px-5 py-2 text-[10px] text-slate-600 uppercase tracking-wider bg-slate-800/20">No Snapshot Yet</td>
+                        </tr>
+                        {overviewStores.filter(s => !s.has_snapshot).map(s => (
+                          <tr key={s.store_id} className="border-b border-slate-800/50">
+                            <td className="px-5 py-3 text-slate-500">{s.store_name}</td>
+                            <td className="px-5 py-3 text-slate-600 text-xs">—</td>
+                            <td className="px-5 py-3 text-right text-slate-600">—</td>
+                            <td className="px-5 py-3 text-right text-slate-600">—</td>
+                            <td className="px-5 py-3 text-right text-slate-600">—</td>
+                            <td className="px-5 py-3 text-right text-slate-600">—</td>
+                          </tr>
+                        ))}
+                      </>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )
+      ) : !storeId ? (
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 text-center">
           <p className="text-slate-400">Select a store to view the balance sheet</p>
         </div>
