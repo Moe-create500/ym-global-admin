@@ -20,6 +20,9 @@ export function getDb(): Database.Database {
     if (!cols.find((c: any) => c.name === 'amazon_category')) {
       _db.exec("ALTER TABLE stores ADD COLUMN amazon_category TEXT DEFAULT NULL");
     }
+    if (!cols.find((c: any) => c.name === 'dashboard_hidden')) {
+      _db.exec("ALTER TABLE stores ADD COLUMN dashboard_hidden INTEGER DEFAULT 0");
+    }
 
     // Migration: add platform to card_payments_log
     const cplCols = _db.prepare("PRAGMA table_info(card_payments_log)").all() as any[];

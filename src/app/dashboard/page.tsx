@@ -172,7 +172,8 @@ function DashboardContent() {
     );
   }
 
-  const displayStores = storeId ? stores.filter(s => s.id === storeId) : stores;
+  const visibleStores = stores.filter(s => !(s as any).dashboard_hidden);
+  const displayStores = storeId ? stores.filter(s => s.id === storeId) : visibleStores;
 
   const kpis = [
     { label: 'Revenue', value: cents(totals?.revenue_cents || 0), color: 'text-white' },
@@ -287,7 +288,7 @@ function DashboardContent() {
               <h2 className="text-sm font-semibold text-white">Stores ({rangeLabel})</h2>
               <div className="flex bg-slate-800 rounded-lg p-0.5">
                 {(['all', 'shopify', 'amazon', 'ebay'] as const).map((p) => {
-                  const count = p === 'all' ? stores.length : stores.filter(s => s.platform === p).length;
+                  const count = p === 'all' ? visibleStores.length : visibleStores.filter(s => s.platform === p).length;
                   if (p !== 'all' && count === 0) return null;
                   const labels: Record<string, string> = { all: 'All', shopify: 'Shopify', amazon: 'Amazon', ebay: 'eBay' };
                   return (
@@ -312,7 +313,7 @@ function DashboardContent() {
               View All →
             </Link>
           </div>
-          {stores.length === 0 ? (
+          {visibleStores.length === 0 ? (
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
               <p className="text-slate-400 mb-3">No stores configured yet</p>
               <Link href="/dashboard/stores" className="inline-block px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg">
@@ -321,7 +322,7 @@ function DashboardContent() {
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {stores.filter(s => platformFilter === 'all' || s.platform === platformFilter).map((store) => {
+              {visibleStores.filter(s => platformFilter === 'all' || s.platform === platformFilter).map((store) => {
                 const margin = (store.mtd_revenue || 0) > 0
                   ? ((store.mtd_profit || 0) / (store.mtd_revenue || 1)) * 100
                   : 0;
