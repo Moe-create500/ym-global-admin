@@ -72,7 +72,11 @@ export async function POST() {
   let totalTxns = 0;
   const errors: string[] = [];
 
-  for (const account of accounts) {
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+  for (let ai = 0; ai < accounts.length; ai++) {
+    const account = accounts[ai];
+    if (ai > 0) await sleep(2000); // pace between accounts
     try {
       // Sync balance
       try {
@@ -88,6 +92,7 @@ export async function POST() {
         errors.push(`${account.account_name}: balance error - ${balErr.message}`);
       }
 
+      await sleep(1000); // pace between balance and transactions
       // Sync ALL transactions (paginated)
       try {
         const txns = await getAllAccountTransactions(account.access_token, account.teller_account_id);

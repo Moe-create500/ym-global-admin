@@ -24,10 +24,9 @@ interface TellerRequestOptions {
   body?: any;
 }
 
-async function tellerFetch<T>(accessToken: string, endpoint: string, options: TellerRequestOptions = {}): Promise<T> {
+function singleFetch<T>(accessToken: string, endpoint: string, options: TellerRequestOptions = {}): Promise<{ data?: T; statusCode?: number; raw?: string }> {
   const url = `${TELLER_API_URL}${endpoint}`;
 
-  // Use Node's https module for mTLS
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
     const reqOptions: https.RequestOptions = {
@@ -45,12 +44,7 @@ async function tellerFetch<T>(accessToken: string, endpoint: string, options: Te
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
-        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-          try { resolve(JSON.parse(data)); }
-          catch { reject(new Error(`Teller API: invalid JSON response`)); }
-        } else {
-          reject(new Error(`Teller API ${res.statusCode}: ${data}`));
-        }
+        resolve({ statusCode: res.statusCode, raw: data, data: res.statusCode && res.statusCode >= 200 && res.statusCode < 300 ? JSON.parse(data) : undefined });
       });
     });
 
@@ -61,6 +55,19 @@ async function tellerFetch<T>(accessToken: string, endpoint: string, options: Te
     }
     req.end();
   });
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+async function tellerFetch<T>(accessToken: string, endpoint: string, options: TellerRequestOptions = {}): Promise<T> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) await sleep(2000 * attempt); // backoff: 2s, 4s, 6s
+    const { data, statusCode, raw } = await singleFetch<T>(accessToken, endpoint, options);
+    if (data !== undefined) return data;
+    if (statusCode === 429 && attempt < 3) continue; // retry on rate limit
+    throw new Error(`Teller API ${statusCode}: ${raw}`);
+  }
+  throw new Error('Teller API: max retries exceeded');
 }
 
 export interface TellerAccount {
@@ -112,6 +119,7 @@ export async function getAllAccountTransactions(accessToken: string, accountId: 
   const pageSize = 250;
 
   for (let i = 0; i < 50; i++) { // safety cap at 50 pages (~12,500 txns)
+    if (i > 0) await sleep(1000); // pace between pages
     let url = `/accounts/${accountId}/transactions?count=${pageSize}`;
     if (fromId) url += `&from_id=${fromId}`;
 
