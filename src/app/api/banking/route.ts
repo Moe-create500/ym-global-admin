@@ -12,7 +12,8 @@ export async function GET(req: NextRequest) {
 
   let where = "WHERE status = ? AND account_type != 'credit'";
   const params: any[] = ['active'];
-  if (storeId) { where += ' AND (store_id = ? OR is_global = 1)'; params.push(storeId); }
+  if (storeId) { where += ' AND store_id = ? AND (is_global IS NULL OR is_global = 0)'; params.push(storeId); }
+  // When no storeId filter, show everything including global accounts
 
   const accounts = db.prepare(`SELECT * FROM bank_accounts ${where} ORDER BY institution_name, account_name`).all(...params);
 
