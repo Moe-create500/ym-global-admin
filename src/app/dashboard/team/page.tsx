@@ -18,6 +18,7 @@ interface Employee {
 export default function TeamPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
+  const [uploads, setUploads] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -30,14 +31,17 @@ export default function TeamPage() {
 
   async function loadData() {
     setLoading(true);
-    const [empRes, storeRes] = await Promise.all([
+    const [empRes, storeRes, uploadRes] = await Promise.all([
       fetch('/api/employees'),
       fetch('/api/stores'),
+      fetch('/api/employee/uploads?limit=50'),
     ]);
     const empData = await empRes.json();
     const storeData = await storeRes.json();
+    const uploadData = await uploadRes.json();
     setEmployees(empData.employees || []);
     setStores(storeData.stores || []);
+    setUploads(uploadData.uploads || []);
     setLoading(false);
   }
 
@@ -245,6 +249,53 @@ export default function TeamPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Upload Activity */}
+      {uploads.length > 0 && (
+        <div className="mt-8">
+          <h2 className="text-lg font-bold text-white mb-4">Upload Activity</h2>
+          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
+                    <th className="text-left px-5 py-3">Date</th>
+                    <th className="text-left px-5 py-3">Employee</th>
+                    <th className="text-left px-5 py-3">Store</th>
+                    <th className="text-left px-5 py-3">File</th>
+                    <th className="text-left px-5 py-3">Type</th>
+                    <th className="text-center px-5 py-3">Records</th>
+                    <th className="text-center px-5 py-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {uploads.map((u: any) => (
+                    <tr key={u.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className="px-5 py-3 text-slate-400 text-xs">{u.created_at?.split('T')[0] || u.created_at}</td>
+                      <td className="px-5 py-3 text-white">{u.employee_name}</td>
+                      <td className="px-5 py-3 text-slate-300">{u.store_name}</td>
+                      <td className="px-5 py-3 text-slate-400 text-xs font-mono truncate max-w-[150px]">{u.file_name}</td>
+                      <td className="px-5 py-3">
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${
+                          u.file_type === 'chargeflow' ? 'bg-violet-900/30 text-violet-400' : 'bg-emerald-900/30 text-emerald-400'
+                        }`}>{u.file_type}</span>
+                      </td>
+                      <td className="px-5 py-3 text-center text-slate-300 text-xs">
+                        {u.records_imported} new{u.records_updated > 0 ? `, ${u.records_updated} upd` : ''}{u.records_duplicate > 0 ? `, ${u.records_duplicate} dup` : ''}
+                      </td>
+                      <td className="px-5 py-3 text-center">
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${
+                          u.status === 'success' ? 'bg-emerald-900/30 text-emerald-400' : 'bg-red-900/30 text-red-400'
+                        }`}>{u.status}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
     </div>

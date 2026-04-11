@@ -232,7 +232,7 @@ function parseChargeflowCsv(lines: string[], headers: string[]) {
 
 // POST: Import invoices CSV (auto-detects Shopify or Chargeflow)
 export async function POST(req: NextRequest) {
-  const { storeId, csvText, source: forcedSource } = await req.json();
+  const { storeId, csvText, source: forcedSource, employeeId, fileName } = await req.json();
   if (!storeId || !csvText) {
     return NextResponse.json({ error: 'storeId and csvText required' }, { status: 400 });
   }
@@ -321,6 +321,16 @@ export async function POST(req: NextRequest) {
   // Rollup app costs into daily_pnl
   if (imported > 0 || updated > 0) {
     rollUpAppCosts(db, storeId);
+  }
+
+  // Log employee upload if employeeId provided
+  if (employeeId) {
+    try {
+      db.prepare(`
+        INSERT INTO employee_uploads (id, employee_id, store_id, file_name, file_type, records_imported, records_updated, records_duplicate, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success')
+      `).run(crypto.randomUUID(), employeeId, storeId, fileName || 'unknown.csv', format || 'unknown', imported, updated, duplicates);
+    } catch {}
   }
 
   return NextResponse.json({

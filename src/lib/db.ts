@@ -89,6 +89,23 @@ export function getDb(): Database.Database {
     if (!creativeCols.find((c: any) => c.name === 'pipeline_id')) {
       _db.exec("ALTER TABLE creatives ADD COLUMN pipeline_id TEXT DEFAULT NULL");
     }
+
+    // Migration: employee_uploads table for tracking employee work
+    _db.exec(`CREATE TABLE IF NOT EXISTS employee_uploads (
+      id TEXT PRIMARY KEY,
+      employee_id TEXT NOT NULL,
+      store_id TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      file_type TEXT NOT NULL DEFAULT 'shopify',
+      records_imported INTEGER DEFAULT 0,
+      records_updated INTEGER DEFAULT 0,
+      records_duplicate INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'success',
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    _db.exec(`CREATE INDEX IF NOT EXISTS idx_employee_uploads_employee ON employee_uploads(employee_id, created_at)`);
+    _db.exec(`CREATE INDEX IF NOT EXISTS idx_employee_uploads_store ON employee_uploads(store_id, created_at)`);
   }
   return _db;
 }

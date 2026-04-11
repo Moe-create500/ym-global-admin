@@ -796,6 +796,27 @@ def main():
     add_column(cursor, "stores", "platform",
         'ALTER TABLE "stores" ADD COLUMN "platform" TEXT DEFAULT \'shopify\'')
 
+    # Employee upload tracking
+    create_table(cursor, "employee_uploads", '''
+        CREATE TABLE "employee_uploads" (
+            "id" TEXT PRIMARY KEY,
+            "employee_id" TEXT NOT NULL,
+            "store_id" TEXT NOT NULL,
+            "file_name" TEXT NOT NULL,
+            "file_type" TEXT NOT NULL DEFAULT 'shopify',
+            "records_imported" INTEGER DEFAULT 0,
+            "records_updated" INTEGER DEFAULT 0,
+            "records_duplicate" INTEGER DEFAULT 0,
+            "status" TEXT DEFAULT 'success',
+            "error_message" TEXT,
+            "created_at" TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    ''')
+    create_index(cursor, "idx_employee_uploads_employee",
+        'CREATE INDEX "idx_employee_uploads_employee" ON "employee_uploads"("employee_id", "created_at")')
+    create_index(cursor, "idx_employee_uploads_store",
+        'CREATE INDEX "idx_employee_uploads_store" ON "employee_uploads"("store_id", "created_at")')
+
     conn.commit()
     conn.close()
     print("\n=== Migration complete! ===\n")
