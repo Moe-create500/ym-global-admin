@@ -39,7 +39,7 @@ interface CFOData {
   };
   equity_cents: number;
   details: {
-    fulfillment: { billed_cents: number; estimated_cents: number; paid_cents: number; total_owed_cents: number; balance_cents: number };
+    fulfillment: { billed_cents: number; estimated_cents: number; estimated_order_count: number; paid_cents: number; total_owed_cents: number; balance_cents: number };
     adSpend: { total_invoiced_cents: number; total_paid_cents: number; balance_due_cents: number; fb_pending_balance_cents: number; platforms?: Record<string, { charged: number; paid: number; balance: number }> };
     appInvoices: { total_charged_cents: number; total_paid_cents: number; balance_due_cents: number; last_invoice: { bill_number: string; date: string; total_cents: number; source: string } | null };
     inventory: { asset_value_cents: number; cost_basis_cents: number };
@@ -325,7 +325,7 @@ function CFOContent() {
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">Fulfillment (ShipSourced)</td>
                     <td className="px-5 py-3 text-slate-400 text-xs">
-                      Billed: {cents(data.details.fulfillment.billed_cents)} + Est: {cents(data.details.fulfillment.estimated_cents)} - Paid: {cents(data.details.fulfillment.paid_cents)}
+                      Balance: {cents(data.details.fulfillment.balance_cents)} · Est ({data.details.fulfillment.estimated_order_count} unfulfilled): {cents(data.details.fulfillment.estimated_cents)}
                     </td>
                     <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(data.liabilities.fulfillment_owed_cents)}</td>
                   </tr>
