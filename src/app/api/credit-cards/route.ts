@@ -8,15 +8,15 @@ export async function GET() {
 
   // 1. Gather all unique cards from ad_payments
   const adCards: any[] = db.prepare(`
-    SELECT card_last4, platform,
-      SUM(amount_cents) as total_cents,
+    SELECT ap.card_last4, ap.platform,
+      SUM(ap.amount_cents) as total_cents,
       COUNT(*) as txn_count,
-      MAX(date) as last_date,
+      MAX(ap.date) as last_date,
       GROUP_CONCAT(DISTINCT s.name) as store_names
     FROM ad_payments ap
     LEFT JOIN stores s ON s.id = ap.store_id
-    WHERE card_last4 IS NOT NULL AND card_last4 != ''
-    GROUP BY card_last4, platform
+    WHERE ap.card_last4 IS NOT NULL AND ap.card_last4 != ''
+    GROUP BY ap.card_last4, ap.platform
   `).all();
 
   // 2. Gather all unique cards from shopify_invoices
