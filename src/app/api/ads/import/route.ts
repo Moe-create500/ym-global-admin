@@ -244,7 +244,7 @@ export async function POST(req: NextRequest) {
   let parsed;
   if (platform === 'facebook') {
     parsed = parseFacebookCsv(csvText);
-  } else if (platform === 'shopify') {
+  } else if (platform === 'shopify' || platform === 'google') {
     parsed = parseShopifyCsv(csvText);
   } else {
     return NextResponse.json({ error: `Platform "${platform}" not yet supported` }, { status: 400 });
