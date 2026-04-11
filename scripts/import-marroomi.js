@@ -70,13 +70,22 @@ mc0775.forEach(bn => billingInfo[bn] = { method: 'mastercard', card: '0775' });
 amex2976.forEach(bn => billingInfo[bn] = { method: 'amex', card: '2976' });
 paypalBills.forEach(bn => billingInfo[bn] = { method: 'paypal', card: null });
 
+// Read auth from .env
+const envPath = path.join(__dirname, '..', '.env');
+const envContent = fs.readFileSync(envPath, 'utf8');
+const password = envContent.match(/DASHBOARD_PASSWORD=(.+)/)?.[1]?.trim();
+if (!password) { console.error('Could not read DASHBOARD_PASSWORD from .env'); process.exit(1); }
+
 console.log(`CSV: ${csvText.length} chars, ${csvText.split('\n').length} lines`);
 console.log(`Billing info: ${Object.keys(billingInfo).length} entries (${mc0775.length} MC, ${amex2976.length} Amex, ${paypalBills.length} PayPal)`);
 
 async function run() {
   const res = await fetch('http://localhost:3001/api/shopify-invoices', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Cookie': `ym_auth=${password}`,
+    },
     body: JSON.stringify({ storeId, csvText, billingInfo }),
   });
   const data = await res.json();
