@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import Script from 'next/script';
 
 interface CreditCard {
   id: string;
@@ -56,12 +57,16 @@ function timeAgo(dateStr: string | null): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+const TELLER_APP_ID = process.env.NEXT_PUBLIC_TELLER_APP_ID || '';
+
 export default function CreditCardsPage() {
   const [cards, setCards] = useState<CreditCard[]>([]);
   const [summary, setSummary] = useState({ total_available_cents: 0, total_ledger_cents: 0, card_count: 0 });
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
+  const [tellerReady, setTellerReady] = useState(false);
+  const [connecting, setConnecting] = useState(false);
 
   // Transaction view
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
@@ -73,6 +78,41 @@ export default function CreditCardsPage() {
 
   useEffect(() => {
     loadCards();
+  }, []);
+
+  const handleTellerConnect = useCallback(() => {
+    const w = window as any;
+    if (!w.TellerConnect) { alert('Teller Connect not loaded yet'); return; }
+
+    setConnecting(true);
+    const teller = w.TellerConnect.setup({
+      applicationId: TELLER_APP_ID,
+      environment: process.env.NEXT_PUBLIC_TELLER_ENV || 'sandbox',
+      selectAccount: 'multiple',
+      onSuccess: async (enrollment: any) => {
+        const token = enrollment.accessToken || enrollment.access_token;
+        const eid = enrollment.enrollment?.id || enrollment.id;
+        if (!token) { alert('No access token received from Teller'); setConnecting(false); return; }
+        try {
+          const res = await fetch('/api/credit-cards', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accessToken: token, enrollmentId: eid }),
+          });
+          const data = await res.json();
+          if (data.error) { alert('Error: ' + data.error); }
+          else { setSyncResult(`Connected ${data.imported} new credit card(s)`); }
+          loadCards();
+          // Auto-sync after connecting
+          await fetch('/api/credit-cards', { method: 'POST' });
+          loadCards();
+        } catch (err: any) { alert('Failed: ' + err.message); }
+        setConnecting(false);
+      },
+      onExit: () => { setConnecting(false); },
+      onFailure: () => { setConnecting(false); },
+    });
+    teller.open();
   }, []);
 
   async function loadCards() {
@@ -131,26 +171,43 @@ export default function CreditCardsPage() {
 
   return (
     <div>
+      <Script
+        src="https://cdn.teller.io/connect/connect.js"
+        onLoad={() => setTellerReady(true)}
+      />
+
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white">Credit Cards</h1>
           <p className="text-sm text-slate-400 mt-1">American Express accounts — synced via Teller</p>
         </div>
-        <button
-          onClick={handleSync}
-          disabled={syncing || cards.length === 0}
-          className="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
-        >
-          {syncing ? (
-            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
-          ) : (
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleSync}
+            disabled={syncing || cards.length === 0}
+            className="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
+          >
+            {syncing ? (
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
+            ) : (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
           )}
           Sync
-        </button>
+          </button>
+          <button
+            onClick={handleTellerConnect}
+            disabled={!tellerReady || connecting}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+            </svg>
+            {connecting ? 'Connecting...' : 'Connect Card'}
+          </button>
+        </div>
       </div>
 
       {syncResult && (

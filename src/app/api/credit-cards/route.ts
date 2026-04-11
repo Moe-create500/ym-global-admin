@@ -1,29 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getAccountBalance, getAccountTransactions } from '@/lib/teller';
+import { getAccounts, getAccountBalance, getAllAccountTransactions } from '@/lib/teller';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
 
-// GET: List all credit card accounts (global — not filtered by store)
+// GET: List all credit card accounts OR transactions for a specific card
 export async function GET(req: NextRequest) {
   const accountId = req.nextUrl.searchParams.get('accountId');
   const db = getDb();
 
-  // If accountId provided, return transactions for that card
   if (accountId) {
     const transactions: any[] = db.prepare(`
       SELECT bt.*, bt.custom_category, bt.custom_note
       FROM bank_transactions bt
       WHERE bt.bank_account_id = ?
       ORDER BY bt.date DESC, bt.id DESC
-      LIMIT 500
     `).all(accountId);
 
     const inflow = transactions.filter(t => t.amount_cents > 0).reduce((s, t) => s + t.amount_cents, 0);
     const outflow = transactions.filter(t => t.amount_cents < 0).reduce((s, t) => s + t.amount_cents, 0);
 
-    // Category breakdown
     const catMap: Record<string, { inflow_cents: number; outflow_cents: number; count: number }> = {};
     for (const t of transactions) {
       const cat = t.custom_category || t.category || 'Uncategorized';
@@ -41,7 +38,6 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Otherwise return all credit card accounts
   const cards: any[] = db.prepare(`
     SELECT * FROM bank_accounts
     WHERE account_type = 'credit' AND status = 'active'
@@ -61,7 +57,7 @@ export async function GET(req: NextRequest) {
   });
 }
 
-// POST: Sync balances + transactions for all credit card accounts
+// POST: Sync balances + ALL transactions for credit card accounts
 export async function POST() {
   const db = getDb();
 
@@ -92,9 +88,9 @@ export async function POST() {
         errors.push(`${account.account_name}: balance error - ${balErr.message}`);
       }
 
-      // Sync transactions
+      // Sync ALL transactions (paginated)
       try {
-        const txns = await getAccountTransactions(account.access_token, account.teller_account_id, 200);
+        const txns = await getAllAccountTransactions(account.access_token, account.teller_account_id);
 
         for (const txn of txns) {
           const existing = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(txn.id);
@@ -128,6 +124,63 @@ export async function POST() {
     transactions_imported: totalTxns,
     errors: errors.length > 0 ? errors : undefined,
   });
+}
+
+// PUT: Enroll a new credit card via Teller Connect
+export async function PUT(req: NextRequest) {
+  const { accessToken, enrollmentId } = await req.json();
+
+  if (!accessToken) {
+    return NextResponse.json({ error: 'accessToken required' }, { status: 400 });
+  }
+
+  const db = getDb();
+
+  // Use first store as placeholder (credit cards are global)
+  const firstStore: any = db.prepare('SELECT id FROM stores ORDER BY name LIMIT 1').get();
+  const storeId = firstStore?.id;
+  if (!storeId) {
+    return NextResponse.json({ error: 'No stores exist' }, { status: 400 });
+  }
+
+  let imported = 0;
+
+  try {
+    const accounts = await getAccounts(accessToken);
+
+    for (const account of accounts) {
+      // Only import credit card accounts
+      if (account.type !== 'credit') continue;
+
+      const existing = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(account.id);
+      if (existing) continue;
+
+      let balanceAvailable = 0;
+      let balanceLedger = 0;
+      try {
+        const balance = await getAccountBalance(accessToken, account.id);
+        balanceAvailable = Math.round(parseFloat(balance.available || '0') * 100);
+        balanceLedger = Math.round(parseFloat(balance.ledger || '0') * 100);
+      } catch {}
+
+      db.prepare(`
+        INSERT INTO bank_accounts (id, store_id, teller_enrollment_id, teller_account_id, access_token,
+          institution_name, account_name, account_type, account_subtype, last_four, currency,
+          balance_available_cents, balance_ledger_cents, balance_updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `).run(
+        crypto.randomUUID(), storeId, enrollmentId || account.enrollment_id, account.id, accessToken,
+        account.institution?.name || 'Unknown', account.name, account.type, account.subtype,
+        account.last_four, account.currency || 'USD', balanceAvailable, balanceLedger
+      );
+      imported++;
+    }
+
+    return NextResponse.json({ success: true, imported });
+  } catch (err: any) {
+    console.error('[credit-cards] Enrollment error:', err.message);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
 }
 
 // PATCH: Update transaction category

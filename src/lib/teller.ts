@@ -105,6 +105,28 @@ export async function getAccountTransactions(accessToken: string, accountId: str
   return tellerFetch(accessToken, `/accounts/${accountId}/transactions?count=${count}`);
 }
 
+// Paginate through ALL transactions for an account
+export async function getAllAccountTransactions(accessToken: string, accountId: string): Promise<TellerTransaction[]> {
+  const all: TellerTransaction[] = [];
+  let fromId: string | null = null;
+  const pageSize = 250;
+
+  for (let i = 0; i < 50; i++) { // safety cap at 50 pages (~12,500 txns)
+    let url = `/accounts/${accountId}/transactions?count=${pageSize}`;
+    if (fromId) url += `&from_id=${fromId}`;
+
+    const page: TellerTransaction[] = await tellerFetch(accessToken, url);
+    if (!page || page.length === 0) break;
+
+    all.push(...page);
+    if (page.length < pageSize) break; // last page
+
+    fromId = page[page.length - 1].id;
+  }
+
+  return all;
+}
+
 export async function deleteEnrollment(accessToken: string, enrollmentId: string): Promise<void> {
   await tellerFetch(accessToken, `/enrollments/${enrollmentId}`, { method: 'DELETE' });
 }
