@@ -140,7 +140,7 @@ function parseShopifyChargesCsv(lines: string[], headers: string[]) {
 
   type InvResult = {
     billNumber: string; date: string; totalCents: number; source: string;
-    paymentMethod: string | null; paid: boolean;
+    paymentMethod: string | null; cardLast4: string | null; paid: boolean;
     items: { category: string; description: string; appName: string; amountCents: number; currency: string; billingStart: string; billingEnd: string }[];
   };
   const invoices: InvResult[] = [];
@@ -150,7 +150,7 @@ function parseShopifyChargesCsv(lines: string[], headers: string[]) {
     const totalCents = bill.items.reduce((s: number, it: any) => s + it.amountCents, 0);
     invoices.push({
       billNumber, date: bill.date, totalCents, source: 'shopify',
-      paymentMethod: null, paid: false, items: bill.items,
+      paymentMethod: null, cardLast4: null, paid: false, items: bill.items,
     });
   }
 
@@ -172,7 +172,7 @@ function parseChargeflowCsv(lines: string[], headers: string[]) {
 
   const invoices: {
     billNumber: string; date: string; totalCents: number; source: string;
-    paymentMethod: string | null; paid: boolean;
+    paymentMethod: string | null; cardLast4: string | null; paid: boolean;
     items: { category: string; description: string; appName: string; amountCents: number; currency: string; billingStart: string; billingEnd: string }[];
   }[] = [];
 
@@ -203,11 +203,18 @@ function parseChargeflowCsv(lines: string[], headers: string[]) {
     const billingStart = fromIdx >= 0 ? parseDate(fields[fromIdx]?.trim() || '') : '';
     const billingEnd = toIdx >= 0 ? parseDate(fields[toIdx]?.trim() || '') : '';
 
-    const paymentMethod = [payType, payName].filter(Boolean).join(' — ') || null;
+    // Extract payment method and card last4 separately
+    // credit_card,2976 → payment_method="credit_card", card_last4="2976"
+    // shopify,shopify → payment_method="shopify", card_last4=null
+    let paymentMethod: string | null = payType || null;
+    let cardLast4: string | null = null;
+    if (payType === 'credit_card' && payName && payName !== 'shopify') {
+      cardLast4 = payName;
+    }
 
     invoices.push({
       billNumber, date, totalCents: amountCents, source: 'chargeflow',
-      paymentMethod, paid: status === 'paid',
+      paymentMethod, cardLast4, paid: status === 'paid',
       items: [{
         category: product || 'chargeflow',
         description: `Chargeflow ${product}`,
@@ -260,8 +267,8 @@ export async function POST(req: NextRequest) {
   let totalItems = 0;
 
   const insertInvoice = db.prepare(`
-    INSERT INTO shopify_invoices (id, store_id, bill_number, date, total_cents, item_count, currency, source, payment_method, paid)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO shopify_invoices (id, store_id, bill_number, date, total_cents, item_count, currency, source, payment_method, card_last4, paid)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertItem = db.prepare(`
     INSERT INTO shopify_invoice_items (id, invoice_id, category, description, app_name, amount_cents, currency, billing_start, billing_end)
@@ -274,7 +281,7 @@ export async function POST(req: NextRequest) {
 
     const invoiceId = crypto.randomUUID();
     insertInvoice.run(invoiceId, storeId, inv.billNumber, inv.date, inv.totalCents, inv.items.length,
-      inv.items[0]?.currency || 'USD', inv.source, inv.paymentMethod, inv.paid ? 1 : 0);
+      inv.items[0]?.currency || 'USD', inv.source, inv.paymentMethod, inv.cardLast4 || null, inv.paid ? 1 : 0);
 
     for (const item of inv.items) {
       insertItem.run(crypto.randomUUID(), invoiceId, item.category, item.description, item.appName,
