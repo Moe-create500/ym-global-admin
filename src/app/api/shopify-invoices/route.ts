@@ -170,10 +170,6 @@ function parseChargeflowCsv(lines: string[], headers: string[]) {
   const payTypeIdx = headers.findIndex(h => h === 'paymentmethod.type');
   const payNameIdx = headers.findIndex(h => h === 'paymentmethod.name');
 
-  if (amountIdx === -1) {
-    return { invoices: [], error: 'Could not find amount column' };
-  }
-
   const invoices: {
     billNumber: string; date: string; totalCents: number; source: string;
     paymentMethod: string | null; paid: boolean;
@@ -189,14 +185,19 @@ function parseChargeflowCsv(lines: string[], headers: string[]) {
     const date = parseDate(fields[createdIdx >= 0 ? createdIdx : fromIdx]?.trim() || '');
     if (!date) continue;
 
-    const rawAmount = fields[amountIdx]?.trim().replace(/[$",]/g, '') || '0';
-    const amount = parseFloat(rawAmount);
-    if (isNaN(amount) || amount <= 0) continue;
-    const amountCents = Math.round(amount * 100);
+    const status = statusIdx >= 0 ? (fields[statusIdx]?.trim() || '') : '';
+    // Skip failed charges — no money changed hands
+    if (status === 'failed') continue;
+
+    let amountCents = 0;
+    if (amountIdx >= 0) {
+      const rawAmount = fields[amountIdx]?.trim().replace(/[$",]/g, '') || '0';
+      const amount = parseFloat(rawAmount);
+      if (!isNaN(amount) && amount > 0) amountCents = Math.round(amount * 100);
+    }
 
     const currency = currencyIdx >= 0 ? (fields[currencyIdx]?.trim() || 'USD').toUpperCase() : 'USD';
     const product = productIdx >= 0 ? (fields[productIdx]?.trim() || '') : '';
-    const status = statusIdx >= 0 ? (fields[statusIdx]?.trim() || '') : '';
     const payType = payTypeIdx >= 0 ? (fields[payTypeIdx]?.trim() || '') : '';
     const payName = payNameIdx >= 0 ? (fields[payNameIdx]?.trim() || '') : '';
     const billingStart = fromIdx >= 0 ? parseDate(fields[fromIdx]?.trim() || '') : '';
