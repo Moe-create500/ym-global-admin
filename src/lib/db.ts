@@ -24,6 +24,12 @@ export function getDb(): Database.Database {
       _db.exec("ALTER TABLE stores ADD COLUMN dashboard_hidden INTEGER DEFAULT 0");
     }
 
+    // Migration: add is_global to bank_accounts for unassigned accounts
+    const baCols = _db.prepare("PRAGMA table_info(bank_accounts)").all() as any[];
+    if (!baCols.find((c: any) => c.name === 'is_global')) {
+      _db.exec("ALTER TABLE bank_accounts ADD COLUMN is_global INTEGER DEFAULT 0");
+    }
+
     // Migration: add platform to card_payments_log
     const cplCols = _db.prepare("PRAGMA table_info(card_payments_log)").all() as any[];
     if (!cplCols.find((c: any) => c.name === 'platform')) {
