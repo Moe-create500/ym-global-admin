@@ -225,6 +225,100 @@ function parseShopifyCsv(csvText: string) {
   return { payments, accountId: '', error: null };
 }
 
+// Parse Google Ads "Billing activity report" CSV
+// Format: 2 header lines, then Date,Type,Description,Interactions,Costs,Credits,Running balance
+// Description contains card info + transaction ID: "Threshold charge: American Express  • • • • 1022. A15TBEM0"
+// Amount is in Credits column as negative: "-$500.00"
+function parseGoogleAdsCsv(csvText: string) {
+  const lines = csvText.split('\n').map(l => l.trim());
+  const payments: Array<{
+    date: string;
+    transactionId: string;
+    paymentMethod: string;
+    cardLast4: string;
+    amountCents: number;
+    currency: string;
+    accountId: string;
+  }> = [];
+
+  // Find header row
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(lines.length, 10); i++) {
+    if (lines[i].startsWith('Date,Type,') || lines[i].toLowerCase().includes('date,type,description')) {
+      headerIdx = i;
+      break;
+    }
+  }
+  if (headerIdx === -1) {
+    return { payments, accountId: '', error: 'Could not find Google Ads header row (Date,Type,Description,...)' };
+  }
+
+  const months: Record<string, string> = {
+    'jan':'01','feb':'02','mar':'03','apr':'04','may':'05','jun':'06',
+    'jul':'07','aug':'08','sep':'09','oct':'10','nov':'11','dec':'12'
+  };
+
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+
+    const fields = parseCsvLine(line);
+    if (fields.length < 6) continue;
+
+    const rawDate = fields[0].trim();
+    const type = fields[1]?.trim() || '';
+    const description = fields[2]?.trim() || '';
+    const creditsStr = fields[5]?.trim() || '';
+
+    // Only process payment rows
+    if (type !== 'Payments') continue;
+    // Skip declined
+    if (description.toLowerCase().includes('declined')) continue;
+
+    // Parse date: "Apr 10, 2026" or "Mar 1, 2026"
+    const dateMatch = rawDate.match(/^(\w{3})\s+(\d{1,2}),?\s+(\d{4})$/);
+    if (!dateMatch) continue;
+    const mon = months[dateMatch[1].toLowerCase()];
+    if (!mon) continue;
+    const date = `${dateMatch[3]}-${mon}-${dateMatch[2].padStart(2, '0')}`;
+
+    // Parse amount from Credits column: "-$500.00" or "-$468.88"
+    const amountMatch = creditsStr.replace(/[",\s]/g, '').match(/-?\$?([\d.]+)/);
+    if (!amountMatch) continue;
+    const amount = parseFloat(amountMatch[1]);
+    if (isNaN(amount) || amount <= 0) continue;
+    const amountCents = Math.round(amount * 100);
+
+    // Extract card last4 from description: "• • • • 1022" or "• • • • 0775"
+    const cardMatch = description.match(/[•·]\s*[•·]\s*[•·]\s*[•·]\s*(\d{4})/);
+    const cardLast4 = cardMatch ? cardMatch[1] : '';
+
+    // Extract card type
+    let cardType = '';
+    if (description.toLowerCase().includes('american express')) cardType = 'American Express';
+    else if (description.toLowerCase().includes('mastercard')) cardType = 'Mastercard';
+    else if (description.toLowerCase().includes('visa')) cardType = 'Visa';
+
+    // Extract transaction ID: after the last ". " before end
+    const txnMatch = description.match(/\.\s*([A-Za-z0-9]+)\s*$/);
+    const transactionId = txnMatch ? `google-${txnMatch[1]}` : `google-${date}-${i}`;
+
+    const paymentMethod = [cardType, cardLast4 ? `•••• ${cardLast4}` : ''].filter(Boolean).join(' ');
+
+    payments.push({
+      date,
+      transactionId,
+      paymentMethod: paymentMethod || 'Google Ads',
+      cardLast4,
+      amountCents,
+      currency: 'USD',
+      accountId: '',
+    });
+  }
+
+  return { payments, accountId: '', error: null };
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const { storeId, platform, csvText } = body;
@@ -244,7 +338,9 @@ export async function POST(req: NextRequest) {
   let parsed;
   if (platform === 'facebook') {
     parsed = parseFacebookCsv(csvText);
-  } else if (platform === 'shopify' || platform === 'google') {
+  } else if (platform === 'google') {
+    parsed = parseGoogleAdsCsv(csvText);
+  } else if (platform === 'shopify') {
     parsed = parseShopifyCsv(csvText);
   } else {
     return NextResponse.json({ error: `Platform "${platform}" not yet supported` }, { status: 400 });
