@@ -40,7 +40,7 @@ interface CFOData {
   };
   equity_cents: number;
   details: {
-    fulfillment: { billed_cents: number; estimated_cents: number; estimated_order_count: number; paid_cents: number; total_owed_cents: number; balance_cents: number };
+    fulfillment: { billed_cents: number; estimated_cents: number; estimated_order_count: number; total_unfulfilled: number; unfulfilled_with_estimate: number; paid_cents: number; total_owed_cents: number; balance_cents: number };
     adSpend: { total_invoiced_cents: number; total_paid_cents: number; balance_due_cents: number; fb_pending_balance_cents: number; platforms?: Record<string, { charged: number; paid: number; balance: number }> };
     appInvoices: { total_charged_cents: number; total_paid_cents: number; balance_due_cents: number; last_invoice: { bill_number: string; date: string; total_cents: number; source: string } | null };
     inventory: { asset_value_cents: number; cost_basis_cents: number };
