@@ -26,6 +26,13 @@ export async function GET(req: NextRequest) {
     FROM orders WHERE store_id = ? AND ss_charge_cents > 0
   `).get(storeId);
 
+  const unfulfilledCounts: any = db.prepare(`
+    SELECT
+      COUNT(*) as total_unfulfilled,
+      COUNT(CASE WHEN ss_charge_cents > 0 THEN 1 END) as with_estimate
+    FROM orders WHERE store_id = ? AND fulfillment_status IN ('unfulfilled', 'partial')
+  `).get(storeId);
+
   const ssPaid: any = db.prepare(
     'SELECT COALESCE(SUM(amount_cents), 0) as total FROM ss_payments WHERE store_id = ?'
   ).get(storeId);
@@ -34,6 +41,8 @@ export async function GET(req: NextRequest) {
     billed_cents: store.ss_charges_pending_cents || 0,
     estimated_cents: ssCharges?.estimated_cents || 0,
     estimated_order_count: ssCharges?.estimated_order_count || 0,
+    total_unfulfilled: unfulfilledCounts?.total_unfulfilled || 0,
+    unfulfilled_with_estimate: unfulfilledCounts?.with_estimate || 0,
     paid_cents: ssPaid?.total || 0,
     total_owed_cents: (store.ss_net_owed_cents || 0),
     balance_cents: store.ss_net_owed_cents || 0,
