@@ -85,6 +85,7 @@ function BankingContent() {
   const [txnSummary, setTxnSummary] = useState({ inflow_cents: 0, outflow_cents: 0, total_count: 0 });
   const [categoryBreakdown, setCategoryBreakdown] = useState<CategoryBreakdown[]>([]);
   const [editingTxn, setEditingTxn] = useState<string | null>(null);
+  const [txnFilter, setTxnFilter] = useState('');
 
   // Loans state
   interface Loan { id: string; lender: string | null; description: string | null; amount_cents: number; remaining_cents: number; total_paid_cents: number; interest_rate: number; loan_date: string; due_date: string | null; status: string; }
@@ -245,6 +246,76 @@ function BankingContent() {
     });
     teller.open();
   }, [storeId]);
+
+  // Smart transaction filter
+  function filterTransactions(txns: Transaction[], query: string): Transaction[] {
+    const q = query.trim().toLowerCase();
+    if (!q) return txns;
+
+    // Parse multiple conditions separated by commas or "and"
+    const conditions = q.split(/,|\band\b/).map(c => c.trim()).filter(Boolean);
+
+    return txns.filter(txn => {
+      const amt = Math.abs(txn.amount_cents) / 100;
+      const rawAmt = txn.amount_cents / 100;
+      const desc = (txn.description || '').toLowerCase();
+      const party = (txn.counterparty || '').toLowerCase();
+      const cat = (txn.custom_category || txn.category || '').toLowerCase();
+
+      return conditions.every(cond => {
+        // "inflow" / "deposits" / "credits"
+        if (/^(inflow|deposits?|credits?|positive|incoming)$/.test(cond)) return txn.amount_cents > 0;
+        // "outflow" / "withdrawals" / "debits"
+        if (/^(outflow|withdrawals?|debits?|negative|outgoing|expenses?)$/.test(cond)) return txn.amount_cents < 0;
+        // "pending" / "posted"
+        if (cond === 'pending') return txn.status === 'pending';
+        if (cond === 'posted') return txn.status === 'posted';
+
+        // Amount comparisons: ">5000", ">=5000", "<1000", "<=1000", "=10000"
+        let m = cond.match(/^(>|>=|<|<=|=)\s*\$?([\d,.]+)$/);
+        if (m) {
+          const val = parseFloat(m[2].replace(/,/g, ''));
+          if (m[1] === '>') return amt > val;
+          if (m[1] === '>=') return amt >= val;
+          if (m[1] === '<') return amt < val;
+          if (m[1] === '<=') return amt <= val;
+          if (m[1] === '=') return Math.abs(amt - val) < 0.01;
+        }
+
+        // "above/over/more than X", "below/under/less than X"
+        m = cond.match(/^(?:above|over|more than|greater than|bigger than)\s+\$?([\d,.]+)$/);
+        if (m) return amt > parseFloat(m[1].replace(/,/g, ''));
+        m = cond.match(/^(?:below|under|less than|smaller than)\s+\$?([\d,.]+)$/);
+        if (m) return amt < parseFloat(m[1].replace(/,/g, ''));
+
+        // "between X and Y"
+        m = cond.match(/^between\s+\$?([\d,.]+)\s+(?:and|-)\s+\$?([\d,.]+)$/);
+        if (m) {
+          const lo = parseFloat(m[1].replace(/,/g, ''));
+          const hi = parseFloat(m[2].replace(/,/g, ''));
+          return amt >= Math.min(lo, hi) && amt <= Math.max(lo, hi);
+        }
+
+        // "exactly X" or just a number like "10000"
+        m = cond.match(/^(?:exactly\s+)?\$?([\d,.]+)$/);
+        if (m) {
+          const val = parseFloat(m[1].replace(/,/g, ''));
+          // Allow 1% tolerance for rounding
+          const tolerance = Math.max(val * 0.01, 0.01);
+          return Math.abs(amt - val) <= tolerance;
+        }
+
+        // Date filter: "2026-04" or "april" etc
+        m = cond.match(/^(\d{4}-\d{2}(?:-\d{2})?)$/);
+        if (m) return txn.date.startsWith(m[1]);
+
+        // Text search: match description, counterparty, or category
+        return desc.includes(cond) || party.includes(cond) || cat.includes(cond);
+      });
+    });
+  }
+
+  const filteredTransactions = filterTransactions(transactions, txnFilter);
 
   const selectedStore = stores.find(s => s.id === storeId);
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
@@ -413,12 +484,60 @@ function BankingContent() {
                 </button>
               </div>
 
+              {/* Smart Filter */}
+              <div className="px-5 py-3 border-b border-slate-800 bg-slate-800/30">
+                <div className="flex items-center gap-3">
+                  <div className="relative flex-1">
+                    <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    <input
+                      type="text"
+                      value={txnFilter}
+                      onChange={(e) => setTxnFilter(e.target.value)}
+                      placeholder='Filter: "10000", ">5000", "shopify", "outflow", "between 1000 and 5000"'
+                      className="w-full pl-9 pr-8 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
+                    />
+                    {txnFilter && (
+                      <button onClick={() => setTxnFilter('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  {txnFilter && (
+                    <span className="text-xs text-slate-400 whitespace-nowrap">
+                      {filteredTransactions.length} of {transactions.length}
+                    </span>
+                  )}
+                </div>
+                {/* Quick filter chips */}
+                <div className="flex gap-2 mt-2 flex-wrap">
+                  {['>1000', '>5000', '>10000', 'outflow', 'inflow', 'pending'].map(chip => (
+                    <button
+                      key={chip}
+                      onClick={() => setTxnFilter(txnFilter === chip ? '' : chip)}
+                      className={`text-[10px] px-2.5 py-1 rounded-full transition-colors ${
+                        txnFilter === chip
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-slate-800 text-slate-500 hover:text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {txnLoading ? (
                 <div className="flex items-center justify-center h-24">
                   <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-400" />
                 </div>
               ) : transactions.length === 0 ? (
                 <p className="px-5 py-8 text-xs text-slate-500 text-center">No transactions yet. Click Sync to pull latest.</p>
+              ) : filteredTransactions.length === 0 ? (
+                <p className="px-5 py-8 text-xs text-slate-500 text-center">No transactions match "{txnFilter}"</p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -434,7 +553,7 @@ function BankingContent() {
                       </tr>
                     </thead>
                     <tbody>
-                      {transactions.map(txn => (
+                      {filteredTransactions.map(txn => (
                         <tr key={txn.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                           <td className="px-5 py-3 text-slate-300 text-xs">{txn.date}</td>
                           <td className="px-5 py-3 text-white text-xs max-w-[200px] truncate">{txn.description}</td>
