@@ -95,7 +95,7 @@ function DashboardContent() {
   const [loading, setLoading] = useState(true);
   const [autoSynced, setAutoSynced] = useState(false);
   const [range, setRange] = useState<'daily' | 'monthly' | 'yearly'>('daily');
-  const [platformFilter, setPlatformFilter] = useState<'all' | 'shopify' | 'amazon' | 'ebay'>('all');
+  // Platform filter removed — Amazon/eBay managed in separate operator login
 
   function getRangeFrom(r: string): string {
     const now = new Date();
@@ -286,28 +286,6 @@ function DashboardContent() {
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
               <h2 className="text-sm font-semibold text-white">Stores ({rangeLabel})</h2>
-              <div className="flex bg-slate-800 rounded-lg p-0.5">
-                {(['all', 'shopify', 'amazon', 'ebay'] as const).map((p) => {
-                  const count = p === 'all' ? visibleStores.length : visibleStores.filter(s => s.platform === p).length;
-                  if (p !== 'all' && count === 0) return null;
-                  const labels: Record<string, string> = { all: 'All', shopify: 'Shopify', amazon: 'Amazon', ebay: 'eBay' };
-                  return (
-                    <button
-                      key={p}
-                      onClick={() => setPlatformFilter(p)}
-                      className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                        platformFilter === p
-                          ? p === 'amazon' ? 'bg-orange-600 text-white'
-                          : p === 'ebay' ? 'bg-yellow-600 text-white'
-                          : 'bg-blue-600 text-white'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      {labels[p]} ({count})
-                    </button>
-                  );
-                })}
-              </div>
             </div>
             <Link href="/dashboard/stores" className="text-xs text-blue-400 hover:text-blue-300">
               View All →
@@ -322,7 +300,7 @@ function DashboardContent() {
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {visibleStores.filter(s => platformFilter === 'all' || s.platform === platformFilter).map((store) => {
+              {visibleStores.filter(s => s.platform === 'shopify').map((store) => {
                 const margin = (store.mtd_revenue || 0) > 0
                   ? ((store.mtd_profit || 0) / (store.mtd_revenue || 1)) * 100
                   : 0;
@@ -336,13 +314,6 @@ function DashboardContent() {
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center gap-2">
                         <h3 className="font-semibold text-white">{store.name}</h3>
-                        {store.platform !== 'shopify' && (
-                          <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${
-                            store.platform === 'amazon' ? 'bg-orange-900/50 text-orange-400' : 'bg-yellow-900/50 text-yellow-400'
-                          }`}>
-                            {store.platform}
-                          </span>
-                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         {store.shipsourced_client_id && (
