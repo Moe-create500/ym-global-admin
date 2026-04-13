@@ -230,14 +230,21 @@ export async function GET(req: NextRequest) {
 
   const bankTotal = bankAccounts.reduce((s: number, a: any) => s + (a.balance_available_cents || 0), 0);
 
+  // 8. Reserves (manual entries)
+  const reserveRows: any[] = db.prepare(
+    'SELECT * FROM reserves WHERE store_id = ? ORDER BY created_at DESC'
+  ).all(storeId);
+  const reservesTotal = reserveRows.reduce((s: number, r: any) => s + (r.amount_cents || 0), 0);
+
   // Build balance sheet
   const assets = {
     cash_bank_cents: bankTotal,
     cash_shopify_cents: shopifyBalance,
     shopify_payout_cents: shopifyPayout,
+    reserves_cents: reservesTotal,
     inventory_cents: inventoryAssetCents,
     loans_receivable_cents: loans.lent_remaining_cents,
-    total_cents: bankTotal + shopifyBalance + shopifyPayout + inventoryAssetCents + loans.lent_remaining_cents,
+    total_cents: bankTotal + shopifyBalance + shopifyPayout + reservesTotal + inventoryAssetCents + loans.lent_remaining_cents,
   };
 
   const liabilities = {
@@ -270,6 +277,7 @@ export async function GET(req: NextRequest) {
       })),
       shopify_balance_cents: shopifyBalance,
       shopify_payout_cents: shopifyPayout,
+      reserves: reserveRows.map((r: any) => ({ id: r.id, amount_cents: r.amount_cents, held_at: r.held_at })),
     },
     snapshots: db.prepare(
       'SELECT id, snapshot_date, assets_cents, liabilities_cents, equity_cents, created_at FROM cfo_snapshots WHERE store_id = ? ORDER BY created_at DESC LIMIT 20'
@@ -277,9 +285,9 @@ export async function GET(req: NextRequest) {
   });
 }
 
-// PATCH: Update Shopify balance (manual input)
+// PATCH: Update Shopify balance, reserves (manual input)
 export async function PATCH(req: NextRequest) {
-  const { storeId, shopifyBalanceCents, shopifyPayoutCents } = await req.json();
+  const { storeId, shopifyBalanceCents, shopifyPayoutCents, reserve, deleteReserveId } = await req.json();
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
 
   const db = getDb();
@@ -291,6 +299,23 @@ export async function PATCH(req: NextRequest) {
   }
   if (shopifyPayoutCents !== undefined) {
     db.prepare('UPDATE stores SET shopify_payout_cents = ? WHERE id = ?').run(shopifyPayoutCents, storeId);
+  }
+
+  // Add or update a reserve
+  if (reserve) {
+    if (reserve.id) {
+      db.prepare('UPDATE reserves SET amount_cents = ?, held_at = ? WHERE id = ? AND store_id = ?')
+        .run(reserve.amount_cents, reserve.held_at, reserve.id, storeId);
+    } else {
+      const id = crypto.randomUUID();
+      db.prepare('INSERT INTO reserves (id, store_id, amount_cents, held_at) VALUES (?, ?, ?, ?)')
+        .run(id, storeId, reserve.amount_cents, reserve.held_at);
+    }
+  }
+
+  // Delete a reserve
+  if (deleteReserveId) {
+    db.prepare('DELETE FROM reserves WHERE id = ? AND store_id = ?').run(deleteReserveId, storeId);
   }
 
   return NextResponse.json({ success: true });

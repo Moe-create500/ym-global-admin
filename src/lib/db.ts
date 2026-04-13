@@ -99,6 +99,16 @@ export function getDb(): Database.Database {
       _db.exec("ALTER TABLE creatives ADD COLUMN pipeline_id TEXT DEFAULT NULL");
     }
 
+    // Migration: reserves table for manual CFO asset entries
+    _db.exec(`CREATE TABLE IF NOT EXISTS reserves (
+      id TEXT PRIMARY KEY,
+      store_id TEXT NOT NULL,
+      amount_cents INTEGER NOT NULL DEFAULT 0,
+      held_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    _db.exec(`CREATE INDEX IF NOT EXISTS idx_reserves_store ON reserves(store_id)`);
+
     // Migration: employee_uploads table for tracking employee work
     _db.exec(`CREATE TABLE IF NOT EXISTS employee_uploads (
       id TEXT PRIMARY KEY,

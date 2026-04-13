@@ -25,6 +25,7 @@ interface CFOData {
     cash_bank_cents: number;
     cash_shopify_cents: number;
     shopify_payout_cents: number;
+    reserves_cents: number;
     inventory_cents: number;
     loans_receivable_cents: number;
     total_cents: number;
@@ -48,6 +49,7 @@ interface CFOData {
     bankAccounts: { id: string; institution_name: string; account_name: string; last_four: string; balance_available_cents: number; balance_ledger_cents: number; balance_updated_at: string | null }[];
     shopify_balance_cents: number;
     shopify_payout_cents: number;
+    reserves: { id: string; amount_cents: number; held_at: string }[];
   };
 }
 
@@ -87,6 +89,11 @@ function CFOContent() {
   const [savingSnapshot, setSavingSnapshot] = useState(false);
   const [snapshotSaved, setSnapshotSaved] = useState('');
   const [snapshots, setSnapshots] = useState<{ id: string; snapshot_date: string; assets_cents: number; liabilities_cents: number; equity_cents: number; created_at: string }[]>([]);
+  const [addingReserve, setAddingReserve] = useState(false);
+  const [reserveAmountInput, setReserveAmountInput] = useState('');
+  const [reserveHeldAtInput, setReserveHeldAtInput] = useState('');
+  const [editingReserveId, setEditingReserveId] = useState<string | null>(null);
+  const [savingReserve, setSavingReserve] = useState(false);
 
   // Overview state
   const [overviewStores, setOverviewStores] = useState<OverviewStore[]>([]);
@@ -148,6 +155,37 @@ function CFOContent() {
     });
     setEditingPayout(false);
     setSavingPayout(false);
+    loadData();
+  }
+
+  async function saveReserve(existingId?: string) {
+    setSavingReserve(true);
+    await fetch('/api/cfo', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        storeId,
+        reserve: {
+          id: existingId || undefined,
+          amount_cents: Math.round(parseFloat(reserveAmountInput || '0') * 100),
+          held_at: reserveHeldAtInput.trim(),
+        },
+      }),
+    });
+    setAddingReserve(false);
+    setEditingReserveId(null);
+    setReserveAmountInput('');
+    setReserveHeldAtInput('');
+    setSavingReserve(false);
+    loadData();
+  }
+
+  async function deleteReserve(id: string) {
+    await fetch('/api/cfo', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeId, deleteReserveId: id }),
+    });
     loadData();
   }
 
@@ -439,6 +477,74 @@ function CFOContent() {
                     </td>
                     <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(data.assets.shopify_payout_cents)}</td>
                   </tr>
+
+                  {/* Reserves */}
+                  {(data.details.reserves || []).map(r => (
+                    editingReserveId === r.id ? (
+                      <tr key={r.id} className="border-b border-slate-800/50 bg-slate-800/20">
+                        <td className="px-5 py-3 text-white font-medium">Reserve</td>
+                        <td className="px-5 py-3">
+                          <div className="flex items-center gap-2">
+                            <input type="text" placeholder="Held at (e.g. PayPal)" value={reserveHeldAtInput}
+                              onChange={e => setReserveHeldAtInput(e.target.value)}
+                              className="w-40 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500" />
+                            <span className="text-slate-400 text-xs">$</span>
+                            <input type="number" step="0.01" placeholder="Amount" value={reserveAmountInput}
+                              onChange={e => setReserveAmountInput(e.target.value)}
+                              className="w-28 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500" />
+                            <button onClick={() => saveReserve(r.id)} disabled={savingReserve}
+                              className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] rounded">Save</button>
+                            <button onClick={() => { setEditingReserveId(null); setReserveAmountInput(''); setReserveHeldAtInput(''); }}
+                              className="text-[10px] text-slate-500">Cancel</button>
+                          </div>
+                        </td>
+                        <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(r.amount_cents)}</td>
+                      </tr>
+                    ) : (
+                      <tr key={r.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                        <td className="px-5 py-3 text-white font-medium">Reserve</td>
+                        <td className="px-5 py-3 text-slate-400 text-xs flex items-center gap-2">
+                          Held at: <span className="text-white font-medium">{r.held_at}</span>
+                          <button onClick={() => { setEditingReserveId(r.id); setReserveAmountInput(String(r.amount_cents / 100)); setReserveHeldAtInput(r.held_at); }}
+                            className="text-blue-400 hover:text-blue-300 ml-2">Edit</button>
+                          <button onClick={() => deleteReserve(r.id)}
+                            className="text-red-400 hover:text-red-300">Del</button>
+                        </td>
+                        <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(r.amount_cents)}</td>
+                      </tr>
+                    )
+                  ))}
+                  {/* Add Reserve */}
+                  {addingReserve ? (
+                    <tr className="border-b border-slate-800/50 bg-slate-800/20">
+                      <td className="px-5 py-3 text-white font-medium">New Reserve</td>
+                      <td className="px-5 py-3">
+                        <div className="flex items-center gap-2">
+                          <input type="text" placeholder="Held at (e.g. PayPal)" value={reserveHeldAtInput}
+                            onChange={e => setReserveHeldAtInput(e.target.value)}
+                            className="w-40 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500" />
+                          <span className="text-slate-400 text-xs">$</span>
+                          <input type="number" step="0.01" placeholder="Amount" value={reserveAmountInput}
+                            onChange={e => setReserveAmountInput(e.target.value)}
+                            className="w-28 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500" />
+                          <button onClick={() => saveReserve()} disabled={savingReserve}
+                            className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => { setAddingReserve(false); setReserveAmountInput(''); setReserveHeldAtInput(''); }}
+                            className="text-[10px] text-slate-500">Cancel</button>
+                        </div>
+                      </td>
+                      <td className="px-5 py-3" />
+                    </tr>
+                  ) : (
+                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className="px-5 py-3" colSpan={2}>
+                        <button onClick={() => setAddingReserve(true)} className="text-xs text-blue-400 hover:text-blue-300">
+                          + Add Reserve
+                        </button>
+                      </td>
+                      <td className="px-5 py-3" />
+                    </tr>
+                  )}
 
                   {/* Inventory */}
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
