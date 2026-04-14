@@ -556,7 +556,7 @@ function BankingContent() {
                       {filteredTransactions.map(txn => (
                         <tr key={txn.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                           <td className="px-5 py-3 text-slate-300 text-xs">{txn.date}</td>
-                          <td className="px-5 py-3 text-white text-xs max-w-[200px] truncate">{txn.description}</td>
+                          <td className="px-5 py-3 text-white text-xs whitespace-normal">{txn.description}</td>
                           <td className="px-5 py-3 text-xs">
                             {editingTxn === txn.id ? (
                               <select
