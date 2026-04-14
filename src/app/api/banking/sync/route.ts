@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getAccountBalance, getAccountTransactions } from '@/lib/teller';
+import { getAccountBalance, getAccountTransactions, getAllAccountTransactions } from '@/lib/teller';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -8,6 +8,7 @@ export const dynamic = 'force-dynamic';
 // POST: Sync balances + transactions for all or specific account
 export async function POST(req: NextRequest) {
   const accountId = req.nextUrl.searchParams.get('accountId');
+  const full = req.nextUrl.searchParams.get('full') === 'true';
   const db = getDb();
 
   const accounts: any[] = accountId
@@ -39,7 +40,9 @@ export async function POST(req: NextRequest) {
 
       // Sync transactions
       try {
-        const txns = await getAccountTransactions(account.access_token, account.teller_account_id, 200);
+        const txns = full
+          ? await getAllAccountTransactions(account.access_token, account.teller_account_id)
+          : await getAccountTransactions(account.access_token, account.teller_account_id, 200);
 
         for (const txn of txns) {
           const existing = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(txn.id);
