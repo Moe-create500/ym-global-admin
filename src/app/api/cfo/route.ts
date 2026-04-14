@@ -238,7 +238,12 @@ export async function GET(req: NextRequest) {
   ).all(storeId);
 
   const bankTotal = bankAccounts.reduce((s: number, a: any) => {
-    if (a.account_type === 'credit') return s - (a.balance_ledger_cents || 0);
+    if (a.account_type === 'credit') {
+      // Use credit_limit - available to include pending charges
+      const creditLimit = a.credit_limit_cents || (a.balance_available_cents + a.balance_ledger_cents) || 0;
+      const totalOwed = creditLimit - (a.balance_available_cents || 0);
+      return s - totalOwed;
+    }
     return s + (a.balance_available_cents || 0);
   }, 0);
 
@@ -289,12 +294,24 @@ export async function GET(req: NextRequest) {
       inventory,
       appInvoices,
       loans,
-      bankAccounts: bankAccounts.map((a: any) => ({
-        id: a.id, institution_name: a.institution_name, account_name: a.account_name,
-        last_four: a.last_four, account_type: a.account_type,
-        balance_available_cents: a.account_type === 'credit' ? -(a.balance_ledger_cents || 0) : a.balance_available_cents,
-        balance_ledger_cents: a.balance_ledger_cents, balance_updated_at: a.balance_updated_at,
-      })),
+      bankAccounts: bankAccounts.map((a: any) => {
+        if (a.account_type === 'credit') {
+          const creditLimit = a.credit_limit_cents || ((a.balance_available_cents || 0) + (a.balance_ledger_cents || 0));
+          const totalOwed = creditLimit - (a.balance_available_cents || 0);
+          return {
+            id: a.id, institution_name: a.institution_name, account_name: a.account_name,
+            last_four: a.last_four, account_type: a.account_type,
+            balance_available_cents: -totalOwed,
+            balance_ledger_cents: a.balance_ledger_cents, balance_updated_at: a.balance_updated_at,
+          };
+        }
+        return {
+          id: a.id, institution_name: a.institution_name, account_name: a.account_name,
+          last_four: a.last_four, account_type: a.account_type,
+          balance_available_cents: a.balance_available_cents,
+          balance_ledger_cents: a.balance_ledger_cents, balance_updated_at: a.balance_updated_at,
+        };
+      }),
       shopify_balance_cents: shopifyBalance,
       shopify_payout_cents: shopifyPayout,
       reserves: reserveRows.map((r: any) => ({ id: r.id, amount_cents: r.amount_cents, held_at: r.held_at })),

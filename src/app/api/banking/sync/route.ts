@@ -29,11 +29,25 @@ export async function POST(req: NextRequest) {
         const balance = await getAccountBalance(account.access_token, account.teller_account_id);
         const available = Math.round(parseFloat(balance.available || '0') * 100);
         const ledger = Math.round(parseFloat(balance.ledger || '0') * 100);
+
+        // For credit accounts, track credit limit (available + ledger when no pending)
+        // Use max of current and stored to handle pending fluctuations
+        let creditLimitUpdate = '';
+        const params: any[] = [available, ledger];
+        if (account.account_type === 'credit') {
+          const derivedLimit = available + ledger;
+          const storedLimit = account.credit_limit_cents || 0;
+          const creditLimit = Math.max(derivedLimit, storedLimit);
+          creditLimitUpdate = ', credit_limit_cents = ?';
+          params.push(creditLimit);
+        }
+        params.push(account.id);
+
         db.prepare(`
-          UPDATE bank_accounts SET balance_available_cents = ?, balance_ledger_cents = ?,
+          UPDATE bank_accounts SET balance_available_cents = ?, balance_ledger_cents = ?${creditLimitUpdate},
             balance_updated_at = datetime('now'), updated_at = datetime('now')
           WHERE id = ?
-        `).run(available, ledger, account.id);
+        `).run(...params);
       } catch (balErr: any) {
         errors.push(`${account.account_name}: balance error - ${balErr.message}`);
       }
