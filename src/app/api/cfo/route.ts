@@ -239,6 +239,12 @@ export async function GET(req: NextRequest) {
   ).all(storeId);
   const reservesTotal = reserveRows.reduce((s: number, r: any) => s + (r.amount_cents || 0), 0);
 
+  // 9. Manual credit cards (liabilities)
+  const manualCCRows: any[] = db.prepare(
+    'SELECT * FROM manual_credit_cards WHERE store_id = ? ORDER BY created_at DESC'
+  ).all(storeId);
+  const manualCCTotal = manualCCRows.reduce((s: number, c: any) => s + (c.amount_owed_cents || 0), 0);
+
   // Build balance sheet
   const assets = {
     cash_bank_cents: bankTotal,
@@ -257,7 +263,8 @@ export async function GET(req: NextRequest) {
     fb_pending_balance_cents: fbPendingBalanceCents,
     app_invoices_due_cents: appInvoices.balance_due_cents,
     loans_payable_cents: loans.borrowed_remaining_cents,
-    total_cents: fulfillment.balance_cents + fulfillment.estimated_cents + adSpend.balance_due_cents + fbPendingBalanceCents + appInvoices.balance_due_cents + loans.borrowed_remaining_cents,
+    manual_cc_cents: manualCCTotal,
+    total_cents: fulfillment.balance_cents + fulfillment.estimated_cents + adSpend.balance_due_cents + fbPendingBalanceCents + appInvoices.balance_due_cents + loans.borrowed_remaining_cents + manualCCTotal,
   };
 
   const equity = assets.total_cents - liabilities.total_cents;
@@ -282,6 +289,7 @@ export async function GET(req: NextRequest) {
       shopify_balance_cents: shopifyBalance,
       shopify_payout_cents: shopifyPayout,
       reserves: reserveRows.map((r: any) => ({ id: r.id, amount_cents: r.amount_cents, held_at: r.held_at })),
+      manualCreditCards: manualCCRows.map((c: any) => ({ id: c.id, card_name: c.card_name, amount_owed_cents: c.amount_owed_cents })),
     },
     snapshots: db.prepare(
       'SELECT id, snapshot_date, assets_cents, liabilities_cents, equity_cents, created_at FROM cfo_snapshots WHERE store_id = ? ORDER BY created_at DESC LIMIT 20'
@@ -291,7 +299,7 @@ export async function GET(req: NextRequest) {
 
 // PATCH: Update Shopify balance, reserves (manual input)
 export async function PATCH(req: NextRequest) {
-  const { storeId, shopifyBalanceCents, shopifyPayoutCents, reserve, deleteReserveId } = await req.json();
+  const { storeId, shopifyBalanceCents, shopifyPayoutCents, reserve, deleteReserveId, manualCC, deleteManualCCId } = await req.json();
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
 
   const db = getDb();
@@ -320,6 +328,23 @@ export async function PATCH(req: NextRequest) {
   // Delete a reserve
   if (deleteReserveId) {
     db.prepare('DELETE FROM reserves WHERE id = ? AND store_id = ?').run(deleteReserveId, storeId);
+  }
+
+  // Add or update a manual credit card
+  if (manualCC) {
+    if (manualCC.id) {
+      db.prepare('UPDATE manual_credit_cards SET card_name = ?, amount_owed_cents = ? WHERE id = ? AND store_id = ?')
+        .run(manualCC.card_name, manualCC.amount_owed_cents, manualCC.id, storeId);
+    } else {
+      const id = crypto.randomUUID();
+      db.prepare('INSERT INTO manual_credit_cards (id, store_id, card_name, amount_owed_cents) VALUES (?, ?, ?, ?)')
+        .run(id, storeId, manualCC.card_name, manualCC.amount_owed_cents);
+    }
+  }
+
+  // Delete a manual credit card
+  if (deleteManualCCId) {
+    db.prepare('DELETE FROM manual_credit_cards WHERE id = ? AND store_id = ?').run(deleteManualCCId, storeId);
   }
 
   return NextResponse.json({ success: true });

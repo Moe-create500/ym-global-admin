@@ -109,6 +109,16 @@ export function getDb(): Database.Database {
     )`);
     _db.exec(`CREATE INDEX IF NOT EXISTS idx_reserves_store ON reserves(store_id)`);
 
+    // Migration: manual_credit_cards table for CFO liabilities
+    _db.exec(`CREATE TABLE IF NOT EXISTS manual_credit_cards (
+      id TEXT PRIMARY KEY,
+      store_id TEXT NOT NULL,
+      card_name TEXT NOT NULL DEFAULT '',
+      amount_owed_cents INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    _db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_cc_store ON manual_credit_cards(store_id)`);
+
     // Migration: employee_uploads table for tracking employee work
     _db.exec(`CREATE TABLE IF NOT EXISTS employee_uploads (
       id TEXT PRIMARY KEY,

@@ -37,6 +37,7 @@ interface CFOData {
     fb_pending_balance_cents: number;
     app_invoices_due_cents: number;
     loans_payable_cents: number;
+    manual_cc_cents: number;
     total_cents: number;
   };
   equity_cents: number;
@@ -50,6 +51,7 @@ interface CFOData {
     shopify_balance_cents: number;
     shopify_payout_cents: number;
     reserves: { id: string; amount_cents: number; held_at: string }[];
+    manualCreditCards: { id: string; card_name: string; amount_owed_cents: number }[];
   };
 }
 
@@ -94,6 +96,11 @@ function CFOContent() {
   const [reserveHeldAtInput, setReserveHeldAtInput] = useState('');
   const [editingReserveId, setEditingReserveId] = useState<string | null>(null);
   const [savingReserve, setSavingReserve] = useState(false);
+  const [addingCC, setAddingCC] = useState(false);
+  const [ccNameInput, setCcNameInput] = useState('');
+  const [ccAmountInput, setCcAmountInput] = useState('');
+  const [editingCCId, setEditingCCId] = useState<string | null>(null);
+  const [savingCC, setSavingCC] = useState(false);
 
   // Overview state
   const [overviewStores, setOverviewStores] = useState<OverviewStore[]>([]);
@@ -185,6 +192,37 @@ function CFOContent() {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ storeId, deleteReserveId: id }),
+    });
+    loadData();
+  }
+
+  async function saveManualCC(existingId?: string) {
+    setSavingCC(true);
+    await fetch('/api/cfo', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        storeId,
+        manualCC: {
+          id: existingId || undefined,
+          card_name: ccNameInput.trim(),
+          amount_owed_cents: Math.round(parseFloat(ccAmountInput || '0') * 100),
+        },
+      }),
+    });
+    setAddingCC(false);
+    setEditingCCId(null);
+    setCcNameInput('');
+    setCcAmountInput('');
+    setSavingCC(false);
+    loadData();
+  }
+
+  async function deleteManualCC(id: string) {
+    await fetch('/api/cfo', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeId, deleteManualCCId: id }),
     });
     loadData();
   }
@@ -672,6 +710,71 @@ function CFOContent() {
                         Borrowed: {cents(data.details.loans.borrowed_total_cents)} — Remaining
                       </td>
                       <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(data.liabilities.loans_payable_cents)}</td>
+                    </tr>
+                  )}
+
+                  {/* Manual Credit Cards */}
+                  {(data.details.manualCreditCards || []).map(cc => (
+                    editingCCId === cc.id ? (
+                    <tr key={cc.id} className="border-b border-slate-800/50">
+                      <td className="px-5 py-3 text-white font-medium">Credit Card</td>
+                      <td className="px-5 py-3">
+                        <div className="flex gap-2 items-center">
+                          <input type="text" placeholder="Card name (e.g. Amex Gold 1006)" value={ccNameInput}
+                            onChange={e => setCcNameInput(e.target.value)}
+                            className="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white w-48 focus:outline-none focus:border-red-500" />
+                          <input type="number" step="0.01" placeholder="Amount owed" value={ccAmountInput}
+                            onChange={e => setCcAmountInput(e.target.value)}
+                            className="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white w-28 focus:outline-none focus:border-red-500" />
+                          <button onClick={() => saveManualCC(cc.id)} disabled={savingCC}
+                            className="text-xs text-emerald-400 hover:text-emerald-300">Save</button>
+                          <button onClick={() => { setEditingCCId(null); setCcNameInput(''); setCcAmountInput(''); }}
+                            className="text-xs text-slate-500 hover:text-slate-400">Cancel</button>
+                        </div>
+                      </td>
+                      <td className="px-5 py-3" />
+                    </tr>
+                    ) : (
+                    <tr key={cc.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className="px-5 py-3 text-white font-medium">Credit Card</td>
+                      <td className="px-5 py-3 text-slate-400 text-xs">
+                        {cc.card_name}
+                        <button onClick={() => { setEditingCCId(cc.id); setCcNameInput(cc.card_name); setCcAmountInput(String(cc.amount_owed_cents / 100)); }}
+                          className="ml-2 text-blue-400 hover:text-blue-300">Edit</button>
+                        <button onClick={() => deleteManualCC(cc.id)}
+                          className="ml-2 text-red-400 hover:text-red-300">Delete</button>
+                      </td>
+                      <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(cc.amount_owed_cents)}</td>
+                    </tr>
+                    )
+                  ))}
+                  {/* Add Credit Card */}
+                  {addingCC ? (
+                    <tr className="border-b border-slate-800/50">
+                      <td className="px-5 py-3 text-white font-medium">New Credit Card</td>
+                      <td className="px-5 py-3">
+                        <div className="flex gap-2 items-center">
+                          <input type="text" placeholder="Card name (e.g. Amex Gold 1006)" value={ccNameInput}
+                            onChange={e => setCcNameInput(e.target.value)}
+                            className="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white w-48 focus:outline-none focus:border-red-500" />
+                          <input type="number" step="0.01" placeholder="Amount owed" value={ccAmountInput}
+                            onChange={e => setCcAmountInput(e.target.value)}
+                            className="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white w-28 focus:outline-none focus:border-red-500" />
+                          <button onClick={() => saveManualCC()} disabled={savingCC}
+                            className="text-xs text-emerald-400 hover:text-emerald-300">Save</button>
+                          <button onClick={() => { setAddingCC(false); setCcNameInput(''); setCcAmountInput(''); }}
+                            className="text-xs text-slate-500 hover:text-slate-400">Cancel</button>
+                        </div>
+                      </td>
+                      <td className="px-5 py-3" />
+                    </tr>
+                  ) : (
+                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className="px-5 py-3" colSpan={2}>
+                        <button onClick={() => setAddingCC(true)} className="text-xs text-blue-400 hover:text-blue-300">
+                          + Add Credit Card</button>
+                      </td>
+                      <td className="px-5 py-3" />
                     </tr>
                   )}
 
