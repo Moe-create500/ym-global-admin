@@ -234,7 +234,7 @@ export async function GET(req: NextRequest) {
 
   // 7. Bank Accounts
   const bankAccounts: any[] = db.prepare(
-    "SELECT * FROM bank_accounts WHERE store_id = ? AND status = 'active'"
+    "SELECT * FROM bank_accounts WHERE store_id = ? AND status = 'active' AND COALESCE(cfo_hidden, 0) = 0"
   ).all(storeId);
 
   const bankTotal = bankAccounts.reduce((s: number, a: any) => {

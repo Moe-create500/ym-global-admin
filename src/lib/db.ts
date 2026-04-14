@@ -32,6 +32,9 @@ export function getDb(): Database.Database {
     if (!baCols.find((c: any) => c.name === 'credit_limit_cents')) {
       _db.exec("ALTER TABLE bank_accounts ADD COLUMN credit_limit_cents INTEGER DEFAULT 0");
     }
+    if (!baCols.find((c: any) => c.name === 'cfo_hidden')) {
+      _db.exec("ALTER TABLE bank_accounts ADD COLUMN cfo_hidden INTEGER DEFAULT 0");
+    }
 
     // Migration: add platform to card_payments_log
     const cplCols = _db.prepare("PRAGMA table_info(card_payments_log)").all() as any[];
