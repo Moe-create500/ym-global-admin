@@ -37,12 +37,21 @@ export async function GET(req: NextRequest) {
     'SELECT COALESCE(SUM(amount_cents), 0) as total FROM ss_payments WHERE store_id = ?'
   ).get(storeId);
 
+  const totalUnfulfilled = unfulfilledCounts?.total_unfulfilled || 0;
+  const withEstimate = unfulfilledCounts?.with_estimate || 0;
+  const withoutEstimate = totalUnfulfilled - withEstimate;
+  const estimatedCents = ssCharges?.estimated_cents || 0;
+  const avgPerOrder = withEstimate > 0 ? Math.round(estimatedCents / withEstimate) : 0;
+  const projectedCents = estimatedCents + (withoutEstimate * avgPerOrder);
+
   const fulfillment = {
     billed_cents: store.ss_charges_pending_cents || 0,
-    estimated_cents: ssCharges?.estimated_cents || 0,
+    estimated_cents: projectedCents,
     estimated_order_count: ssCharges?.estimated_order_count || 0,
-    total_unfulfilled: unfulfilledCounts?.total_unfulfilled || 0,
-    unfulfilled_with_estimate: unfulfilledCounts?.with_estimate || 0,
+    total_unfulfilled: totalUnfulfilled,
+    unfulfilled_with_estimate: withEstimate,
+    without_estimate: withoutEstimate,
+    avg_per_order_cents: avgPerOrder,
     paid_cents: ssPaid?.total || 0,
     total_owed_cents: (store.ss_net_owed_cents || 0),
     balance_cents: store.ss_net_owed_cents || 0,
