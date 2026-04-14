@@ -228,7 +228,10 @@ export async function GET(req: NextRequest) {
     "SELECT * FROM bank_accounts WHERE store_id = ? AND status = 'active'"
   ).all(storeId);
 
-  const bankTotal = bankAccounts.reduce((s: number, a: any) => s + (a.balance_available_cents || 0), 0);
+  const bankTotal = bankAccounts.reduce((s: number, a: any) => {
+    if (a.account_type === 'credit') return s - (a.balance_ledger_cents || 0);
+    return s + (a.balance_available_cents || 0);
+  }, 0);
 
   // 8. Reserves (manual entries)
   const reserveRows: any[] = db.prepare(
@@ -272,7 +275,8 @@ export async function GET(req: NextRequest) {
       loans,
       bankAccounts: bankAccounts.map((a: any) => ({
         id: a.id, institution_name: a.institution_name, account_name: a.account_name,
-        last_four: a.last_four, balance_available_cents: a.balance_available_cents,
+        last_four: a.last_four, account_type: a.account_type,
+        balance_available_cents: a.account_type === 'credit' ? -(a.balance_ledger_cents || 0) : a.balance_available_cents,
         balance_ledger_cents: a.balance_ledger_cents, balance_updated_at: a.balance_updated_at,
       })),
       shopify_balance_cents: shopifyBalance,

@@ -421,7 +421,7 @@ function CFOContent() {
                         {acc.account_name} ****{acc.last_four}
                         <span className="text-slate-600 ml-2">Updated {timeAgo(acc.balance_updated_at)}</span>
                       </td>
-                      <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(acc.balance_available_cents)}</td>
+                      <td className={`px-5 py-3 text-right font-medium ${acc.balance_available_cents < 0 ? 'text-red-400' : 'text-emerald-400'}`}>{cents(acc.balance_available_cents)}</td>
                     </tr>
                   ))}
                   {data.details.bankAccounts.length === 0 && (
