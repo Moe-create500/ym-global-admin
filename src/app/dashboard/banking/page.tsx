@@ -559,16 +559,24 @@ function BankingContent() {
                           <td className="px-5 py-3 text-white text-xs whitespace-normal">{txn.description}</td>
                           <td className="px-5 py-3 text-xs">
                             {editingTxn === txn.id ? (
-                              <select
-                                defaultValue={txn.custom_category || ''}
-                                onChange={e => { updateTxnCategory(txn.id, e.target.value); setEditingTxn(null); }}
-                                onBlur={() => setEditingTxn(null)}
-                                autoFocus
-                                className="px-1 py-0.5 bg-slate-800 border border-slate-600 rounded text-[10px] text-white focus:outline-none focus:border-blue-500"
-                              >
-                                <option value="">None</option>
-                                {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                              </select>
+                              <div className="flex gap-1 items-center">
+                                <input
+                                  list={`cat-${txn.id}`}
+                                  defaultValue={txn.custom_category || ''}
+                                  placeholder="Type or select..."
+                                  autoFocus
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') { updateTxnCategory(txn.id, (e.target as HTMLInputElement).value); setEditingTxn(null); }
+                                    if (e.key === 'Escape') setEditingTxn(null);
+                                  }}
+                                  onBlur={e => { if (e.target.value !== (txn.custom_category || '')) updateTxnCategory(txn.id, e.target.value); setEditingTxn(null); }}
+                                  className="px-1 py-0.5 bg-slate-800 border border-slate-600 rounded text-[10px] text-white focus:outline-none focus:border-blue-500 w-36"
+                                />
+                                <datalist id={`cat-${txn.id}`}>
+                                  <option value="">None</option>
+                                  {CATEGORIES.map(c => <option key={c} value={c} />)}
+                                </datalist>
+                              </div>
                             ) : (
                               <button
                                 onClick={() => setEditingTxn(txn.id)}
