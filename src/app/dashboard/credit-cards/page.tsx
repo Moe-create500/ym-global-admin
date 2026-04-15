@@ -75,6 +75,7 @@ export default function CreditCardsPage() {
   const [txnSummary, setTxnSummary] = useState({ inflow_cents: 0, outflow_cents: 0, total_count: 0 });
   const [categoryBreakdown, setCategoryBreakdown] = useState<CategoryBreakdown[]>([]);
   const [editingTxn, setEditingTxn] = useState<string | null>(null);
+  const [monthFilter, setMonthFilter] = useState<string>('all');
 
   useEffect(() => {
     loadCards();
@@ -127,6 +128,7 @@ export default function CreditCardsPage() {
   async function loadTransactions(cardId: string) {
     setTxnLoading(true);
     setSelectedCard(cardId);
+    setMonthFilter('all');
     const res = await fetch(`/api/credit-cards?accountId=${cardId}`);
     const data = await res.json();
     setTransactions(data.transactions || []);
@@ -160,6 +162,14 @@ export default function CreditCardsPage() {
   }
 
   const selectedCardData = cards.find(c => c.id === selectedCard);
+
+  // Compute available months from transactions
+  const availableMonths = Array.from(new Set(transactions.map(t => t.date?.slice(0, 7)).filter(Boolean))).sort().reverse();
+
+  // Filter transactions by month
+  const filteredTransactions = monthFilter === 'all' ? transactions : transactions.filter(t => t.date?.startsWith(monthFilter));
+  const filteredInflow = filteredTransactions.filter(t => t.amount_cents > 0).reduce((s, t) => s + t.amount_cents, 0);
+  const filteredOutflow = filteredTransactions.filter(t => t.amount_cents < 0).reduce((s, t) => s + t.amount_cents, 0);
 
   if (loading) {
     return (
@@ -306,13 +316,25 @@ export default function CreditCardsPage() {
 
               <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-slate-800">
-                  <h2 className="text-sm font-semibold text-white">
-                    Transactions — {selectedCardData?.institution_name} {selectedCardData?.account_name} ****{selectedCardData?.last_four}
-                  </h2>
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-sm font-semibold text-white">
+                      Transactions — {selectedCardData?.institution_name} {selectedCardData?.account_name} ****{selectedCardData?.last_four}
+                    </h2>
+                    <select
+                      value={monthFilter}
+                      onChange={e => setMonthFilter(e.target.value)}
+                      className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="all">All Months</option>
+                      {availableMonths.map(m => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </div>
                   <div className="flex gap-4 mt-1">
-                    <span className="text-xs text-emerald-400">In: {cents(txnSummary.inflow_cents)}</span>
-                    <span className="text-xs text-red-400">Out: {cents(Math.abs(txnSummary.outflow_cents))}</span>
-                    <span className="text-xs text-slate-500">{txnSummary.total_count} transactions</span>
+                    <span className="text-xs text-emerald-400">In: {cents(filteredInflow)}</span>
+                    <span className="text-xs text-red-400">Out: {cents(Math.abs(filteredOutflow))}</span>
+                    <span className="text-xs text-slate-500">{filteredTransactions.length} transactions</span>
                   </div>
                 </div>
 
@@ -320,8 +342,8 @@ export default function CreditCardsPage() {
                   <div className="flex items-center justify-center h-24">
                     <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-400" />
                   </div>
-                ) : transactions.length === 0 ? (
-                  <p className="px-5 py-8 text-xs text-slate-500 text-center">No transactions yet. Click Sync to pull latest.</p>
+                ) : filteredTransactions.length === 0 ? (
+                  <p className="px-5 py-8 text-xs text-slate-500 text-center">{transactions.length === 0 ? 'No transactions yet. Click Sync to pull latest.' : 'No transactions for this month.'}</p>
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
@@ -337,7 +359,7 @@ export default function CreditCardsPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {transactions.map(txn => (
+                        {filteredTransactions.map(txn => (
                           <tr key={txn.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                             <td className="px-5 py-3 text-slate-300 text-xs">{txn.date}</td>
                             <td className="px-5 py-3 text-white text-xs whitespace-normal">{txn.description}</td>
