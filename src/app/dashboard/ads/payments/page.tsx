@@ -75,6 +75,8 @@ function InvoiceDashboardContent() {
   const [totalPendingCents, setTotalPendingCents] = useState(0);
   const [loading, setLoading] = useState(true);
   const [cardFilter, setCardFilter] = useState('');
+  const [hiddenCards, setHiddenCards] = useState<string[]>([]);
+  const [showHidden, setShowHidden] = useState(false);
 
   // Import state
   const [importStoreId, setImportStoreId] = useState('');
@@ -138,6 +140,7 @@ function InvoiceDashboardContent() {
     setMonthlyTotals(invoiceData.monthlyTotals || []);
     setPendingCents(invoiceData.pendingCents || {});
     setTotalPendingCents(invoiceData.totalPendingCents || 0);
+    setHiddenCards(invoiceData.hiddenCards || []);
     setCardPaidTotals(cardPayData.cardTotals || []);
     setCardPayments(cardPayData.payments || []);
     setLoading(false);
@@ -224,6 +227,15 @@ function InvoiceDashboardContent() {
     loadData();
   }
 
+  async function toggleCardVisibility(cardLast4: string, action: 'hide' | 'show') {
+    await fetch('/api/ads/import', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeId: storeFilter, cardLast4, platform: 'facebook', action }),
+    });
+    loadData();
+  }
+
   async function handleDeleteCardPayment(id: string) {
     if (!confirm('Delete this card payment?')) return;
     await fetch(`/api/ads/card-payments?id=${id}`, { method: 'DELETE' });
@@ -236,8 +248,9 @@ function InvoiceDashboardContent() {
     paidMap[cp.card_last4] = cp.total_paid_cents || 0;
   }
 
-  const totalCharged = platformSummary.reduce((s, p) => s + (p.total_cents || 0), 0);
-  const totalPaid = cardPaidTotals.reduce((s, c) => s + (c.total_paid_cents || 0), 0);
+  const visibleCards = cardSummary.filter(c => !hiddenCards.includes(c.card_last4));
+  const totalCharged = visibleCards.reduce((s, c) => s + (c.total_cents || 0), 0);
+  const totalPaid = cardPaidTotals.filter(c => !hiddenCards.includes(c.card_last4)).reduce((s, c) => s + (c.total_paid_cents || 0), 0);
   const totalBalance = totalCharged - totalPaid;
   const selectedStore = stores.find(s => s.id === storeFilter);
   const allCards = cardSummary.map(c => c.card_last4).filter(Boolean);
@@ -450,48 +463,93 @@ function InvoiceDashboardContent() {
 
           {/* Cards with Balance */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
-            <h2 className="text-sm font-semibold text-white mb-4">Card Balances</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-white">Card Balances</h2>
+              {hiddenCards.length > 0 && (
+                <button
+                  onClick={() => setShowHidden(!showHidden)}
+                  className="text-xs text-slate-400 hover:text-white transition-colors"
+                >
+                  {showHidden ? 'Hide' : 'Show'} {hiddenCards.length} hidden card{hiddenCards.length !== 1 ? 's' : ''}
+                </button>
+              )}
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {cardSummary.map(card => {
+              {cardSummary.filter(c => !hiddenCards.includes(c.card_last4)).map(card => {
                 const paid = paidMap[card.card_last4] || 0;
                 const balance = (card.total_cents || 0) - paid;
                 return (
-                  <button
+                  <div
                     key={card.card_last4}
-                    onClick={() => setCardFilter(cardFilter === card.card_last4 ? '' : card.card_last4)}
-                    className={`p-4 rounded-lg border text-left transition-colors ${
+                    className={`p-4 rounded-lg border text-left transition-colors relative group ${
                       cardFilter === card.card_last4 ? 'bg-blue-950/30 border-blue-700' : 'bg-slate-800/50 border-slate-700 hover:border-slate-600'
                     }`}
                   >
-                    <div className="flex items-center justify-between mb-2">
-                      <div>
-                        <p className="text-xs text-slate-400">{card.payment_method?.split('····')[0]?.trim() || 'Card'}</p>
-                        <p className="text-sm font-semibold text-white">····{card.card_last4}</p>
+                    <button
+                      onClick={() => setCardFilter(cardFilter === card.card_last4 ? '' : card.card_last4)}
+                      className="w-full text-left"
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <div>
+                          <p className="text-xs text-slate-400">{card.payment_method?.split('····')[0]?.trim() || 'Card'}</p>
+                          <p className="text-sm font-semibold text-white">····{card.card_last4}</p>
+                        </div>
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${
+                          balance <= 0 ? 'bg-emerald-900/30 text-emerald-400' : 'bg-orange-900/30 text-orange-400'
+                        }`}>
+                          {balance <= 0 ? 'Paid' : 'Due'}
+                        </span>
                       </div>
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${
-                        balance <= 0 ? 'bg-emerald-900/30 text-emerald-400' : 'bg-orange-900/30 text-orange-400'
-                      }`}>
-                        {balance <= 0 ? 'Paid' : 'Due'}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 text-center">
-                      <div>
-                        <p className="text-[10px] text-slate-500">Charged</p>
-                        <p className="text-xs font-semibold text-white">{cents(card.total_cents)}</p>
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        <div>
+                          <p className="text-[10px] text-slate-500">Charged</p>
+                          <p className="text-xs font-semibold text-white">{cents(card.total_cents)}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-slate-500">Paid</p>
+                          <p className="text-xs font-semibold text-emerald-400">{cents(paid)}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-slate-500">Balance</p>
+                          <p className={`text-xs font-semibold ${balance > 0 ? 'text-orange-400' : 'text-emerald-400'}`}>{cents(balance)}</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="text-[10px] text-slate-500">Paid</p>
-                        <p className="text-xs font-semibold text-emerald-400">{cents(paid)}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] text-slate-500">Balance</p>
-                        <p className={`text-xs font-semibold ${balance > 0 ? 'text-orange-400' : 'text-emerald-400'}`}>{cents(balance)}</p>
-                      </div>
-                    </div>
-                  </button>
+                    </button>
+                    {storeFilter && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleCardVisibility(card.card_last4, 'hide'); }}
+                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] text-slate-500 hover:text-red-400 px-1.5 py-0.5 rounded bg-slate-900/80"
+                        title="Hide this card"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                 );
               })}
             </div>
+            {/* Hidden cards */}
+            {showHidden && hiddenCards.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-slate-800">
+                <p className="text-xs text-slate-500 mb-2">Hidden cards</p>
+                <div className="flex flex-wrap gap-2">
+                  {hiddenCards.map(card => {
+                    const cs = cardSummary.find(c => c.card_last4 === card);
+                    return (
+                      <button
+                        key={card}
+                        onClick={() => toggleCardVisibility(card, 'show')}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-slate-800/50 border border-slate-700 rounded-lg text-xs text-slate-400 hover:text-white hover:border-slate-600 transition-colors"
+                      >
+                        <span>····{card}</span>
+                        {cs && <span className="text-slate-600">{cents(cs.total_cents)}</span>}
+                        <span className="text-emerald-500">+ Show</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Card Payments Log — Collapsible */}

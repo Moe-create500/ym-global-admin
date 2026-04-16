@@ -125,6 +125,16 @@ export function getDb(): Database.Database {
     )`);
     _db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_cc_store ON manual_credit_cards(store_id)`);
 
+    // Migration: hidden_invoice_cards table for hiding cards from FB Invoices page
+    _db.exec(`CREATE TABLE IF NOT EXISTS hidden_invoice_cards (
+      id TEXT PRIMARY KEY,
+      store_id TEXT NOT NULL,
+      card_last4 TEXT NOT NULL,
+      platform TEXT NOT NULL DEFAULT 'facebook',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    _db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_hidden_invoice_cards ON hidden_invoice_cards(store_id, card_last4, platform)`);
+
     // Migration: employee_uploads table for tracking employee work
     _db.exec(`CREATE TABLE IF NOT EXISTS employee_uploads (
       id TEXT PRIMARY KEY,

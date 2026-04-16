@@ -510,5 +510,30 @@ export async function GET(req: NextRequest) {
     totalPendingCents += row.pending_cents || 0;
   }
 
-  return NextResponse.json({ payments, cardSummary, platformSummary, monthlyTotals, pendingCents, totalPendingCents });
+  // Hidden cards
+  const hiddenCards: string[] = [];
+  if (storeId) {
+    const rows = db.prepare(`SELECT card_last4 FROM hidden_invoice_cards WHERE store_id = ? AND platform = ?`).all(storeId, platform) as any[];
+    for (const r of rows) hiddenCards.push(r.card_last4);
+  }
+
+  return NextResponse.json({ payments, cardSummary, platformSummary, monthlyTotals, pendingCents, totalPendingCents, hiddenCards });
+}
+
+// PATCH: Toggle card visibility
+export async function PATCH(req: NextRequest) {
+  const { storeId, cardLast4, platform = 'facebook', action } = await req.json();
+  if (!storeId || !cardLast4) {
+    return NextResponse.json({ error: 'storeId and cardLast4 required' }, { status: 400 });
+  }
+  const db = getDb();
+
+  if (action === 'show') {
+    db.prepare(`DELETE FROM hidden_invoice_cards WHERE store_id = ? AND card_last4 = ? AND platform = ?`).run(storeId, cardLast4, platform);
+  } else {
+    const id = require('crypto').randomUUID();
+    db.prepare(`INSERT OR IGNORE INTO hidden_invoice_cards (id, store_id, card_last4, platform) VALUES (?, ?, ?, ?)`).run(id, storeId, cardLast4, platform);
+  }
+
+  return NextResponse.json({ success: true });
 }
