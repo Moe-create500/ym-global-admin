@@ -6,12 +6,15 @@ import { createVideo as veoCreate, getVideoStatus as veoGetStatus } from '@/lib/
 import { createVideo as mmCreateVideo, getVideoStatus as mmGetVideoStatus, generateImage as mmGenerateImage } from '@/lib/minimax';
 import { createVideo as runwayCreate, getVideoStatus as runwayGetStatus } from '@/lib/runway';
 import { createVideo as higgsCreate, getVideoStatus as higgsGetStatus } from '@/lib/higgsfield';
+import { createTextToVideo as seedanceT2V, createImageToVideo as seedanceI2V, getVideoStatus as seedanceGetStatus, waitForVideo as seedanceWait } from '@/lib/seedance';
+import { generateImage as dalleGenerateImage } from '@/lib/dalle';
+import { generateImage as geminiGenerateImage } from '@/lib/gemini-image';
+import { generateImage as ideogramGenerateImage } from '@/lib/ideogram';
+import { generateImage as nanoBananaGenerateImage, editImage as nanoBananaEditImage } from '@/lib/nano-banana-image';
+import { selectProvider } from '@/lib/provider-router';
+import { describeProductImage } from '@/lib/vision';
 import crypto from 'crypto';
 import sharp from 'sharp';
-import { generateSpeech, getVoiceForAvatar } from '@/lib/tts';
-import { muxVideoAudio } from '@/lib/mux';
-import { writeFile, mkdir } from 'fs/promises';
-import path from 'path';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,53 +33,6 @@ function getSoraDimensions(size: '1280x720' | '720x1280' | '1920x1080' | '1080x1
   return { width, height };
 }
 
-
-/**
- * Auto-finalize: when a video completes, generate voiceover + mux automatically.
- * This runs in the background during status polling — does not block the response.
- */
-async function autoFinalize(creativeId: string, videoUrl: string, script: string, db: any) {
-  // Skip if already finalized or no script
-  if (!script || script.length < 20) return;
-
-  try {
-    console.log(`[AUTO-FINALIZE] Starting for ${creativeId}`);
-
-    // Determine avatar from creative angle or default
-    const voice = 'nova'; // warm female UGC default
-
-    // Generate voiceover
-    const ttsResult = await generateSpeech(script.substring(0, 4096), { voice, model: 'tts-1-hd', speed: 1.0 });
-    const voFilename = `vo_${crypto.randomUUID()}.mp3`;
-    const uploadDir = path.join(process.cwd(), 'public', 'uploads');
-    await mkdir(uploadDir, { recursive: true });
-    const voPath = path.join(uploadDir, voFilename);
-    await writeFile(voPath, ttsResult.audioBuffer);
-
-    // Sora URLs need auth headers to download
-    const fetchHeaders = videoUrl.includes('api.openai.com')
-      ? { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` }
-      : undefined;
-
-    // Mux video + audio
-    const muxResult = await muxVideoAudio(videoUrl, voPath, fetchHeaders);
-
-    // Update creative with final muxed URL
-    db.prepare(`
-      UPDATE creatives SET
-        file_url = ?,
-        template_data = json_set(COALESCE(template_data, '{}'), '$.silentVideoUrl', ?, '$.voiceoverUrl', ?, '$.autoFinalized', 'true'),
-        updated_at = datetime('now')
-      WHERE id = ?
-    `).run(muxResult.outputUrl, videoUrl, `/api/products/uploads?file=${voFilename}`, creativeId);
-
-    console.log(`[AUTO-FINALIZE] Complete for ${creativeId} -> ${muxResult.filename}`);
-  } catch (err: any) {
-    console.error(`[AUTO-FINALIZE] Failed for ${creativeId}: ${err.message}`);
-    // Don't fail the creative — silent video is still usable
-  }
-}
-
 export async function POST(req: NextRequest) {
   // ── Parse body safely ──
   let body: any;
@@ -86,11 +42,46 @@ export async function POST(req: NextRequest) {
     return jsonError('INVALID_BODY', 'Request body is not valid JSON', e.message, 400);
   }
 
-  const { storeId, type, prompt, imageUrls, title, angle, resolution, duration, engine, packageId, packageIndex } = body;
+  const { storeId, type, prompt: originalPrompt, imageUrls, title, angle, resolution, duration, engine, packageId, packageIndex, dimension, creativeType, coverImageUrl, userSelectedCover } = body;
+
+  // ═══ Cover image flow (trace logs — user's explicit selection must survive) ═══
+  // Priority: body.coverImageUrl (explicit) > first valid imageUrls (legacy)
+  const resolvedCover: string =
+    (typeof coverImageUrl === 'string' && coverImageUrl.startsWith('https://')) ? coverImageUrl :
+    (Array.isArray(imageUrls) && imageUrls.find((u: any) => typeof u === 'string' && u.startsWith('https://'))) || '';
+  console.log(`[COVER-TRACE] userSelectedCover=${userSelectedCover === true}`);
+  console.log(`[COVER-TRACE] body.coverImageUrl=${coverImageUrl ? String(coverImageUrl).substring(0, 120) : '(absent)'}`);
+  console.log(`[COVER-TRACE] body.imageUrls[0]=${imageUrls?.[0] ? String(imageUrls[0]).substring(0, 120) : '(absent)'}`);
+  console.log(`[COVER-TRACE] resolvedCover=${resolvedCover ? resolvedCover.substring(0, 120) : '(none)'}`);
+
+  // Generate a vision description of the user-selected cover and inject it into the prompt
+  // so the text-to-video engine renders a product that matches THAT specific image.
+  // Only runs when a cover is provided. If vision fails, generation proceeds without the
+  // description (with a warning log) rather than blocking the user.
+  let prompt = originalPrompt;
+  if (resolvedCover) {
+    const isVideoType = type !== 'text-to-image' && !['dalle', 'gemini-image', 'minimax-image', 'stability', 'ideogram'].includes(type || '');
+    if (isVideoType) {
+      try {
+        const productName = (title || '').replace(/\s+–\s+V\d+.*$/, '').trim();
+        const visualDesc = await describeProductImage(resolvedCover, productName);
+        if (visualDesc) {
+          console.log(`[COVER-TRACE] Vision description generated (${visualDesc.length} chars)`);
+          prompt = `PRODUCT VISUAL (from selected cover image — match this exactly):\n${visualDesc}\n\n${originalPrompt}`;
+        } else {
+          console.log(`[COVER-TRACE] Vision returned null — falling back to text-only prompt`);
+        }
+      } catch (e: any) {
+        console.error(`[COVER-TRACE] Vision threw: ${e.message} — falling back to text-only prompt`);
+      }
+    }
+  }
 
   if (!storeId || !prompt || !title) {
     return jsonError('MISSING_FIELDS', 'storeId, prompt, and title are required', null, 400);
   }
+
+  const persistedFormat = dimension || resolution || null;
 
   let db: any;
   try {
@@ -100,7 +91,21 @@ export async function POST(req: NextRequest) {
   }
 
   const id = crypto.randomUUID();
-  const useEngine = engine || 'sora';
+  // Use provider router when no explicit engine is passed
+  let useEngine = engine;
+  if (!useEngine) {
+    const isVideo = !['dalle', 'gemini-image', 'minimax-image', 'stability', 'ideogram'].includes(type || '');
+    const hasProductImgs = (imageUrls?.some((u: string) => u.startsWith('https://'))) || !!resolvedCover;
+    const routerResult = selectProvider({
+      contentType: isVideo ? 'video' : 'image',
+      creativeType: creativeType || 'testimonial',
+      duration: parseInt(duration) || 20,
+      aspectRatio: dimension || resolution,
+      hasProductImages: !!hasProductImgs,
+    });
+    useEngine = routerResult.provider;
+    console.log(`[GENERATE] Router selected: ${useEngine} | ${routerResult.reason}`);
+  }
 
   try {
     if (useEngine === 'sora') {
@@ -111,94 +116,27 @@ export async function POST(req: NextRequest) {
       const soraSize = sizeMap[resolution] || '1280x720';
       const durationNum = parseInt(duration) || 20;
       const soraDuration: '8' | '16' | '20' = durationNum <= 8 ? '8' : durationNum <= 16 ? '16' : '20';
-      const model: 'sora-2' | 'sora-2-pro' = 'sora-2-pro';
+      const model = resolution === '1080p' || resolution === '1080p-vertical' ? 'sora-2-pro' : 'sora-2';
       let imageBuffer: Buffer | undefined;
 
-      if (type === 'image-to-video' && imageUrls?.length > 0) {
+      if (type === 'image-to-video' && imageUrls?.[0] && imageUrls[0].startsWith('https://')) {
         try {
-          const { width, height } = getSoraDimensions(soraSize);
-
-          // Resolve relative URLs (e.g. /api/products/uploads?file=...) to absolute
-          const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
-          const resolvedUrls = imageUrls.map((u: string) =>
-            u.startsWith('/') ? `${baseUrl}${u}` : u
-          );
-
-          if (resolvedUrls.length === 1) {
-            // Single image — use as-is, fill the frame
-            const imgRes = await fetch(resolvedUrls[0]);
-            if (imgRes.ok) {
-              const imgArrayBuf = await imgRes.arrayBuffer();
-              imageBuffer = await sharp(Buffer.from(imgArrayBuf))
-                .resize(width, height, { fit: 'cover', position: 'centre' })
-                .png().toBuffer();
-            }
-          } else {
-            // Multiple images — composite all into one reference frame
-            // Layout: hero image on top (~50%), remaining in grid below
-            const fetched: Buffer[] = [];
-            const fetchTasks = resolvedUrls.slice(0, 9).map(async (url: string) => {
-              try {
-                const res = await fetch(url);
-                if (res.ok) return Buffer.from(await res.arrayBuffer());
-              } catch {}
-              return null;
-            });
-            const results = await Promise.all(fetchTasks);
-            for (const buf of results) { if (buf) fetched.push(buf); }
-
-            if (fetched.length === 0) throw new Error('No images could be fetched');
-
-            if (fetched.length === 1) {
-              imageBuffer = await sharp(fetched[0])
-                .resize(width, height, { fit: 'cover', position: 'centre' })
-                .png().toBuffer();
-            } else {
-              // Hero takes top portion, remaining fill a grid below
-              const gap = 4;
-              const gridCount = fetched.length - 1;
-              const cols = Math.min(gridCount, 3);
-              const rows = Math.ceil(gridCount / cols);
-              const heroH = Math.round(height * 0.45);
-              const gridH = height - heroH - gap;
-              const cellW = Math.floor((width - gap * (cols - 1)) / cols);
-              const cellH = Math.floor((gridH - gap * (rows - 1)) / rows);
-
-              // Resize hero
-              const heroBuf = await sharp(fetched[0])
-                .resize(width, heroH, { fit: 'cover', position: 'centre' })
-                .png().toBuffer();
-
-              // Resize grid images
-              const gridBufs: { input: Buffer; left: number; top: number }[] = [];
-              for (let i = 0; i < gridCount; i++) {
-                const col = i % cols;
-                const row = Math.floor(i / cols);
-                const resized = await sharp(fetched[i + 1])
-                  .resize(cellW, cellH, { fit: 'cover', position: 'centre' })
-                  .png().toBuffer();
-                gridBufs.push({
-                  input: resized,
-                  left: col * (cellW + gap),
-                  top: heroH + gap + row * (cellH + gap),
-                });
-              }
-
-              imageBuffer = await sharp({
-                create: { width, height, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } },
-              })
-                .composite([
-                  { input: heroBuf, left: 0, top: 0 },
-                  ...gridBufs,
-                ])
-                .png().toBuffer();
-            }
+          const imgRes = await fetch(imageUrls[0]);
+          if (imgRes.ok) {
+            const imgArrayBuf = await imgRes.arrayBuffer();
+            const { width, height } = getSoraDimensions(soraSize);
+            // Use 'cover' to fill the frame with the product image (no letterboxing)
+            // Then composite onto a neutral background so the product fills the frame
+            imageBuffer = await sharp(Buffer.from(imgArrayBuf))
+              .resize(width, height, { fit: 'cover', position: 'centre' })
+              .png().toBuffer();
           }
         } catch (err) {
           console.error('Failed to prepare Sora reference image:', err);
         }
       }
 
+      console.log(`[COVER-TRACE][SORA] prompt length=${prompt.length}, imageBuffer=${!!imageBuffer}`);
       const result = await soraCreate(prompt, {
         model, size: soraSize, seconds: soraDuration,
         ...(imageBuffer ? { imageBuffer, imageMimeType: 'image/png' } : {}),
@@ -209,6 +147,7 @@ export async function POST(req: NextRequest) {
           angle, nb_video_id, nb_status, status, template_id, package_id, package_index)
         VALUES (?, ?, 'video', ?, ?, ?, ?, 'processing', 'draft', 'sora', ?, ?)
       `).run(id, storeId, title, prompt, angle || null, result.videoId, packageId || null, packageIndex ?? null);
+      try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
 
       return jsonSuccess({ id, engine: 'sora', videoId: result.videoId, model: result.model, seconds: result.seconds, size: result.size });
 
@@ -230,6 +169,7 @@ export async function POST(req: NextRequest) {
           angle, nb_video_id, nb_status, status, template_id, package_id, package_index)
         VALUES (?, ?, 'video', ?, ?, ?, ?, 'processing', 'draft', 'veo', ?, ?)
       `).run(id, storeId, title, prompt, angle || null, result.operationName, packageId || null, packageIndex ?? null);
+      try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
 
       return jsonSuccess({ id, engine: 'veo', operationName: result.operationName, model: result.model });
 
@@ -248,8 +188,44 @@ export async function POST(req: NextRequest) {
           angle, nb_video_id, nb_status, status, template_id, package_id, package_index)
         VALUES (?, ?, 'video', ?, ?, ?, ?, 'processing', 'draft', 'minimax', ?, ?)
       `).run(id, storeId, title, prompt, angle || null, result.taskId, packageId || null, packageIndex ?? null);
+      try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
 
       return jsonSuccess({ id, engine: 'minimax', taskId: result.taskId, model: result.model });
+
+    } else if (useEngine === 'dalle') {
+      // OpenAI Image — uses gpt-image-1 with product reference if available, falls back to dall-e-3
+      const sizeMap: Record<string, '1024x1024' | '1024x1792' | '1792x1024'> = {
+        '1:1': '1024x1024', 'square': '1024x1024', '4:5': '1024x1024',
+        '9:16': '1024x1792', 'portrait': '1024x1792',
+        '16:9': '1792x1024', 'landscape': '1792x1024',
+      };
+      const size = sizeMap[resolution] || '1024x1024';
+      // Pass the first public product image as reference for exact branding
+      const refImage = imageUrls?.find((u: string) => u.startsWith('https://')) || undefined;
+      const result = await dalleGenerateImage(prompt, { size, quality: refImage ? 'auto' : 'standard', style: 'natural', referenceImageUrl: refImage });
+
+      db.prepare(`
+        INSERT INTO creatives (id, store_id, type, title, description, file_url,
+          angle, nb_status, status, template_id, package_id, package_index)
+        VALUES (?, ?, 'image', ?, ?, ?, ?, 'completed', 'draft', 'dalle', ?, ?)
+      `).run(id, storeId, title, prompt, result.imageUrl, angle || null, packageId || null, packageIndex ?? null);
+      try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
+
+      return jsonSuccess({ id, engine: 'dalle', model: result.model, imageUrl: result.imageUrl });
+
+    } else if (useEngine === 'gemini-image') {
+      // Gemini Flash Image — native image generation with optional product reference
+      const refImage = imageUrls?.find((u: string) => u.startsWith('https://')) || undefined;
+      const result = await geminiGenerateImage(prompt, { model: 'gemini-2.5-flash-image', referenceImageUrl: refImage });
+
+      db.prepare(`
+        INSERT INTO creatives (id, store_id, type, title, description, file_url,
+          angle, nb_status, status, template_id, package_id, package_index)
+        VALUES (?, ?, 'image', ?, ?, ?, ?, 'completed', 'draft', 'gemini-image', ?, ?)
+      `).run(id, storeId, title, prompt, result.imageUrl, angle || null, packageId || null, packageIndex ?? null);
+      try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
+
+      return jsonSuccess({ id, engine: 'gemini-image', model: result.model, imageUrl: result.imageUrl });
 
     } else if (useEngine === 'minimax-image') {
       const aspectMap: Record<string, '1:1' | '16:9' | '9:16' | '4:3' | '3:4'> = {
@@ -258,15 +234,51 @@ export async function POST(req: NextRequest) {
       };
       const aspect = aspectMap[resolution] || '16:9';
       const result = await mmGenerateImage(prompt, { aspectRatio: aspect });
-      const imageUrl = result.imageBase64;
+      const imageUrl = result.imageUrl;
 
       db.prepare(`
         INSERT INTO creatives (id, store_id, type, title, description, file_url,
           angle, nb_status, status, template_id, package_id, package_index)
         VALUES (?, ?, 'image', ?, ?, ?, ?, 'completed', 'draft', 'minimax-image', ?, ?)
       `).run(id, storeId, title, prompt, imageUrl || null, angle || null, packageId || null, packageIndex ?? null);
+      try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
 
       return jsonSuccess({ id, engine: 'minimax-image', model: result.model, imageUrl });
+
+    } else if (useEngine === 'ideogram') {
+      const arMap: Record<string, '1:1' | '4:5' | '9:16' | '16:9'> = {
+        'square': '1:1', '1:1': '1:1', '4:5': '4:5', 'portrait': '4:5',
+        '9:16': '9:16', '16:9': '16:9', 'landscape': '16:9',
+      };
+      const result = await ideogramGenerateImage(prompt, { aspectRatio: arMap[resolution] || '4:5' });
+
+      db.prepare(`
+        INSERT INTO creatives (id, store_id, type, title, description, file_url,
+          angle, nb_status, status, template_id, package_id, package_index)
+        VALUES (?, ?, 'image', ?, ?, ?, ?, 'completed', 'draft', 'ideogram', ?, ?)
+      `).run(id, storeId, title, prompt, result.imageUrl, angle || null, packageId || null, packageIndex ?? null);
+      try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
+
+      return jsonSuccess({ id, engine: 'ideogram', model: result.model, imageUrl: result.imageUrl });
+
+    } else if (useEngine === 'nano-banana') {
+      const refImage = imageUrls?.find((u: string) => u.startsWith('https://')) || undefined;
+      const arMap: Record<string, string> = { '1:1': '1:1', '4:5': '4:5', '9:16': '9:16', '16:9': '16:9', 'square': '1:1', 'portrait': '4:5' };
+      let result;
+      if (refImage) {
+        result = await nanoBananaEditImage(prompt, [refImage], { aspectRatio: arMap[resolution] || '4:5', resolution: '2K' });
+      } else {
+        result = await nanoBananaGenerateImage(prompt, { aspectRatio: arMap[resolution] || '4:5', resolution: '2K' });
+      }
+
+      db.prepare(`
+        INSERT INTO creatives (id, store_id, type, title, description, file_url,
+          angle, nb_status, status, template_id, package_id, package_index)
+        VALUES (?, ?, 'image', ?, ?, ?, ?, 'completed', 'draft', 'nano-banana', ?, ?)
+      `).run(id, storeId, title, prompt, result.imageUrl, angle || null, packageId || null, packageIndex ?? null);
+      try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
+
+      return jsonSuccess({ id, engine: 'nano-banana', model: result.model, imageUrl: result.imageUrl });
 
     } else if (useEngine === 'runway') {
       // Runway Gen-4 — image-to-video
@@ -285,6 +297,7 @@ export async function POST(req: NextRequest) {
           angle, nb_video_id, nb_status, status, template_id, package_id, package_index)
         VALUES (?, ?, 'video', ?, ?, ?, ?, 'processing', 'draft', 'runway', ?, ?)
       `).run(id, storeId, title, prompt, angle || null, result.taskId, packageId || null, packageIndex ?? null);
+      try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
 
       return jsonSuccess({ id, engine: 'runway', taskId: result.taskId });
 
@@ -301,8 +314,70 @@ export async function POST(req: NextRequest) {
           angle, nb_video_id, nb_status, status, template_id, package_id, package_index)
         VALUES (?, ?, 'video', ?, ?, ?, ?, 'processing', 'draft', 'higgsfield', ?, ?)
       `).run(id, storeId, title, prompt, angle || null, result.requestId, packageId || null, packageIndex ?? null);
+      try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
 
       return jsonSuccess({ id, engine: 'higgsfield', requestId: result.requestId });
+
+    } else if (useEngine === 'seedance') {
+      // Seedance 2.0 — ByteDance via fal.ai. Supports 4-15s, native audio, 2K
+      // Uses cinematic prompt engineering from the Seedance skills framework
+      const seedDuration = Math.max(4, Math.min(15, parseInt(duration) || 8));
+      const seedAspect = dimension === '16:9' ? '16:9' : dimension === '1:1' ? '1:1' : '9:16';
+
+      // Keep the user's original prompt/script as the core content.
+      // Only add light technical framing — do NOT override the creative direction.
+      // Build pronunciation guide for common mispronounced brand/product terms
+      const pronunciationMap: Record<string, string> = {
+        'tallow': 'TAL-oh',
+        'ozempic': 'oh-ZEM-pik',
+        'magvita': 'mag-VEE-tah',
+        'marroomi': 'ma-ROO-mee',
+        'shipsourced': 'SHIP-sorsed',
+        'purebite': 'PURE-bite',
+        'collagen': 'COL-uh-jen',
+        'magnesium': 'mag-NEE-zee-um',
+        'keratin': 'KAIR-uh-tin',
+        'hyaluronic': 'hy-uh-loo-RON-ik',
+        'retinol': 'RET-in-all',
+        'niacinamide': 'ny-uh-SIN-uh-mide',
+        'probiotic': 'pro-by-OT-ik',
+        'ashwagandha': 'ash-wah-GAHN-dah',
+      };
+      const promptLower = prompt.toLowerCase();
+      const foundTerms: string[] = [];
+      for (const [term, phonetic] of Object.entries(pronunciationMap)) {
+        if (promptLower.includes(term)) foundTerms.push(`${term} = pronounced "${phonetic}"`);
+      }
+      const pronunciationHint = foundTerms.length > 0
+        ? `\n\nPRONUNCIATION GUIDE (critical — speakers must pronounce these correctly):\n${foundTerms.join('\n')}`
+        : '';
+
+      const cinematicPrompt = `${prompt}${pronunciationHint}\n\nTECHNICAL: ${seedDuration}-second video. Aspect ratio ${seedAspect}. Photorealistic, natural lighting. Normal conversational pacing — NOT slow motion. UGC authentic feel. Speakers must use clear, correct American English pronunciation of all brand names and ingredient names.`;
+
+      let result;
+      // Always use image-to-video when a cover image is available so Seedance
+      // sees the actual product photo (not just a text description of it).
+      const seedanceImageUrl = (imageUrls?.[0] && imageUrls[0].startsWith('https://')) ? imageUrls[0] : resolvedCover || '';
+      if (seedanceImageUrl) {
+        console.log(`[COVER-TRACE][SEEDANCE-I2V] first-frame image=${seedanceImageUrl.substring(0, 120)}`);
+        result = await seedanceI2V(cinematicPrompt, seedanceImageUrl, {
+          duration: seedDuration, aspectRatio: seedAspect, generateAudio: true,
+        });
+      } else {
+        console.log(`[COVER-TRACE][SEEDANCE-T2V] prompt length=${cinematicPrompt.length} (no cover image available)`);
+        result = await seedanceT2V(cinematicPrompt, {
+          duration: seedDuration, aspectRatio: seedAspect, generateAudio: true,
+        });
+      }
+
+      db.prepare(`
+        INSERT INTO creatives (id, store_id, type, title, description,
+          angle, nb_video_id, nb_status, status, template_id, package_id, package_index)
+        VALUES (?, ?, 'video', ?, ?, ?, ?, 'processing', 'draft', 'seedance', ?, ?)
+      `).run(id, storeId, title, prompt, angle || null, result.requestId, packageId || null, packageIndex ?? null);
+      try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
+
+      return jsonSuccess({ id, engine: 'seedance', requestId: result.requestId, model: result.model });
 
     } else {
       // NanoBanana
@@ -333,11 +408,20 @@ export async function POST(req: NextRequest) {
     } catch {}
 
     // Detect quota/billing errors specifically
-    if (err.isQuota || err.code === 'insufficient_quota' || err.status === 429) {
-      console.error(`[QUOTA] ${useEngine} quota exceeded for store ${storeId} at ${new Date().toISOString()}`);
-      return jsonError('QUOTA_EXCEEDED', `${useEngine} generation unavailable — billing limit reached. Please check your API plan or try a different engine.`, { engine: useEngine, id }, 429);
+    const isQuota = err.isQuota || err.code === 'insufficient_quota' || err.status === 429
+      || (err.message && (err.message.includes('quota') || err.message.includes('depleted') || err.message.includes('billing')));
+    if (isQuota) {
+      const alternatives: Record<string, string> = {
+        sora: 'Try MiniMax (up to 6s) or Runway (up to 10s)',
+        veo: 'Try MiniMax (up to 6s) or Sora (up to 20s)',
+        minimax: 'Try Veo (up to 8s) or Sora (up to 20s)',
+        runway: 'Try MiniMax (up to 6s) or Sora (up to 20s)',
+      };
+      const alt = alternatives[useEngine] || 'Try a different engine';
+      console.error(`[QUOTA] ${useEngine} quota exceeded for store ${storeId}`);
+      return jsonError('QUOTA_EXCEEDED', `${useEngine} credits depleted. ${alt}. Top up at your provider's billing page.`, { engine: useEngine, id }, 429);
     }
-    return jsonError('PROVIDER_ERROR', `${useEngine} API error: ${err.message}`, { engine: useEngine, id }, 500);
+    return jsonError('PROVIDER_ERROR', `${useEngine} error: ${err.message?.substring(0, 200)}`, { engine: useEngine, id }, 500);
   }
 }
 
@@ -370,11 +454,39 @@ export async function GET(req: NextRequest) {
       const status = await soraGetStatus(creative.nb_video_id);
       if (status.status === 'completed') {
         const downloadUrl = await getVideoDownloadUrl(creative.nb_video_id);
-        db.prepare("UPDATE creatives SET nb_status = 'completed', file_url = ?, updated_at = datetime('now') WHERE id = ?").run(downloadUrl, id);
+
+        // Strip audio from Sora video — Sora generates glitchy background sounds
+        let finalUrl = downloadUrl;
+        try {
+          const { execSync } = await import('child_process');
+          const { writeFileSync, mkdirSync, unlinkSync } = await import('fs');
+          const path = await import('path');
+          const tmpDir = path.join(process.cwd(), 'tmp');
+          mkdirSync(tmpDir, { recursive: true });
+          const tmpIn = path.join(tmpDir, `sora_${id}.mp4`);
+          const outName = `sora_silent_${id}.mp4`;
+          const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
+          mkdirSync(uploadsDir, { recursive: true });
+          const tmpOut = path.join(uploadsDir, outName);
+
+          // Download from Sora (needs auth header)
+          const key = process.env.OPENAI_API_KEY || '';
+          const dlRes = await fetch(downloadUrl, { headers: { 'Authorization': `Bearer ${key}` } });
+          if (dlRes.ok) {
+            writeFileSync(tmpIn, Buffer.from(await dlRes.arrayBuffer()));
+            // Remove audio track entirely
+            execSync(`ffmpeg -y -i "${tmpIn}" -an -c:v copy "${tmpOut}"`, { timeout: 30000, stdio: 'pipe' });
+            finalUrl = `/api/products/uploads?file=${outName}`;
+            console.log(`[SORA] Stripped audio from video ${id}`);
+            try { unlinkSync(tmpIn); } catch {}
+          }
+        } catch (e: any) {
+          console.error(`[SORA] Audio strip failed (using original):`, e.message);
+        }
+
+        db.prepare("UPDATE creatives SET nb_status = 'completed', file_url = ?, updated_at = datetime('now') WHERE id = ?").run(finalUrl, id);
         creative.nb_status = 'completed';
-        creative.file_url = downloadUrl;
-        // Auto-finalize: add voiceover + mux (runs in background)
-        autoFinalize(id, downloadUrl, creative.description, db).catch(() => {});
+        creative.file_url = finalUrl;
       } else if (status.status === 'failed') {
         db.prepare("UPDATE creatives SET nb_status = 'failed', updated_at = datetime('now') WHERE id = ?").run(id);
         creative.nb_status = 'failed';
@@ -411,8 +523,6 @@ export async function GET(req: NextRequest) {
         db.prepare("UPDATE creatives SET nb_status = 'completed', file_url = ?, updated_at = datetime('now') WHERE id = ?").run(status.videoUrl, id);
         creative.nb_status = 'completed';
         creative.file_url = status.videoUrl;
-        // Auto-finalize: add voiceover + mux (runs in background)
-        autoFinalize(id, status.videoUrl, creative.description, db).catch(() => {});
       } else if (status.status === 'FAILED') {
         db.prepare("UPDATE creatives SET nb_status = 'failed', updated_at = datetime('now') WHERE id = ?").run(id);
         creative.nb_status = 'failed';
@@ -425,12 +535,24 @@ export async function GET(req: NextRequest) {
         db.prepare("UPDATE creatives SET nb_status = 'completed', file_url = ?, updated_at = datetime('now') WHERE id = ?").run(status.videoUrl, id);
         creative.nb_status = 'completed';
         creative.file_url = status.videoUrl;
-        autoFinalize(id, status.videoUrl, creative.description, db).catch(() => {});
       } else if (status.status === 'failed' || status.status === 'nsfw') {
         db.prepare("UPDATE creatives SET nb_status = 'failed', updated_at = datetime('now') WHERE id = ?").run(id);
         creative.nb_status = 'failed';
       }
       return jsonSuccess({ creative, status: status.status === 'completed' ? 'completed' : status.status === 'failed' || status.status === 'nsfw' ? 'failed' : 'processing', providerError: status.error });
+
+    } else if (engineType === 'seedance') {
+      const endpoint = creative.type === 'video' && creative.file_url ? 'bytedance/seedance-2.0/image-to-video' : 'bytedance/seedance-2.0/text-to-video';
+      const status = await seedanceGetStatus(creative.nb_video_id, endpoint);
+      if (status.status === 'COMPLETED' && status.videoUrl) {
+        db.prepare("UPDATE creatives SET nb_status = 'completed', file_url = ?, updated_at = datetime('now') WHERE id = ?").run(status.videoUrl, id);
+        creative.nb_status = 'completed';
+        creative.file_url = status.videoUrl;
+      } else if (status.status === 'FAILED') {
+        db.prepare("UPDATE creatives SET nb_status = 'failed', updated_at = datetime('now') WHERE id = ?").run(id);
+        creative.nb_status = 'failed';
+      }
+      return jsonSuccess({ creative, status: status.status === 'COMPLETED' ? 'completed' : status.status === 'FAILED' ? 'failed' : 'processing', providerError: status.error });
 
     } else {
       // NanoBanana

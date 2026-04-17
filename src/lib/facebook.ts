@@ -12,6 +12,27 @@
 const FB_API_VERSION = 'v24.0';
 const FB_GRAPH_URL = `https://graph.facebook.com/${FB_API_VERSION}`;
 
+// Rate-limit retry helper
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, label = ''): Promise<T> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const isRateLimit = err.code === 17 || err.code === 32 || err.status === 429
+        || (err.message && err.message.includes('request limit'));
+      if (isRateLimit && attempt < maxRetries) {
+        const waitMs = attempt * 15000;
+        console.log(`[FB-RETRY] ${label} rate limited, waiting ${waitMs/1000}s (attempt ${attempt}/${maxRetries})`);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('withRetry exhausted');
+}
+
+
 const FB_APP_ID = process.env.FB_APP_ID || '';
 const FB_APP_SECRET = process.env.FB_APP_SECRET || '';
 
@@ -351,6 +372,7 @@ export interface FBBillingCharge {
   currency: string;
   transaction_id: string;
   funding_source_id?: string;
+  card_last4?: string;
 }
 
 export async function getBillingCharges(
@@ -379,7 +401,6 @@ export async function getBillingCharges(
           amount_cents: extra.new_value,
           currency: extra.currency || 'USD',
           transaction_id: extra.transaction_id,
-          funding_source_id: extra.funding_source_id || extra.payment_method_id || undefined,
         });
       } catch {
         continue;
@@ -392,36 +413,26 @@ export async function getBillingCharges(
   return allCharges;
 }
 
-// Get ALL payment methods on an ad account (not just the current one)
-export interface FBPaymentMethod {
-  id: string;
-  display_string: string;
-  type: number;
-  card_last4?: string;
-}
-
+// Get all payment methods on an ad account (for billing reconciliation)
 export async function getAccountPaymentMethods(
   adAccountId: string,
   accessToken: string
-): Promise<FBPaymentMethod[]> {
+): Promise<{ id: string; display_string: string; card_last4: string }[]> {
   try {
     const res = await fetch(
-      `${FB_GRAPH_URL}/${adAccountId}?fields=all_payment_methods{pm_credit_card{display_string,exp_month,exp_year,is_verified}}&access_token=${accessToken}`
+      `${FB_GRAPH_URL}/${adAccountId}?fields=funding_source_details{id,display_string,card_last4}&access_token=${accessToken}`
     );
     if (!res.ok) return [];
     const data = await res.json();
-    const methods: FBPaymentMethod[] = [];
-    const creditCards = data.all_payment_methods?.pm_credit_card?.data || [];
-    for (const card of creditCards) {
-      const match = (card.display_string || '').match(/(\d{4})\s*$/);
-      methods.push({
-        id: card.id || '',
-        display_string: card.display_string || '',
-        type: 1,
-        card_last4: match ? match[1] : undefined,
-      });
-    }
-    return methods;
+    const fs = data.funding_source_details;
+    if (!fs) return [];
+    // Funding source can be a single object or an array
+    const list = Array.isArray(fs) ? fs : [fs];
+    return list.map((p: any) => ({
+      id: p.id || '',
+      display_string: p.display_string || '',
+      card_last4: p.card_last4 || (p.display_string?.match(/(\d{4})\s*$/) || [])[1] || '',
+    })).filter(p => p.id);
   } catch {
     return [];
   }
@@ -455,274 +466,46 @@ export async function debugToken(accessToken: string): Promise<{
   return data.data;
 }
 
-// ═══════════════════════════════════════════════════════
-// Ad Publishing — Campaign, Ad Set, Creative, Ad creation
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════
+// CAMPAIGN & AD SET LISTING
+// ═══════════════════════════════════════════════
 
-export interface FBCampaignSummary {
-  id: string;
-  name: string;
-  objective: string;
-  status: string;
-  daily_budget?: string;
-}
-
-export interface FBAdSetSummary {
-  id: string;
-  name: string;
-  status: string;
-  daily_budget?: string;
-  optimization_goal?: string;
-}
-
-// List existing campaigns for an ad account
 export async function getCampaigns(
   adAccountId: string,
   accessToken: string
-): Promise<FBCampaignSummary[]> {
+): Promise<{ id: string; name: string; status: string; objective: string }[]> {
   const res = await fetch(
-    `${FB_GRAPH_URL}/${adAccountId}/campaigns?fields=id,name,objective,status,daily_budget&filtering=[{"field":"effective_status","operator":"IN","value":["ACTIVE","PAUSED"]}]&limit=100&access_token=${accessToken}`
+    `${FB_GRAPH_URL}/${adAccountId}/campaigns?fields=id,name,status,objective&limit=100&access_token=${accessToken}`
   );
-  if (!res.ok) throw new Error(`FB campaigns fetch failed: ${await res.text()}`);
+  if (!res.ok) throw new Error(`FB getCampaigns failed: ${await res.text()}`);
   const data = await res.json();
   return data.data || [];
 }
 
-// List existing ad sets for a campaign
 export async function getAdSets(
   campaignId: string,
   accessToken: string
-): Promise<FBAdSetSummary[]> {
-  const res = await fetch(
-    `${FB_GRAPH_URL}/${campaignId}/adsets?fields=id,name,status,daily_budget,optimization_goal&filtering=[{"field":"effective_status","operator":"IN","value":["ACTIVE","PAUSED"]}]&limit=100&access_token=${accessToken}`
-  );
-  if (!res.ok) throw new Error(`FB ad sets fetch failed: ${await res.text()}`);
-  const data = await res.json();
-  return data.data || [];
-}
-
-// Create a new campaign
-export async function createCampaign(
-  adAccountId: string,
-  accessToken: string,
-  opts: {
-    name: string;
-    objective: string;
-    status: 'PAUSED' | 'ACTIVE';
-    specialAdCategories?: string[];
-  }
-): Promise<{ id: string }> {
-  const body: any = {
-    name: opts.name,
-    objective: opts.objective,
-    status: opts.status,
-    special_ad_categories: opts.specialAdCategories || [],
-    access_token: accessToken,
-  };
-
-  const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/campaigns`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`FB campaign creation failed: ${await res.text()}`);
-  return res.json();
-}
-
-// Create a new ad set
-export async function createAdSet(
-  adAccountId: string,
-  accessToken: string,
-  opts: {
-    name: string;
-    campaignId: string;
-    dailyBudgetCents?: number;
-    dailyBudget?: number;
-    targeting: { geo_locations: { countries: string[] }; age_min?: number; age_max?: number };
-    optimizationGoal?: string;
-    billingEvent?: string;
-    status: 'PAUSED' | 'ACTIVE';
-    pixelId?: string;
-    customEventType?: string;
-    bidStrategy?: string;
-  }
-): Promise<{ id: string }> {
-  const body: any = {
-    name: opts.name,
-    campaign_id: opts.campaignId,
-    daily_budget: opts.dailyBudgetCents || opts.dailyBudget || 3000,
-    targeting: opts.targeting,
-    optimization_goal: opts.optimizationGoal || 'OFFSITE_CONVERSIONS',
-    billing_event: opts.billingEvent || 'IMPRESSIONS',
-    status: opts.status,
-    access_token: accessToken,
-  };
-
-  if (opts.pixelId) {
-    body.promoted_object = {
-      pixel_id: opts.pixelId,
-      custom_event_type: opts.customEventType || 'PURCHASE',
-    };
-  }
-
-  if (opts.bidStrategy) {
-    body.bid_strategy = opts.bidStrategy;
-  }
-
-  const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/adsets`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`FB ad set creation failed: ${await res.text()}`);
-  return res.json();
-}
-
-// Create an ad creative (video or image ad)
-export async function createAdCreative(
-  adAccountId: string,
-  accessToken: string,
-  opts: {
-    name: string;
-    pageId: string;
-    // Video creative fields
-    videoId?: string;
-    thumbnailUrl?: string;
-    title?: string;
-    message?: string;
-    linkDescription?: string;
-    ctaType?: string;
-    ctaLink?: string;
-    // Image creative fields
-    imageHash?: string;
-    headline?: string;
-    primaryText?: string;
-    linkUrl?: string;
-    callToAction?: string;
-    description?: string;
-  }
-): Promise<{ id: string }> {
-  let body: any;
-
-  if (opts.imageHash) {
-    // Image ad creative
-    body = {
-      name: opts.name,
-      object_story_spec: {
-        page_id: opts.pageId,
-        link_data: {
-          image_hash: opts.imageHash,
-          link: opts.linkUrl || opts.ctaLink || '',
-          message: opts.primaryText || opts.message || '',
-          name: opts.headline || opts.title || '',
-          call_to_action: {
-            type: opts.callToAction || opts.ctaType || 'SHOP_NOW',
-            value: { link: opts.linkUrl || opts.ctaLink || '' },
-          },
-        },
-      },
-      access_token: accessToken,
-    };
-  } else {
-    // Video ad creative
-    const videoData: any = {
-      video_id: opts.videoId,
-      title: opts.title || '',
-      message: opts.message || '',
-      call_to_action: {
-        type: opts.ctaType || 'SHOP_NOW',
-        value: { link: opts.ctaLink || '' },
-      },
-    };
-
-    if (opts.thumbnailUrl) {
-      videoData.image_url = opts.thumbnailUrl;
-    } else if (opts.videoId) {
-      try {
-        const thumbRes = await fetch(
-          `${FB_GRAPH_URL}/${opts.videoId}?fields=thumbnails&access_token=${accessToken}`
-        );
-        if (thumbRes.ok) {
-          const thumbData = await thumbRes.json();
-          const autoThumb = thumbData.thumbnails?.data?.[0]?.uri;
-          if (autoThumb) videoData.image_url = autoThumb;
-        }
-      } catch {}
+): Promise<{ id: string; name: string; status: string; daily_budget: string }[]> {
+  return withRetry(async () => {
+    const res = await fetch(
+      `${FB_GRAPH_URL}/${campaignId}/adsets?fields=id,name,status,daily_budget&limit=100&access_token=${accessToken}`
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      const err = new Error(`FB getAdSets failed: ${text}`) as any;
+      try { const j = JSON.parse(text); err.code = j?.error?.code; } catch {}
+      err.status = res.status;
+      throw err;
     }
-    if (opts.linkDescription) {
-      videoData.link_description = opts.linkDescription;
-    }
-
-    body = {
-      name: opts.name,
-      object_story_spec: {
-        page_id: opts.pageId,
-        video_data: videoData,
-      },
-      access_token: accessToken,
-    };
-  }
-
-  const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/adcreatives`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`FB ad creative creation failed: ${await res.text()}`);
-  return res.json();
+    const data = await res.json();
+    return data.data || [];
+  }, 3, `getAdSets(${campaignId})`);
 }
 
-// Create an ad (links creative to ad set)
-export async function createAd(
-  adAccountId: string,
-  accessToken: string,
-  opts: {
-    name: string;
-    adsetId?: string;
-    adSetId?: string;
-    creativeId: string;
-    status: 'PAUSED' | 'ACTIVE';
-  }
-): Promise<{ id: string }> {
-  const body = {
-    name: opts.name,
-    adset_id: opts.adsetId || opts.adSetId,
-    creative: { creative_id: opts.creativeId },
-    status: opts.status,
-    access_token: accessToken,
-  };
+// ═══════════════════════════════════════════════
+// VIDEO UPLOAD & PROCESSING
+// ═══════════════════════════════════════════════
 
-  const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/ads`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`FB ad creation failed: ${await res.text()}`);
-  return res.json();
-}
-
-// Upload image to ad account (returns image hash for ad creative)
-export async function uploadAdImage(
-  adAccountId: string,
-  accessToken: string,
-  imageUrl: string
-): Promise<{ hash: string }> {
-  const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/adimages`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      url: imageUrl,
-      access_token: accessToken,
-    }),
-  });
-  if (!res.ok) throw new Error(`FB image upload failed: ${await res.text()}`);
-  const data = await res.json();
-  const images = data.images || {};
-  const firstKey = Object.keys(images)[0];
-  return { hash: images[firstKey]?.hash || '' };
-}
-
-// Upload video from buffer (binary upload — no public URL needed)
 export async function uploadVideoFromBuffer(
   adAccountId: string,
   accessToken: string,
@@ -731,10 +514,11 @@ export async function uploadVideoFromBuffer(
   description?: string
 ): Promise<{ id: string }> {
   const formData = new FormData();
-  formData.append('source', new Blob([videoBuffer as any], { type: 'video/mp4' }), 'video.mp4');
+  formData.append('access_token', accessToken);
   formData.append('title', title);
   if (description) formData.append('description', description);
-  formData.append('access_token', accessToken);
+  const videoBlob = new Blob([new Uint8Array(videoBuffer)], { type: 'video/mp4' });
+  formData.append('source', videoBlob, 'video.mp4');
 
   const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/advideos`, {
     method: 'POST',
@@ -744,16 +528,389 @@ export async function uploadVideoFromBuffer(
   return res.json();
 }
 
-// Check video processing status after upload
 export async function checkVideoProcessingStatus(
   videoId: string,
   accessToken: string
-): Promise<{ status: string; thumbnailUrl?: string }> {
+): Promise<{ status: string; processing_progress: number; thumbnailUrl?: string }> {
+  // Note: 'processing_progress' is NOT a valid field on Meta advideos. Only 'status' and 'thumbnails'.
   const res = await fetch(
     `${FB_GRAPH_URL}/${videoId}?fields=status,thumbnails&access_token=${accessToken}`
   );
-  if (!res.ok) throw new Error(`FB video status check failed: ${await res.text()}`);
+  if (!res.ok) {
+    const rawText = await res.text().catch(() => '');
+    throw new Error(`FB video status check failed: ${rawText.substring(0, 300)}`);
+  }
   const data = await res.json();
-  const thumbnailUrl = data.thumbnails?.data?.[0]?.uri || undefined;
-  return { status: data.status?.video_status || 'processing', thumbnailUrl };
+  // Meta returns status as an object: { video_status: "ready" | "processing" | "error" | ... }
+  // Normalize to a simple string.
+  const videoStatus = data.status?.video_status || data.status || 'unknown';
+  return {
+    status: typeof videoStatus === 'string' ? videoStatus : 'unknown',
+    processing_progress: 0, // Not available from Meta; kept for interface compat
+    thumbnailUrl: data.thumbnails?.data?.[0]?.uri || undefined,
+  };
+}
+
+// ═══════════════════════════════════════════════
+// META ADS CREATION (Campaign → Ad Set → Ad)
+// ═══════════════════════════════════════════════
+
+async function fbPost(path: string, accessToken: string, body: Record<string, any>): Promise<any> {
+  // Log the full payload (with token redacted) so we can see exactly what was sent
+  const debugBody = { ...body };
+  console.log(`[FB-POST] ${path}`, JSON.stringify(debugBody).substring(0, 1500));
+
+  let res: Response;
+  try {
+    res = await fetch(`${FB_GRAPH_URL}/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, access_token: accessToken }),
+    });
+  } catch (netErr: any) {
+    const err = new Error(`FB network error: ${netErr.message}`) as any;
+    err.code = 'NETWORK';
+    err.status = 0;
+    throw err;
+  }
+
+  // Safe JSON parse — handles HTML/non-JSON error responses
+  let data: any;
+  const rawText = await res.text();
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    const err = new Error(`FB returned non-JSON response (HTTP ${res.status}): ${rawText.substring(0, 200)}`) as any;
+    err.status = res.status;
+    err.code = 'NON_JSON';
+    throw err;
+  }
+
+  if (data.error || !res.ok) {
+    const fbError = data.error || {};
+
+    // Build the most informative message possible from Meta's error response
+    const parts: string[] = [];
+
+    // Top-level message
+    if (fbError.message) parts.push(fbError.message);
+
+    // User-facing message (often more specific than message)
+    if (fbError.error_user_msg && fbError.error_user_msg !== fbError.message) {
+      parts.push(`(${fbError.error_user_msg})`);
+    }
+
+    // Field-specific blame (most useful for "Invalid parameter")
+    if (fbError.error_data?.blame_field_specs) {
+      const fields = JSON.stringify(fbError.error_data.blame_field_specs);
+      parts.push(`Field: ${fields}`);
+    }
+
+    // Subcode for further classification
+    if (fbError.error_subcode) {
+      parts.push(`subcode=${fbError.error_subcode}`);
+    }
+
+    // Code
+    if (fbError.code) {
+      parts.push(`code=${fbError.code}`);
+    }
+
+    // Type
+    if (fbError.type && fbError.type !== 'OAuthException') {
+      parts.push(`type=${fbError.type}`);
+    }
+
+    const fullMessage = parts.filter(Boolean).join(' | ') || 'Facebook API error';
+
+    // Log full error response for debugging
+    console.error(`[FB-POST ERROR] ${path}:`, JSON.stringify(fbError, null, 2).substring(0, 2000));
+
+    const err = new Error(fullMessage) as any;
+    err.fbError = fbError;
+    err.status = res.status;
+    err.code = fbError.code;
+    err.subcode = fbError.error_subcode;
+    err.blameFields = fbError.error_data?.blame_field_specs;
+    throw err;
+  }
+
+  console.log(`[FB-POST OK] ${path} → ${data.id || JSON.stringify(data).substring(0, 200)}`);
+  return data;
+}
+
+// Rate-limit-aware POST wrapper
+async function fbPostWithRetry(path: string, accessToken: string, body: Record<string, any>): Promise<any> {
+  return withRetry(() => fbPost(path, accessToken, body), 3, path);
+}
+
+/**
+ * Upload image to ad account for use in ad creatives.
+ * Returns the image hash needed for creating ad creatives.
+ */
+/**
+ * Upload image to Facebook ad account.
+ * Accepts either:
+ * - A public URL (will be downloaded)
+ * - A base64-encoded string (already downloaded)
+ */
+export async function uploadAdImage(
+  adAccountId: string,
+  accessToken: string,
+  imageUrlOrBase64: string,
+): Promise<{ hash: string; url: string }> {
+  let b64: string;
+
+  // Check if it's already base64 (no protocol prefix, long string)
+  if (!imageUrlOrBase64.startsWith('http') && !imageUrlOrBase64.startsWith('/') && imageUrlOrBase64.length > 500) {
+    b64 = imageUrlOrBase64;
+  } else {
+    // Download from URL
+    const imgRes = await fetch(imageUrlOrBase64);
+    if (!imgRes.ok) throw new Error(`Failed to download image for FB upload: ${imgRes.status}`);
+    const buf = Buffer.from(await imgRes.arrayBuffer());
+    b64 = buf.toString('base64');
+  }
+
+  const data = await fbPost(`${adAccountId}/adimages`, accessToken, {
+    bytes: b64,
+  });
+
+  const imgData = data.images?.bytes;
+  if (!imgData?.hash) throw new Error('Facebook image upload returned no hash');
+  return { hash: imgData.hash, url: imgData.url || '' };
+}
+
+/**
+ * Create an ABO campaign (no campaign budget optimization).
+ * Tries OUTCOME_SALES first, falls back to OUTCOME_TRAFFIC if account doesn't support it.
+ */
+export async function createCampaign(
+  adAccountId: string,
+  accessToken: string,
+  options: {
+    name: string;
+    objective?: string;
+    status?: string;
+    specialAdCategories?: string[];
+  }
+): Promise<{ id: string }> {
+  const objective = options.objective || 'OUTCOME_SALES';
+  const payload = {
+    name: options.name,
+    objective,
+    buying_type: 'AUCTION',
+    status: options.status || 'PAUSED',
+    special_ad_categories: options.specialAdCategories || [],
+    // Required by Meta API v24+ when not using campaign budget optimization (CBO).
+    // false = each ad set has its own budget (true ABO), no sharing.
+    is_adset_budget_sharing_enabled: false,
+  };
+
+  try {
+    return await fbPostWithRetry(`${adAccountId}/campaigns`, accessToken, payload);
+  } catch (err: any) {
+    // If the failure is about objective compatibility, try OUTCOME_TRAFFIC as fallback
+    const errMsg = (err.message || '').toLowerCase();
+    const isObjectiveError = errMsg.includes('objective') || err.subcode === 1487090 || err.code === 100;
+
+    if (isObjectiveError && objective === 'OUTCOME_SALES') {
+      console.log('[CAMPAIGN] OUTCOME_SALES failed, trying OUTCOME_TRAFFIC');
+      try {
+        return await fbPostWithRetry(`${adAccountId}/campaigns`, accessToken, {
+          ...payload,
+          objective: 'OUTCOME_TRAFFIC',
+        });
+      } catch (err2: any) {
+        // Re-throw with combined context
+        const combined = new Error(`Campaign creation failed. Tried OUTCOME_SALES and OUTCOME_TRAFFIC. Last error: ${err2.message}`) as any;
+        combined.fbError = err2.fbError;
+        combined.status = err2.status;
+        throw combined;
+      }
+    }
+    throw err;
+  }
+}
+
+/**
+ * Create an ad set within a campaign.
+ */
+export async function createAdSet(
+  adAccountId: string,
+  accessToken: string,
+  options: {
+    name: string;
+    campaignId: string;
+    dailyBudget?: number;
+    dailyBudgetCents?: number;
+    optimizationGoal?: string;
+    billingEvent?: string;
+    status?: string;
+    targeting?: Record<string, any>;
+    pixelId?: string;
+    startTime?: string;
+    pageId?: string;
+    [key: string]: any; // Allow additional fields from push-to-fb
+  }
+): Promise<{ id: string }> {
+  const budget = options.dailyBudget || options.dailyBudgetCents || 3000;
+  const body: Record<string, any> = {
+    name: options.name,
+    campaign_id: options.campaignId,
+    daily_budget: budget,
+    optimization_goal: options.optimizationGoal || 'OFFSITE_CONVERSIONS',
+    billing_event: options.billingEvent || 'IMPRESSIONS',
+    status: options.status || 'PAUSED',
+    bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
+    targeting: options.targeting || {
+      geo_locations: { countries: ['US'] },
+      age_min: 25,
+      age_max: 65,
+    },
+  };
+
+  // Add pixel for conversion tracking
+  if (options.pixelId) {
+    body.promoted_object = {
+      pixel_id: options.pixelId,
+      custom_event_type: 'PURCHASE',
+    };
+  }
+
+  // Start time (must be in the future)
+  if (options.startTime) {
+    body.start_time = options.startTime;
+  }
+
+  return fbPostWithRetry(`${adAccountId}/adsets`, accessToken, body);
+}
+
+/**
+ * Normalize a CTA value to a valid Meta call_to_action type.
+ * Accepts: "Shop Now", "shop_now", "SHOP_NOW" → returns "SHOP_NOW"
+ */
+function normalizeCtaType(cta: string | undefined): string {
+  if (!cta) return 'SHOP_NOW';
+  const normalized = cta.trim().toUpperCase().replace(/\s+/g, '_').replace(/-/g, '_');
+  // Valid Meta CTA types — verified against API docs
+  const validCtas = new Set([
+    'SHOP_NOW', 'LEARN_MORE', 'SIGN_UP', 'GET_OFFER', 'BOOK_TRAVEL', 'DOWNLOAD',
+    'WATCH_MORE', 'CONTACT_US', 'APPLY_NOW', 'BUY_NOW', 'GET_QUOTE', 'SUBSCRIBE',
+    'GET_SHOWTIMES', 'LISTEN_MUSIC', 'ORDER_NOW', 'GET_DIRECTIONS', 'OPEN_LINK',
+    'CALL_NOW', 'INSTALL_APP', 'USE_APP', 'PLAY_GAME', 'INSTALL_MOBILE_APP',
+    'USE_MOBILE_APP', 'MOBILE_DOWNLOAD', 'NO_BUTTON',
+  ]);
+  return validCtas.has(normalized) ? normalized : 'SHOP_NOW';
+}
+
+/**
+ * Validate and normalize a landing page URL.
+ * Returns a valid URL or throws.
+ */
+function validateLandingUrl(url: string): string {
+  if (!url) throw new Error('Landing page URL is required');
+  const trimmed = url.trim();
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    // Auto-prepend https://
+    return `https://${trimmed}`;
+  }
+  return trimmed;
+}
+
+/**
+ * Create an ad creative (image ad).
+ */
+export async function createAdCreative(
+  adAccountId: string,
+  accessToken: string,
+  options: {
+    name: string;
+    pageId: string;
+    // Image ad fields
+    imageHash?: string;
+    headline?: string;
+    primaryText?: string;
+    linkUrl?: string;
+    callToAction?: string;
+    description?: string;
+    // Video ad fields (used by push-to-fb)
+    videoId?: string;
+    thumbnailUrl?: string;
+    title?: string;
+    message?: string;
+    ctaType?: string;
+    ctaLink?: string;
+    [key: string]: any;
+  }
+): Promise<{ id: string }> {
+  // Validate page ID
+  if (!options.pageId) throw new Error('createAdCreative: pageId is required');
+
+  // Video ad creative
+  if (options.videoId) {
+    const ctaLink = validateLandingUrl(options.ctaLink || options.linkUrl || '');
+    const ctaType = normalizeCtaType(options.ctaType || options.callToAction);
+    return fbPostWithRetry(`${adAccountId}/adcreatives`, accessToken, {
+      name: options.name,
+      object_story_spec: {
+        page_id: options.pageId,
+        video_data: {
+          video_id: options.videoId,
+          title: (options.title || options.headline || '').substring(0, 255),
+          message: (options.message || options.primaryText || '').substring(0, 5000),
+          image_url: options.thumbnailUrl || '',
+          call_to_action: {
+            type: ctaType,
+            value: { link: ctaLink },
+          },
+        },
+      },
+    });
+  }
+
+  // Image ad creative
+  if (!options.imageHash) throw new Error('createAdCreative: imageHash is required for image ads');
+  const link = validateLandingUrl(options.linkUrl || options.ctaLink || '');
+  const ctaType = normalizeCtaType(options.callToAction || options.ctaType);
+  return fbPostWithRetry(`${adAccountId}/adcreatives`, accessToken, {
+    name: options.name,
+    object_story_spec: {
+      page_id: options.pageId,
+      link_data: {
+        image_hash: options.imageHash,
+        link,
+        message: (options.primaryText || options.message || '').substring(0, 5000),
+        name: (options.headline || options.title || '').substring(0, 255),
+        description: (options.description || '').substring(0, 255),
+        call_to_action: {
+          type: ctaType,
+          value: { link },
+        },
+      },
+    },
+  });
+}
+
+/**
+ * Create an ad inside an ad set using a creative.
+ */
+export async function createAd(
+  adAccountId: string,
+  accessToken: string,
+  options: {
+    name: string;
+    adSetId?: string;
+    adsetId?: string; // alias used by push-to-fb
+    creativeId: string;
+    status?: string;
+    [key: string]: any;
+  }
+): Promise<{ id: string }> {
+  return fbPostWithRetry(`${adAccountId}/ads`, accessToken, {
+    name: options.name,
+    adset_id: options.adSetId || options.adsetId,
+    creative: { creative_id: options.creativeId },
+    status: options.status || 'PAUSED',
+  });
 }
