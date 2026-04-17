@@ -355,16 +355,17 @@ export async function POST(req: NextRequest) {
       const cinematicPrompt = `${prompt}${pronunciationHint}\n\nTECHNICAL: ${seedDuration}-second video. Aspect ratio ${seedAspect}. Photorealistic, natural lighting. Normal conversational pacing — NOT slow motion. UGC authentic feel. Speakers must use clear, correct American English pronunciation of all brand names and ingredient names.`;
 
       let result;
-      // Always use image-to-video when a cover image is available so Seedance
-      // sees the actual product photo (not just a text description of it).
-      const seedanceImageUrl = (imageUrls?.[0] && imageUrls[0].startsWith('https://')) ? imageUrls[0] : resolvedCover || '';
-      if (seedanceImageUrl) {
-        console.log(`[COVER-TRACE][SEEDANCE-I2V] first-frame image=${seedanceImageUrl.substring(0, 120)}`);
-        result = await seedanceI2V(cinematicPrompt, seedanceImageUrl, {
+      if (type === 'image-to-video' && imageUrls?.[0] && imageUrls[0].startsWith('https://')) {
+        // Legacy path — only triggered if caller explicitly sets image-to-video.
+        // The Creative Tab no longer uses this for video generation (cover image
+        // is injected via vision description in the prompt above), but we keep
+        // this branch for any direct API callers that want literal i2v.
+        console.log(`[COVER-TRACE][SEEDANCE-I2V] first-frame image=${imageUrls[0].substring(0, 120)}`);
+        result = await seedanceI2V(cinematicPrompt, imageUrls[0], {
           duration: seedDuration, aspectRatio: seedAspect, generateAudio: true,
         });
       } else {
-        console.log(`[COVER-TRACE][SEEDANCE-T2V] prompt length=${cinematicPrompt.length} (no cover image available)`);
+        console.log(`[COVER-TRACE][SEEDANCE-T2V] prompt length=${cinematicPrompt.length} (no opening frame; cover described in prompt)`);
         result = await seedanceT2V(cinematicPrompt, {
           duration: seedDuration, aspectRatio: seedAspect, generateAudio: true,
         });
