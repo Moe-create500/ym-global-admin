@@ -4,9 +4,9 @@ import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import StoreSelector from '@/components/StoreSelector';
 import { cents } from '@/lib/format';
-import { buildProductImagePlan } from '@/lib/creative-taxonomy';
+import { buildProductImagePlan, buildImageRenderDirective } from '@/lib/creative-taxonomy';
 
-interface Store { id: string; name: string; shopify_domain?: string; }
+interface Store { id: string; name: string; }
 
 interface Ad {
   adId: string;
@@ -69,7 +69,8 @@ interface Creative {
   created_at: string;
   batch_id?: string | null;
   batch_index?: number | null;
-  progress?: number | null;
+  package_id?: string | null;
+  format?: string | null;  // Aspect ratio: '4:5', '1:1', '9:16', '16:9'
 }
 
 interface PromptItem {
@@ -119,6 +120,18 @@ interface Product {
 // ═══ Creative Generator Types ═══
 
 interface GeneratorConfig {
+  // Primary controls (top-level, always visible)
+  engine: 'sora' | 'runway' | 'higgsfield' | 'veo' | 'seedance' | 'nano-banana' | 'stability' | 'ideogram' | 'auto';
+  genMode: 'new' | 'existing' | 'full_funnel' | 'clone_ad';
+  contentMix: 'video' | 'image' | 'mixed' | 'full_funnel';
+  funnelStructure: 'tof' | 'mof' | 'bof' | 'full';
+  productId: string;
+  coverImageUrl: string;
+  conceptAngle: string;
+  quantity: number;          // concepts per generation
+  videosPerConcept: number;  // videos per concept per stage
+  imagesPerConcept: number;  // images per concept per stage (used when contentMix=mixed or image)
+  // Kept for backward compatibility / advanced
   contentType: 'video' | 'image';
   creativeType: string;
   funnelStage: 'tof' | 'mof' | 'bof';
@@ -126,10 +139,10 @@ interface GeneratorConfig {
   avatarStyle: string;
   generationGoal: string;
   platformTarget: 'meta' | 'tiktok';
-  quantity: number;
-  productId: string;
   offer: string;
   baseAdId: string;
+  dimension: '4:5' | '1:1' | '9:16' | '16:9' | 'auto';
+  videoDuration: 8 | 10 | 15 | 20;
 }
 
 interface VideoPackage {
@@ -150,16 +163,34 @@ interface VideoPackage {
 interface ImagePackage {
   title: string;
   angle: string;
+  imageFormat: string;
   headline: string;
+  subheadline?: string;
+  hookText: string;
+  proofElement: string;
+  productPlacement: string;
   conceptAngle: string;
   visualComposition: string;
+  textOverlays?: { text: string; position: string; fontSize: string; fontWeight: string; color: string }[];
   offerPlacement: string;
-  ctaDirection: string;
+  ctaText: string;
+  ctaPlacement: string;
+  colorScheme?: { background: string; textPrimary: string; accent: string };
   adCopy: string;
   variants: string[];
 }
 
 type CreativePackage = VideoPackage | ImagePackage;
+
+interface RenderJob {
+  status: 'queued' | 'rendering' | 'completed' | 'failed';
+  engine: string;
+  imageUrl?: string;
+  creativeId?: string;
+  error?: string;
+  startedAt: string;
+  completedAt?: string;
+}
 
 interface AccountIntelligence {
   metrics: { totalAds: number; adsWithPurchases: number; totalSpendCents: number; totalPurchases: number; avgRoas: number; avgCtr: number; avgCpa: number; avgCvr: number };
@@ -177,7 +208,8 @@ interface AccountIntelligence {
     scalingSignals: { adId: string; name: string; spendIncrease: number; recentRoas: number }[];
   };
   productPerformance: { productId: string; name: string; imageUrl: string | null; roas: number; purchases: number; spendCents: number }[];
-  recommendations: { contentType: string; funnelStage: string; hookStyle: string; confidence: number; reasons: string[] };
+  recommendations: { contentType: string; funnelStage: string; hookStyle: string; provider: string; aspectRatio: string; duration: number; confidence: number; reasons: string[] };
+  conceptScores?: { conceptName: string; adsetId: string; adCount: number; spendCents: number; purchases: number; roas: number; avgCtr: number; avgCpa: number | null; isFatigued: boolean; isRising: boolean; action: string; actionLabel: string }[];
   learnedPatterns: {
     whatWorks: { pattern: string; title: string; roas: number; ctr: number; cpa: number; purchases: number }[];
     whatDoesnt: { pattern: string; title: string; roas: number; spendCents: number }[];
@@ -239,13 +271,51 @@ function mediaUrl(url: string | null | undefined): string {
   return url;
 }
 
+/** Map dimension preset to ratio resolution string used by render endpoints */
+function dimensionToResolution(dimension: string, platform: string, contentType: 'image' | 'video'): string {
+  if (dimension === 'auto') {
+    return platform === 'tiktok' ? '9:16' : (contentType === 'image' ? '4:5' : '4:5');
+  }
+  return dimension;
+}
+
+/**
+ * Decide if a package is a video or an image.
+ * Uses per-package contentType field first (set by backend for mixed mode),
+ * then falls back to shape inference, then to the batch-level config.
+ */
+function isVideoPackage(pkg: any, batchContentType?: string): boolean {
+  if (pkg?.contentType === 'video') return true;
+  if (pkg?.contentType === 'image') return false;
+  if (pkg?.script || pkg?.sceneStructure || pkg?.brollDirection) return true;
+  if (pkg?.imageFormat || pkg?.hookText || pkg?.textOverlays) return false;
+  return batchContentType === 'video';
+}
+
+/** Pixel dimensions per ratio — used for display + provider mapping */
+const DIMENSION_PIXELS: Record<string, { w: number; h: number; label: string }> = {
+  '1:1': { w: 1440, h: 1440, label: 'Square 1440×1440' },
+  '4:5': { w: 1440, h: 1800, label: 'Meta Feed 1440×1800' },
+  '9:16': { w: 1440, h: 2560, label: 'Vertical 1440×2560' },
+  '16:9': { w: 1920, h: 1080, label: 'Landscape 1920×1080' },
+};
+
 function CreativesContent() {
   const searchParams = useSearchParams();
   const storeFilter = searchParams.get('storeId') || '';
 
   const [stores, setStores] = useState<Store[]>([]);
-  const [tab, setTab] = useState<'performance' | 'generated' | 'batches' | 'generator'>('performance');
+  const [tab, setTab] = useState<'performance' | 'generated' | 'batches' | 'generator' | 'library'>(() => {
+    if (typeof window === 'undefined') return 'performance';
+    try {
+      const saved = localStorage.getItem('ym-active-tab');
+      if (saved && ['performance', 'generated', 'batches', 'generator', 'library'].includes(saved)) return saved as any;
+    } catch {}
+    return 'performance';
+  });
   const [loading, setLoading] = useState(true);
+  // Persist active tab
+  useEffect(() => { try { localStorage.setItem('ym-active-tab', tab); } catch {} }, [tab]);
 
   // Performance tab state
   const [adSets, setAdSets] = useState<AdSet[]>([]);
@@ -255,6 +325,30 @@ function CreativesContent() {
 
   // Generated tab state
   const [creatives, setCreatives] = useState<Creative[]>([]);
+  // ── Bulk selection state for Generated Creatives tab ──
+  const [selectedCreativeIds, setSelectedCreativeIds] = useState<Set<string>>(new Set());
+  const [bulkLaunching, setBulkLaunching] = useState(false);
+  const [bulkLaunchResult, setBulkLaunchResult] = useState<any>(null);
+  const [bulkLaunchError, setBulkLaunchError] = useState('');
+  const [bulkLaunchLinkUrl, setBulkLaunchLinkUrl] = useState('');
+  const [bulkLaunchProfileId, setBulkLaunchProfileId] = useState('');
+  const [showBulkLaunchModal, setShowBulkLaunchModal] = useState(false);
+  const [bulkLaunchProgress, setBulkLaunchProgress] = useState('');
+  // ── Page selector state ──
+  const [availablePages, setAvailablePages] = useState<{ id: string; name: string; canCreateAds?: boolean }[]>([]);
+  const [loadingPages, setLoadingPages] = useState(false);
+  const [selectedPageId, setSelectedPageId] = useState('');
+  const [currentProfilePageId, setCurrentProfilePageId] = useState('');
+  const [currentProfilePageName, setCurrentProfilePageName] = useState('');
+  const [savePageAsDefault, setSavePageAsDefault] = useState(false);
+  // ── Scale mode state ──
+  const [launchMode, setLaunchMode] = useState<'new' | 'scale'>('new');
+  const [fbCampaigns, setFbCampaigns] = useState<{ id: string; name: string; status: string; objective: string }[]>([]);
+  const [selectedCampaignId, setSelectedCampaignId] = useState('');
+  const [fbAdSets, setFbAdSets] = useState<{ id: string; name: string; status: string; adCount: number }[]>([]);
+  const [loadingCampaigns, setLoadingCampaigns] = useState(false);
+  const [loadingAdSets, setLoadingAdSets] = useState(false);
+  const [conceptAdSetMap, setConceptAdSetMap] = useState<Record<string, string>>({});
 
   // Batches tab state
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -308,52 +402,6 @@ function CreativesContent() {
   // Double down loading state
   const [doublingDown, setDoublingDown] = useState<string | null>(null);
 
-  // Push to FB state
-  const [pushCreative, setPushCreative] = useState<Creative | null>(null);
-  const [pushLoading, setPushLoading] = useState(false);
-  const [pushError, setPushError] = useState('');
-  const [pushSuccess, setPushSuccess] = useState('');
-  const [fbCampaigns, setFbCampaigns] = useState<any[]>([]);
-  const [fbAdSets, setFbAdSets] = useState<any[]>([]);
-  const [loadingCampaigns, setLoadingCampaigns] = useState(false);
-  const [loadingAdSets, setLoadingAdSets] = useState(false);
-  const [fbCampaignMode, setFbCampaignMode] = useState<'existing' | 'new'>('existing');
-  const [fbSelectedCampaign, setFbSelectedCampaign] = useState('');
-  const [fbNewCampaignName, setFbNewCampaignName] = useState('');
-  const [fbNewCampaignObjective, setFbNewCampaignObjective] = useState('OUTCOME_SALES');
-  const [fbAdSetMode, setFbAdSetMode] = useState<'existing' | 'new'>('existing');
-  const [fbSelectedAdSet, setFbSelectedAdSet] = useState('');
-  const [fbNewAdSetName, setFbNewAdSetName] = useState('');
-  const [fbNewAdSetBudget, setFbNewAdSetBudget] = useState('20');
-  const [fbNewAdSetCountries, setFbNewAdSetCountries] = useState('US');
-  const [fbHeadline, setFbHeadline] = useState('');
-  const [fbPrimaryText, setFbPrimaryText] = useState('');
-  const [fbCtaType, setFbCtaType] = useState('SHOP_NOW');
-  const [fbLandingUrl, setFbLandingUrl] = useState('');
-  const [fbAdStatus, setFbAdStatus] = useState<'PAUSED' | 'ACTIVE'>('PAUSED');
-  const [fbPageId, setFbPageId] = useState('');
-  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
-  const [bulkPushMode, setBulkPushMode] = useState(false);
-  const [bulkPushProgress, setBulkPushProgress] = useState('');
-
-  // Pipeline state
-  const [showPipeline, setShowPipeline] = useState(false);
-  const [plProductId, setPlProductId] = useState('');
-  const [plScript, setPlScript] = useState('');
-  const [plAvatarId, setPlAvatarId] = useState('');
-  const [plVoiceId, setPlVoiceId] = useState('');
-  const [plBrollCount, setPlBrollCount] = useState(7);
-  const [plAvatars, setPlAvatars] = useState<any[]>([]);
-  const [plVoices, setPlVoices] = useState<any[]>([]);
-  const [plLoadingAvatars, setPlLoadingAvatars] = useState(false);
-  const [plStarting, setPlStarting] = useState(false);
-  const [plPipelineId, setPlPipelineId] = useState('');
-  const [plStatus, setPlStatus] = useState('');
-  const [plCompleted, setPlCompleted] = useState(0);
-  const [plTotal, setPlTotal] = useState(11);
-  const [plFinalUrl, setPlFinalUrl] = useState('');
-  const [plError, setPlError] = useState('');
-
   // Fetch error state
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -361,11 +409,33 @@ function CreativesContent() {
   const [expiredVideos, setExpiredVideos] = useState<Set<string>>(new Set());
 
   // ═══ Creative Generator State ═══
-  const [genConfig, setGenConfig] = useState<GeneratorConfig>({
+  // Persisted to localStorage so the user's configuration survives page reloads.
+  const GEN_CONFIG_KEY = 'ym-gen-config';
+  const defaultGenConfig: GeneratorConfig = {
+    engine: 'auto', genMode: 'new', contentMix: 'video', funnelStructure: 'tof',
+    productId: '', coverImageUrl: '', conceptAngle: '', quantity: 3, videosPerConcept: 3, imagesPerConcept: 3,
     contentType: 'video', creativeType: 'testimonial', funnelStage: 'tof',
     hookStyle: 'curiosity', avatarStyle: 'female_ugc', generationGoal: 'new_concept',
-    platformTarget: 'meta', quantity: 3, productId: '', offer: '', baseAdId: '',
+    platformTarget: 'meta', offer: '', baseAdId: '',
+    dimension: '4:5', videoDuration: 20,
+  };
+  const [genConfig, setGenConfig] = useState<GeneratorConfig>(() => {
+    if (typeof window === 'undefined') return defaultGenConfig;
+    try {
+      const saved = localStorage.getItem(GEN_CONFIG_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Merge saved values on top of defaults so new fields added later still get their defaults
+        return { ...defaultGenConfig, ...parsed };
+      }
+    } catch {}
+    return defaultGenConfig;
   });
+  // Save genConfig to localStorage on every change (debounce-free — object is small)
+  useEffect(() => {
+    try { localStorage.setItem(GEN_CONFIG_KEY, JSON.stringify(genConfig)); } catch {}
+  }, [genConfig]);
+
   const [genPackages, setGenPackages] = useState<CreativePackage[]>([]);
   const [genPackageConfig, setGenPackageConfig] = useState<any>(null);
   const [generatingPackage, setGeneratingPackage] = useState(false);
@@ -379,16 +449,75 @@ function CreativesContent() {
   const [genCurrentId, setGenCurrentId] = useState<string | null>(null);
   const [genVersion, setGenVersion] = useState(1);
   const [comparingPackages, setComparingPackages] = useState<number[]>([]);
-  const [generatingVideoIdx, setGeneratingVideoIdx] = useState<number | null>(null);
+  const [generatingIdxSet, setGeneratingIdxSet] = useState<Set<number>>(new Set());
   const [packageVideoStatus, setPackageVideoStatus] = useState<Record<number, { id: string; status: string; engine: string; reason?: string }>>({});
+  const [renderJobs, setRenderJobs] = useState<Record<number, RenderJob>>({});
+  const [launching, setLaunching] = useState(false);
+  const [launchResult, setLaunchResult] = useState<any>(null);
+  const [launchError, setLaunchError] = useState('');
+  const [fbProfiles, setFbProfiles] = useState<any[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState('');
+  const [launchLinkUrl, setLaunchLinkUrl] = useState('');
+
+  // ═══ Winner / Library / Template State ═══
+  const [winners, setWinners] = useState<any[]>([]);
+  const [setupTemplates, setSetupTemplates] = useState<any[]>([]);
+  const [savingWinner, setSavingWinner] = useState<string | null>(null);
+  const [winnerNotes, setWinnerNotes] = useState('');
+  const [showWinnerModal, setShowWinnerModal] = useState<{ pkg: any; idx: number; creativeId?: string } | null>(null);
+  const [matchedWinnerRef, setMatchedWinnerRef] = useState<any>(null);
+  const [showTemplateSave, setShowTemplateSave] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [selectedExistingConcept, setSelectedExistingConcept] = useState<any>(null);
+  const [activeConceptAction, setActiveConceptAction] = useState('');
+  const [higgsStyle, setHiggsStyle] = useState('product_showcase');
+  const [productSearch, setProductSearch] = useState('');
+  const [referenceVideoUrl, setReferenceVideoUrl] = useState('');
+  const [higgsPackJob, setHiggsPackJob] = useState<{ jobId: string; status: string; progress?: string; videoUrl?: string; scenes?: any[] } | null>(null);
+  // Product foundation state
+  const [productFoundation, setProductFoundation] = useState<{ beliefs: string[]; uniqueMechanism: string; avatarSummary: string; offerBrief: string; researchNotes: string } | null>(null);
+  const [showFoundation, setShowFoundation] = useState(false);
+  const [foundationLoading, setFoundationLoading] = useState(false);
+  const [foundationSaving, setFoundationSaving] = useState(false);
+  // Library tab
+  const [libraryPackages, setLibraryPackages] = useState<any[]>([]);
+  const [libraryCreatives, setLibraryCreatives] = useState<any[]>([]);
+  const [libraryWinners, setLibraryWinners] = useState<any[]>([]);
+  const [libraryCounts, setLibraryCounts] = useState<{ totalPackages: number; totalCreatives: number; totalWinners: number }>({ totalPackages: 0, totalCreatives: 0, totalWinners: 0 });
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [librarySearch, setLibrarySearch] = useState('');
+  const [libraryFilters, setLibraryFilters] = useState<{ contentType?: string; creativeType?: string; funnelStage?: string; provider?: string; winnerOnly?: boolean; launchedOnly?: boolean }>({});
+  const [expandedLibraryPkg, setExpandedLibraryPkg] = useState<string | null>(null);
+  const [expandedLibraryCreative, setExpandedLibraryCreative] = useState<string | null>(null);
 
   useEffect(() => {
     fetch('/api/stores').then(r => r.json()).then(d => setStores(d.stores || [])).catch(() => {});
   }, []);
 
   useEffect(() => {
+    // Always clear cross-store data when the active store changes (or unselects)
+    setProducts([]);
+    setProductSearch('');
+    setFbProfiles([]);
+    setSelectedProfileId('');
+    setBulkLaunchProfileId('');
+
     if (storeFilter) {
-      fetch(`/api/products?storeId=${storeFilter}`).then(r => r.json()).then(d => setProducts(d.products || [])).catch(() => {});
+      fetch(`/api/products?storeId=${encodeURIComponent(storeFilter)}`).then(r => r.json()).then(d => {
+        const list = d.products || [];
+        // Defensive client-side filter: only keep products from the active store
+        setProducts(list.filter((p: any) => p.store_id === storeFilter));
+      }).catch(() => setProducts([]));
+
+      fetch(`/api/creatives/launch?storeId=${encodeURIComponent(storeFilter)}`).then(r => r.json().catch(() => null)).then(d => {
+        const profiles = d?.profiles || [];
+        setFbProfiles(profiles);
+        if (profiles.length > 0) {
+          setSelectedProfileId(profiles[0].id);
+          setBulkLaunchProfileId(profiles[0].id);
+        }
+      }).catch(() => {});
     }
   }, [storeFilter]);
 
@@ -396,7 +525,18 @@ function CreativesContent() {
     if (tab === 'performance') loadPerformance();
     else if (tab === 'generated') loadCreatives();
     else if (tab === 'batches') loadBatches();
+    else if (tab === 'library') loadLibrary();
   }, [storeFilter, tab, dateRange, sortBy]);
+
+  // Load winners for the current store (used by generator for matching)
+  useEffect(() => {
+    if (storeFilter) {
+      fetch(`/api/creatives/winners?storeId=${encodeURIComponent(storeFilter)}`)
+        .then(r => r.json()).then(d => setWinners(d.winners || [])).catch(() => {});
+      fetch(`/api/creatives/templates?storeId=${encodeURIComponent(storeFilter)}`)
+        .then(r => r.json()).then(d => setSetupTemplates(d.templates || [])).catch(() => {});
+    }
+  }, [storeFilter]);
 
   async function loadPerformance() {
     if (!storeFilter) { setAdSets([]); setLoading(false); return; }
@@ -426,19 +566,543 @@ function CreativesContent() {
   }
 
   async function loadCreatives() {
+    if (!storeFilter) {
+      setCreatives([]);
+      setLoading(false);
+      setFetchError('Select a store to view creatives.');
+      return;
+    }
     setLoading(true);
     setFetchError(null);
     try {
-      const params = new URLSearchParams();
-      if (storeFilter) params.set('storeId', storeFilter);
-      const res = await fetch(`/api/creatives?${params}`);
+      const res = await fetch(`/api/creatives?storeId=${encodeURIComponent(storeFilter)}`);
       const data = await res.json();
-      setCreatives(data.creatives || []);
+      const list = data.creatives || [];
+      // Defensive client-side filter: only show creatives from the active store
+      setCreatives(list.filter((c: any) => c.store_id === storeFilter));
     } catch {
       setCreatives([]);
       setFetchError('Failed to load creatives. Check your connection and try again.');
     }
     setLoading(false);
+  }
+
+  // ═══ Winner / Library helpers ═══
+
+  async function loadLibrary() {
+    if (!storeFilter) return;
+    setLibraryLoading(true);
+    try {
+      const params = new URLSearchParams({ storeId: storeFilter });
+      if (librarySearch) params.set('search', librarySearch);
+      if (libraryFilters.contentType) params.set('contentType', libraryFilters.contentType);
+      if (libraryFilters.creativeType) params.set('creativeType', libraryFilters.creativeType);
+      if (libraryFilters.funnelStage) params.set('funnelStage', libraryFilters.funnelStage);
+      if (libraryFilters.provider) params.set('provider', libraryFilters.provider);
+      if (libraryFilters.winnerOnly) params.set('winnerOnly', '1');
+      if (libraryFilters.launchedOnly) params.set('launchedOnly', '1');
+      const res = await fetch(`/api/creatives/history?${params}`);
+      const data = await res.json();
+      if (data.success) {
+        setLibraryPackages(data.packages || []);
+        setLibraryCreatives(data.creatives || []);
+        setLibraryWinners(data.winners || []);
+        setLibraryCounts(data.counts || { totalPackages: 0, totalCreatives: 0, totalWinners: 0 });
+      }
+    } catch {}
+    setLibraryLoading(false);
+  }
+
+  async function saveAsWinner(pkg: any, idx: number, creativeId?: string) {
+    if (!storeFilter) return;
+    setSavingWinner(`${idx}`);
+    try {
+      const res = await fetch('/api/creatives/winners', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storeId: storeFilter,
+          creativeId: creativeId || null,
+          packageId: genCurrentId || null,
+          packageIndex: idx,
+          pkg,
+          config: genPackageConfig || genConfig,
+          userNotes: winnerNotes,
+          winningTags: [],
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setWinners(prev => [data.winner, ...prev]);
+        setShowWinnerModal(null);
+        setWinnerNotes('');
+      }
+    } catch {}
+    setSavingWinner(null);
+  }
+
+  async function removeWinner(winnerId: string) {
+    try {
+      await fetch(`/api/creatives/winners?id=${winnerId}`, { method: 'DELETE' });
+      setWinners(prev => prev.filter(w => w.id !== winnerId));
+    } catch {}
+  }
+
+  async function saveTemplate() {
+    if (!storeFilter || !templateName.trim()) return;
+    try {
+      const res = await fetch('/api/creatives/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storeId: storeFilter,
+          name: templateName,
+          config: genConfig,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSetupTemplates(prev => [data.template, ...prev]);
+        setShowTemplateSave(false);
+        setTemplateName('');
+      }
+    } catch {}
+  }
+
+  async function deleteTemplate(id: string) {
+    try {
+      await fetch(`/api/creatives/templates?id=${id}`, { method: 'DELETE' });
+      setSetupTemplates(prev => prev.filter(t => t.id !== id));
+    } catch {}
+  }
+
+  function applyTemplate(template: any) {
+    setGenConfig(c => ({
+      ...c,
+      contentType: template.content_type || c.contentType,
+      creativeType: template.creative_type || c.creativeType,
+      funnelStage: template.funnel_stage || c.funnelStage,
+      hookStyle: template.hook_style || c.hookStyle,
+      avatarStyle: template.avatar_style || c.avatarStyle,
+      platformTarget: template.platform || c.platformTarget,
+      videoDuration: template.duration || c.videoDuration,
+      dimension: template.aspect_ratio || c.dimension,
+    }));
+  }
+
+  function handleGenerateMoreLikeThis(winner: any) {
+    // Pre-fill config from winner and switch to generator tab
+    setGenConfig(c => ({
+      ...c,
+      contentType: winner.content_type || c.contentType,
+      creativeType: winner.creative_type || c.creativeType,
+      funnelStage: winner.funnel_stage || c.funnelStage,
+      hookStyle: winner.hook_style || c.hookStyle,
+      avatarStyle: winner.avatar_style || c.avatarStyle,
+      platformTarget: winner.platform || c.platformTarget,
+      videoDuration: winner.duration || c.videoDuration,
+      dimension: winner.aspect_ratio || c.dimension,
+      generationGoal: 'new_concept',
+    }));
+    setMatchedWinnerRef(winner);
+    setTab('generator');
+  }
+
+  function handleDuplicateSetup(pkg: any) {
+    setGenConfig(c => ({
+      ...c,
+      contentType: pkg.content_type || c.contentType,
+      creativeType: pkg.creative_type || c.creativeType,
+      funnelStage: pkg.funnel_stage || c.funnelStage,
+      hookStyle: pkg.hook_style || c.hookStyle,
+      avatarStyle: pkg.avatar_style || c.avatarStyle,
+      generationGoal: pkg.generation_goal || c.generationGoal,
+    }));
+    if (pkg.product_id) setGenConfig(c => ({ ...c, productId: pkg.product_id }));
+    if (pkg.offer) setGenConfig(c => ({ ...c, offer: pkg.offer }));
+    setTab('generator');
+  }
+
+  /**
+   * Handle concept action from the AI Creative Brain scorecards.
+   * Pre-fills the generator with the right mode based on the recommended action.
+   */
+  function handleConceptAction(concept: any, action: string) {
+    if (action === 'pause') return;
+
+    setActiveConceptAction(action);
+    setGenConfig(c => ({
+      ...c,
+      conceptAngle: concept.conceptName || '',
+      genMode: action === 'scale' || action === 'generate_more' ? 'existing' as const : 'new' as const,
+      funnelStructure: action === 'add_tof' ? 'tof' as const
+        : action === 'add_bof' ? 'bof' as const
+        : c.funnelStructure,
+      funnelStage: action === 'add_tof' ? 'tof' as const
+        : action === 'add_bof' ? 'bof' as const
+        : c.funnelStage,
+      contentMix: action === 'refresh' ? 'mixed' as const : c.contentMix,
+      hookStyle: action === 'refresh' ? 'curiosity' : c.hookStyle,
+    }));
+
+    setTab('generator');
+    setGenPackages([]);
+    setGenPackageError('');
+    setRenderJobs({});
+  }
+
+  const isCreativeWinner = (creativeId: string) => winners.some(w => w.creative_id === creativeId);
+  const isPackageWinner = (packageId: string) => winners.some(w => w.package_id === packageId);
+
+  // ── Bulk selection helpers ──
+  function isCreativeLaunchable(c: Creative): boolean {
+    return c.nb_status === 'completed' && !!c.file_url;
+  }
+
+  function toggleCreativeSelection(id: string) {
+    setSelectedCreativeIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllVisibleCreatives() {
+    const launchableIds = creatives.filter(isCreativeLaunchable).map(c => c.id);
+    setSelectedCreativeIds(new Set(launchableIds));
+  }
+
+  function clearCreativeSelection() {
+    setSelectedCreativeIds(new Set());
+  }
+
+  function openBulkLaunchModal() {
+    if (selectedCreativeIds.size === 0) return;
+    setBulkLaunchError('');
+    setBulkLaunchResult(null);
+    setBulkLaunchProgress('');
+    setSavePageAsDefault(false);
+    setLaunchMode('new');
+    setConceptAdSetMap({});
+    setFbAdSets([]);
+    // Auto-select first FB profile if available
+    const profileId = bulkLaunchProfileId || (fbProfiles.length > 0 ? fbProfiles[0].id : '');
+    if (profileId && !bulkLaunchProfileId) setBulkLaunchProfileId(profileId);
+    if (profileId) loadPagesForProfile(profileId);
+    setShowBulkLaunchModal(true);
+  }
+
+  // ═══ Scale mode helpers ═══
+  async function loadCampaignsForProfile(profileId: string) {
+    if (!profileId) return;
+    setLoadingCampaigns(true);
+    setFbCampaigns([]);
+    setSelectedCampaignId('');
+    setFbAdSets([]);
+    try {
+      const res = await fetch(`/api/creatives/launch?profileId=${profileId}&campaigns=1`);
+      const data = await res.json().catch(() => null);
+      if (data?.success) {
+        setFbCampaigns(data.campaigns || []);
+        if (data.campaigns?.length > 0) {
+          setSelectedCampaignId(data.campaigns[0].id);
+          await loadAdSetsForCampaign(profileId, data.campaigns[0].id);
+        }
+      } else {
+        setBulkLaunchError(data?.error?.message || 'Failed to load campaigns');
+      }
+    } catch (e: any) {
+      setBulkLaunchError(`Failed to load campaigns: ${e.message}`);
+    }
+    setLoadingCampaigns(false);
+  }
+
+  async function loadAdSetsForCampaign(profileId: string, campaignId: string) {
+    if (!profileId || !campaignId) return;
+    setLoadingAdSets(true);
+    setFbAdSets([]);
+    try {
+      const res = await fetch(`/api/creatives/launch?profileId=${profileId}&adsets=1&campaignId=${campaignId}`);
+      const data = await res.json().catch(() => null);
+      if (data?.success) {
+        setFbAdSets(data.adsets || []);
+        // Auto-match each selected concept to the best existing ad set
+        autoMatchConcepts(data.adsets || []);
+      } else {
+        setBulkLaunchError(data?.error?.message || 'Failed to load ad sets');
+      }
+    } catch (e: any) {
+      setBulkLaunchError(`Failed to load ad sets: ${e.message}`);
+    }
+    setLoadingAdSets(false);
+  }
+
+  // Build unique concept list from currently-selected creatives and auto-match to existing ad sets
+  function getSelectedConcepts(): string[] {
+    const selected = creatives.filter(c => selectedCreativeIds.has(c.id) && isCreativeLaunchable(c));
+    const concepts = new Set<string>();
+    // Group by package_id first — same package = same concept
+    const packageLabels: Record<string, string> = {};
+    for (const c of selected) {
+      if (c.package_id && !packageLabels[c.package_id]) {
+        packageLabels[c.package_id] = c.angle || c.title || 'Concept';
+      }
+    }
+    for (const c of selected) {
+      const concept = c.package_id ? packageLabels[c.package_id] : (c.angle || 'Selected Creatives');
+      concepts.add(concept);
+    }
+    return Array.from(concepts);
+  }
+
+  function autoMatchConcepts(adsets: { id: string; name: string }[]) {
+    const concepts = getSelectedConcepts();
+    const map: Record<string, string> = {};
+    for (const concept of concepts) {
+      // Look for exact match first (ignoring TEST/SCALE prefix and " (N)" suffix)
+      const normalizedConcept = concept.toLowerCase().trim();
+      const match = adsets.find(a => {
+        const cleaned = a.name.replace(/^(TEST|SCALE)\s*–\s*/i, '').replace(/\s*\(\d+\)\s*$/, '').toLowerCase().trim();
+        return cleaned === normalizedConcept;
+      });
+      if (match) {
+        map[concept] = match.id;
+      } else {
+        // Fuzzy contains match
+        const fuzzy = adsets.find(a => a.name.toLowerCase().includes(normalizedConcept) || normalizedConcept.includes(a.name.toLowerCase().replace(/^(TEST|SCALE)\s*–\s*/i, '')));
+        if (fuzzy) map[concept] = fuzzy.id;
+      }
+    }
+    setConceptAdSetMap(map);
+  }
+
+  async function loadPagesForProfile(profileId: string) {
+    if (!profileId) return;
+    setLoadingPages(true);
+    setAvailablePages([]);
+    try {
+      const res = await fetch(`/api/creatives/launch?profileId=${profileId}&pages=1`);
+      const data = await res.json().catch(() => null);
+      if (data?.success) {
+        setAvailablePages(data.pages || []);
+        setCurrentProfilePageId(data.currentPageId || '');
+        setCurrentProfilePageName(data.currentPageName || '');
+        // Default selection: current profile page if it's accessible, else first accessible page
+        const pages = data.pages || [];
+        const currentInList = pages.find((p: any) => p.id === data.currentPageId);
+        if (currentInList) {
+          setSelectedPageId(data.currentPageId);
+        } else if (pages.length > 0) {
+          setSelectedPageId(pages[0].id);
+        } else {
+          setSelectedPageId('');
+        }
+      } else {
+        setAvailablePages([]);
+        setBulkLaunchError(data?.error?.message || 'Failed to load pages');
+      }
+    } catch (e: any) {
+      setBulkLaunchError(`Failed to load pages: ${e.message}`);
+    }
+    setLoadingPages(false);
+  }
+
+  async function handleBulkLaunchToFB() {
+    if (!storeFilter || !bulkLaunchProfileId || !bulkLaunchLinkUrl) {
+      setBulkLaunchError('Select an ad account and enter a landing page URL');
+      return;
+    }
+
+    const selected = creatives.filter(c => selectedCreativeIds.has(c.id) && isCreativeLaunchable(c));
+    if (selected.length === 0) {
+      setBulkLaunchError('No launchable creatives selected');
+      return;
+    }
+
+    // Group creatives by CONCEPT.
+    // Priority: package_id (same creative package = same concept) → angle → fallback bucket
+    // This ensures all variations of the same concept go into ONE ad set.
+    const conceptGroups: Record<string, { name: string; creatives: any[] }> = {};
+
+    // First pass: find the most common name per package_id to use as concept label
+    const packageLabels: Record<string, string> = {};
+    for (const c of selected) {
+      if (c.package_id && !packageLabels[c.package_id]) {
+        // Use the first creative's angle or title as the concept name for this package
+        packageLabels[c.package_id] = c.angle || c.title || 'Concept';
+      }
+    }
+
+    for (const c of selected) {
+      // Group key: package_id first (shared across all variations in a generation)
+      // Fallback: angle (if no package_id)
+      // Last resort: single bucket
+      const groupKey = c.package_id
+        ? `pkg:${c.package_id}`
+        : c.angle
+        ? `angle:${c.angle}`
+        : 'selected';
+
+      const groupName = c.package_id
+        ? packageLabels[c.package_id] || 'Concept'
+        : c.angle || 'Selected Creatives';
+
+      if (!conceptGroups[groupKey]) {
+        conceptGroups[groupKey] = { name: groupName, creatives: [] };
+      }
+      // Clean primaryText: the description column often stores the AI render prompt.
+      // Strip that out — use the title/angle as fallback for a usable ad body.
+      const rawDesc = c.description || '';
+      const isRenderPrompt = /STRICT LAYOUT|TOP ZONE|BOTTOM ZONE|MIDDLE ZONE|Create a high-converting/i.test(rawDesc);
+      const cleanPrimaryText = isRenderPrompt
+        ? (c.angle || c.title || 'Check it out')
+        : rawDesc.substring(0, 500);
+      conceptGroups[groupKey].creatives.push({
+        id: c.id,
+        type: c.type, // 'image' or 'video'
+        title: (c.title || 'Untitled').substring(0, 255),
+        headline: (c.title || '').substring(0, 40),
+        primaryText: cleanPrimaryText,
+        imageUrl: c.type === 'video' ? undefined : c.file_url,
+        videoUrl: c.type === 'video' ? c.file_url : undefined,
+        thumbnailUrl: c.thumbnail_url || undefined,
+        linkUrl: bulkLaunchLinkUrl,
+        callToAction: 'SHOP_NOW',
+      });
+    }
+
+    const packages = Object.values(conceptGroups).map(({ name, creatives }) => ({
+      concept: name,
+      creatives,
+    }));
+
+    // Scale mode validation: every concept must be mapped to an existing ad set
+    const isScaleMode = launchMode === 'scale';
+    if (isScaleMode) {
+      if (!selectedCampaignId) {
+        setBulkLaunchError('Select an existing campaign to scale into');
+        return;
+      }
+      const unmappedConcepts = packages.filter(p => !conceptAdSetMap[p.concept]);
+      if (unmappedConcepts.length > 0) {
+        setBulkLaunchError(`Map these concepts to existing ad sets: ${unmappedConcepts.map(p => p.concept).join(', ')}`);
+        return;
+      }
+    }
+
+    // ONE concept = ONE ad set (no splitting, no creative limit)
+    // Existing ad sets with the same concept name are auto-reused.
+    const finalAdSetCount = packages.length;
+
+    const confirmMsg = isScaleMode
+      ? `SCALE MODE\n\nAdd ${selected.length} new ad${selected.length > 1 ? 's' : ''} to ${finalAdSetCount} existing ad set${finalAdSetCount > 1 ? 's' : ''} in campaign "${fbCampaigns.find(c => c.id === selectedCampaignId)?.name}"?\n\nNo new campaign or ad sets will be created.\nStatus: PAUSED`
+      : `Launch ${selected.length} creative${selected.length > 1 ? 's' : ''} into ${packages.length} concept${packages.length > 1 ? 's' : ''} → ${finalAdSetCount} ad set${finalAdSetCount > 1 ? 's' : ''}?\n\nExisting ad sets with the same concept will be REUSED (no duplicates).\nImage + video creatives go into the same ad set.\n\nBudget: $30/day per new ad set\nStatus: PAUSED`;
+
+    if (!window.confirm(confirmMsg)) return;
+
+    setBulkLaunching(true);
+    setBulkLaunchError('');
+    setBulkLaunchResult(null);
+    setBulkLaunchProgress('Submitting launch job...');
+
+    // Step 1: Submit launch job — returns jobId immediately, no long blocking
+    const { data, error } = await safeJsonFetch('/api/creatives/launch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        storeId: storeFilter,
+        profileId: bulkLaunchProfileId,
+        packages,
+        dailyBudget: 3000,
+        status: 'PAUSED',
+        overridePageId: selectedPageId || undefined,
+        savePageOverride: savePageAsDefault,
+        ...(isScaleMode ? {
+          mode: 'scale',
+          existingCampaignId: selectedCampaignId,
+          existingAdSetMap: conceptAdSetMap,
+          maxAdsPerExistingAdSet: 8,
+        } : {}),
+      }),
+    });
+
+    if (error) {
+      setBulkLaunchError(error);
+      setBulkLaunching(false);
+      return;
+    }
+    if (!data?.success || !data?.jobId) {
+      setBulkLaunchError(data?.error?.message || 'Failed to submit launch job');
+      setBulkLaunching(false);
+      return;
+    }
+
+    const jobId = data.jobId;
+    setBulkLaunchProgress(`Queued: ${data.plan?.adsPlanned || 0} ads in ${data.plan?.adSetsPlanned || 0} ad sets`);
+
+    // Step 2: Poll job status every 2 seconds
+    // Video processing on Meta's side takes 1-4 min per video. For 20 videos, that's up to 80 min.
+    // Use 20 min polling window — enough for ~5-10 videos per launch.
+    let polls = 0;
+    const maxPolls = 600; // 20 min max (600 * 2s)
+
+    const pollJob = async () => {
+      polls++;
+      try {
+        const res = await fetch(`/api/creatives/launch?jobId=${jobId}`);
+        const pollData = await res.json().catch(() => null);
+
+        if (!pollData?.success) {
+          if (polls < maxPolls) {
+            setTimeout(pollJob, 3000);
+          } else {
+            setBulkLaunchError('Launch status unavailable after 20 minutes — check Meta Ads Manager');
+            setBulkLaunching(false);
+          }
+          return;
+        }
+
+        setBulkLaunchProgress(pollData.progress || 'Processing...');
+
+        if (pollData.status === 'completed' || pollData.status === 'partial') {
+          setBulkLaunchResult({
+            success: true,
+            campaign: pollData.campaign,
+            adSets: pollData.adSets,
+            summary: pollData.summary,
+            partial: pollData.status === 'partial',
+          });
+          setSelectedCreativeIds(new Set());
+          setBulkLaunching(false);
+          return;
+        }
+
+        if (pollData.status === 'failed') {
+          setBulkLaunchError(pollData.error || 'Launch failed');
+          setBulkLaunching(false);
+          return;
+        }
+
+        // Still queued or launching — keep polling
+        if (polls < maxPolls) {
+          setTimeout(pollJob, 2000);
+        } else {
+          setBulkLaunchError('Launch timed out after 20 minutes. Check Meta Ads Manager — some ads may still be processing.');
+          setBulkLaunching(false);
+        }
+      } catch {
+        // Network hiccup during poll — retry with backoff
+        if (polls < maxPolls) {
+          setTimeout(pollJob, 4000);
+        } else {
+          setBulkLaunchError('Lost connection while checking launch status');
+          setBulkLaunching(false);
+        }
+      }
+    };
+
+    setTimeout(pollJob, 1500);
   }
 
   function toggleExpand(id: string) {
@@ -569,7 +1233,7 @@ function CreativesContent() {
       const res = await fetch(`/api/creatives/generate?id=${id}`);
       const data = await res.json();
       if (data.creative) {
-        setCreatives(prev => prev.map(c => c.id === id ? { ...c, ...data.creative, progress: data.progress ?? c.progress } : c));
+        setCreatives(prev => prev.map(c => c.id === id ? { ...c, ...data.creative } : c));
       }
     } catch {}
   }
@@ -728,274 +1392,6 @@ function CreativesContent() {
     setDoublingDown(null);
   }
 
-  // ═══ Push to Facebook Functions ═══
-
-  async function openPushModal(creative: Creative) {
-    setPushCreative(creative);
-    setPushError('');
-    setPushSuccess('');
-    setFbAdStatus('PAUSED');
-    setFbCampaignMode('existing');
-    setFbAdSetMode('existing');
-    setFbAdSets([]);
-    setFbSelectedAdSet('');
-
-    // Auto-fill headline from creative title
-    setFbHeadline(creative.title || '');
-
-    // Auto-fill primary text from the script inside the description
-    const desc = creative.description || '';
-    const scriptMatch = desc.match(/Script:\s*([\s\S]*?)(?:\n\n|Scene structure:|B-roll:|Presenter:|$)/);
-    const script = scriptMatch ? scriptMatch[1].trim() : '';
-    if (script) {
-      setFbPrimaryText(script);
-    } else {
-      // Fallback: use the creative angle or a clean version of the title
-      setFbPrimaryText(creative.angle ? `${creative.title} — ${creative.angle}` : creative.title || '');
-    }
-
-    // Auto-fill landing URL from the store's Shopify domain
-    const store = stores.find((s: Store) => s.id === storeFilter);
-    if (store?.shopify_domain) {
-      setFbLandingUrl(`https://${store.shopify_domain}`);
-    } else {
-      setFbLandingUrl('');
-    }
-
-    setLoadingCampaigns(true);
-    try {
-      const res = await fetch(`/api/creatives/push-to-fb?storeId=${storeFilter}`);
-      const data = await res.json();
-      if (data.error) { setPushError(data.error); setLoadingCampaigns(false); return; }
-      setFbCampaigns(data.campaigns || []);
-      if (data.profile?.pageId) setFbPageId(data.profile.pageId);
-      if (data.campaigns?.length > 0) {
-        setFbCampaignMode('existing');
-        setFbSelectedCampaign(data.campaigns[0].id);
-      } else {
-        setFbCampaignMode('new');
-      }
-    } catch { setFbCampaigns([]); setFbCampaignMode('new'); }
-    setLoadingCampaigns(false);
-  }
-
-  useEffect(() => {
-    if (fbCampaignMode !== 'existing' || !fbSelectedCampaign || !storeFilter) { setFbAdSets([]); return; }
-    setLoadingAdSets(true);
-    fetch(`/api/creatives/push-to-fb?storeId=${storeFilter}&campaignId=${fbSelectedCampaign}`)
-      .then(r => r.json())
-      .then(d => {
-        setFbAdSets(d.adsets || []);
-        if (d.adsets?.length > 0) { setFbAdSetMode('existing'); setFbSelectedAdSet(d.adsets[0].id); }
-        else setFbAdSetMode('new');
-      })
-      .catch(() => setFbAdSets([]))
-      .finally(() => setLoadingAdSets(false));
-  }, [fbSelectedCampaign, fbCampaignMode, storeFilter]);
-
-  async function handlePushToFB() {
-    if (!pushCreative || !storeFilter) return;
-    setPushLoading(true);
-    setPushError('');
-    setPushSuccess('');
-
-    try {
-      const res = await fetch('/api/creatives/push-to-fb', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          creativeId: pushCreative.id,
-          storeId: storeFilter,
-          campaignMode: fbCampaignMode,
-          existingCampaignId: fbCampaignMode === 'existing' ? fbSelectedCampaign : undefined,
-          newCampaign: fbCampaignMode === 'new' ? { name: fbNewCampaignName, objective: fbNewCampaignObjective, status: fbAdStatus } : undefined,
-          adSetMode: fbAdSetMode,
-          existingAdSetId: fbAdSetMode === 'existing' ? fbSelectedAdSet : undefined,
-          newAdSet: fbAdSetMode === 'new' ? {
-            name: fbNewAdSetName,
-            dailyBudgetCents: Math.round(parseFloat(fbNewAdSetBudget) * 100),
-            countries: fbNewAdSetCountries.split(',').map((c: string) => c.trim().toUpperCase()),
-            optimizationGoal: 'OFFSITE_CONVERSIONS',
-          } : undefined,
-          headline: fbHeadline,
-          primaryText: fbPrimaryText,
-          ctaType: fbCtaType,
-          landingPageUrl: fbLandingUrl,
-          adStatus: fbAdStatus,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Push failed');
-      setPushSuccess(`Ad created! FB Ad ID: ${data.fbAdId}`);
-    } catch (err: any) {
-      setPushError(err.message);
-    }
-    setPushLoading(false);
-  }
-
-  function toggleBulkSelect(id: string) {
-    setBulkSelected(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
-
-  async function openBulkPushModal() {
-    // Use first selected creative for default headline/text
-    const selected = creatives.filter(c => bulkSelected.has(c.id) && c.nb_status === 'completed' && c.file_url);
-    if (selected.length === 0) return;
-    const first = selected[0];
-    setBulkPushMode(true);
-    setBulkPushProgress('');
-    openPushModal(first);
-  }
-
-  async function handleBulkPushToFB() {
-    if (!storeFilter) return;
-    const selected = creatives.filter(c => bulkSelected.has(c.id) && c.nb_status === 'completed' && c.file_url);
-    if (selected.length === 0) return;
-
-    setPushLoading(true);
-    setPushError('');
-    setPushSuccess('');
-
-    const results: string[] = [];
-    const errors: string[] = [];
-    // Track created IDs locally (React state updates are async)
-    let useCampaignId = fbCampaignMode === 'existing' ? fbSelectedCampaign : '';
-    let useAdSetId = fbAdSetMode === 'existing' ? fbSelectedAdSet : '';
-
-    for (let i = 0; i < selected.length; i++) {
-      const c = selected[i];
-      setBulkPushProgress(`Pushing ${i + 1}/${selected.length}: ${c.title}...`);
-      try {
-        const isFirst = i === 0;
-        const res = await fetch('/api/creatives/push-to-fb', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            creativeId: c.id,
-            storeId: storeFilter,
-            campaignMode: isFirst ? fbCampaignMode : 'existing',
-            existingCampaignId: isFirst && fbCampaignMode === 'existing' ? fbSelectedCampaign : (!isFirst ? useCampaignId : undefined),
-            newCampaign: isFirst && fbCampaignMode === 'new' ? { name: fbNewCampaignName, objective: fbNewCampaignObjective, status: fbAdStatus } : undefined,
-            adSetMode: isFirst ? fbAdSetMode : 'existing',
-            existingAdSetId: isFirst && fbAdSetMode === 'existing' ? fbSelectedAdSet : (!isFirst ? useAdSetId : undefined),
-            newAdSet: isFirst && fbAdSetMode === 'new' ? {
-              name: fbNewAdSetName,
-              dailyBudgetCents: Math.round(parseFloat(fbNewAdSetBudget) * 100),
-              countries: fbNewAdSetCountries.split(',').map((s: string) => s.trim().toUpperCase()),
-              optimizationGoal: 'OFFSITE_CONVERSIONS',
-            } : undefined,
-            headline: fbHeadline,
-            primaryText: fbPrimaryText,
-            ctaType: fbCtaType,
-            landingPageUrl: fbLandingUrl,
-            adStatus: fbAdStatus,
-          }),
-        });
-
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Push failed');
-
-        // Capture created IDs for subsequent items
-        if (isFirst && data.fbCampaignId) useCampaignId = data.fbCampaignId;
-        if (isFirst && data.fbAdSetId) useAdSetId = data.fbAdSetId;
-
-        results.push(data.fbAdId);
-      } catch (err: any) {
-        errors.push(`${c.title}: ${err.message}`);
-      }
-    }
-
-    setBulkPushProgress('');
-    if (results.length > 0) {
-      setPushSuccess(`${results.length}/${selected.length} ads created successfully!`);
-    }
-    if (errors.length > 0) {
-      setPushError(errors.join('\n'));
-    }
-    setBulkSelected(new Set());
-    setBulkPushMode(false);
-    setPushLoading(false);
-  }
-
-  // ═══ Pipeline Functions ═══
-
-  async function openPipelineModal() {
-    setShowPipeline(true);
-    setPlError('');
-    setPlStatus('');
-    setPlPipelineId('');
-    setPlFinalUrl('');
-    setPlCompleted(0);
-    setPlScript('');
-    if (plAvatars.length === 0) {
-      setPlLoadingAvatars(true);
-      try {
-        const [avatarRes, voiceRes] = await Promise.all([
-          fetch('/api/creatives/pipeline/avatars').then(r => r.json()),
-          fetch('/api/creatives/pipeline/voices').then(r => r.json()),
-        ]);
-        setPlAvatars(avatarRes.avatars || []);
-        setPlVoices(voiceRes.voices || []);
-        if (avatarRes.avatars?.length > 0) setPlAvatarId(avatarRes.avatars[0].avatar_id);
-        if (voiceRes.voices?.length > 0) setPlVoiceId(voiceRes.voices[0].voice_id);
-      } catch { setPlError('Failed to load avatars/voices'); }
-      setPlLoadingAvatars(false);
-    }
-  }
-
-  async function startPipeline() {
-    if (!storeFilter || !plProductId || !plScript || !plAvatarId || !plVoiceId) return;
-    setPlStarting(true);
-    setPlError('');
-    try {
-      const res = await fetch('/api/creatives/pipeline', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          storeId: storeFilter,
-          productId: plProductId,
-          adScript: plScript,
-          avatarId: plAvatarId,
-          voiceId: plVoiceId,
-          brollCount: plBrollCount || 7,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to start pipeline');
-      setPlPipelineId(data.pipelineId);
-      setPlStatus('pending');
-      // Start polling
-      pollPipeline(data.pipelineId);
-    } catch (err: any) {
-      setPlError(err.message);
-    }
-    setPlStarting(false);
-  }
-
-  async function pollPipeline(pipelineId: string) {
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/creatives/pipeline?id=${pipelineId}`);
-        const data = await res.json();
-        const p = data.pipeline;
-        setPlStatus(p.status);
-        setPlCompleted(p.completedClips);
-        setPlTotal(p.totalClips);
-        if (p.finalVideoUrl) setPlFinalUrl(p.finalVideoUrl);
-        if (p.error) setPlError(p.error);
-        if (p.status === 'completed' || p.status === 'failed') {
-          clearInterval(interval);
-          loadCreatives(); // Refresh creatives list
-        }
-      } catch {}
-    }, 5000);
-  }
-
   // ═══ Creative Generator Functions ═══
 
   // Load account intelligence from backend API
@@ -1037,6 +1433,7 @@ function CreativesContent() {
       const data = await res.json();
       if (data.packages) {
         setGenPackages(data.packages);
+        setRenderJobs({});
         setGenStrategy(data.strategy);
         setGenPackageConfig({ contentType: data.content_type, creativeType: data.creative_type });
         setExpandedPackage(0);
@@ -1068,23 +1465,193 @@ function CreativesContent() {
     }
   }
 
+  async function handleAddVoiceover(pkg: any, idx: number) {
+    const videoStatus = packageVideoStatus[idx];
+    if (!videoStatus || videoStatus.status !== 'processing') return;
+
+    // Get the creative's video URL from the DB via poll
+    const script = (pkg as any).script || (pkg as any).adCopy || genConfig.conceptAngle || '';
+    if (!script) {
+      setGenPackageError('No script available for voiceover');
+      return;
+    }
+
+    // Find the creative in our creatives list
+    const creative = creatives.find(c => c.id === videoStatus.id);
+    if (!creative?.file_url) {
+      setGenPackageError('Video not ready yet — wait for generation to complete first');
+      return;
+    }
+
+    if (!window.confirm('Add AI voiceover to this video? This will use OpenAI TTS.')) return;
+
+    setPackageVideoStatus(prev => ({ ...prev, [idx]: { ...prev[idx], reason: 'Adding voiceover...' } }));
+
+    const { data, error } = await safeJsonFetch('/api/creatives/voiceover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        creativeId: videoStatus.id,
+        script,
+        avatarStyle: genConfig.avatarStyle || 'female_ugc',
+        videoUrl: creative.file_url,
+      }),
+    });
+
+    if (data?.success) {
+      setPackageVideoStatus(prev => ({ ...prev, [idx]: { ...prev[idx], reason: 'Voiceover added' } }));
+      loadCreatives();
+    } else {
+      setGenPackageError(error || data?.error?.message || 'Voiceover failed');
+    }
+  }
+
+  async function handleHiggsfieldPack() {
+    if (!storeFilter) return;
+    const productImageUrls = getProductImageUrls();
+    if (productImageUrls.length === 0) {
+      setGenPackageError('Select a product with images first — Higgsfield needs a product photo.');
+      return;
+    }
+    const selectedProduct = products.find(p => p.id === genConfig.productId);
+    if (!window.confirm(`Generate Higgsfield ${higgsStyle.replace(/_/g, ' ')} pack? This will create 3-4 scene clips and stitch them into one video.`)) return;
+
+    setGeneratingPackage(true);
+    setGenPackageError('');
+    setHiggsPackJob({ jobId: '', status: 'starting', progress: 'Starting...' });
+
+    const { data, error } = await safeJsonFetch('/api/creatives/higgsfield-pack', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        storeId: storeFilter,
+        productId: genConfig.productId,
+        productName: selectedProduct?.title || 'Product',
+        productImageUrl: productImageUrls[0],
+        style: higgsStyle,
+        conceptAngle: genConfig.conceptAngle || undefined,
+        title: `${selectedProduct?.title || 'Product'} — ${higgsStyle.replace(/_/g, ' ')}`,
+        script: genConfig.conceptAngle || `Discover ${selectedProduct?.title || 'this product'}. See what makes it special. Try it today.`,
+        avatarStyle: genConfig.avatarStyle || 'female_ugc',
+      }),
+    });
+
+    if (error || !data?.success) {
+      setGenPackageError(error || data?.error?.message || 'Failed to start Higgsfield pack');
+      setHiggsPackJob(null);
+      setGeneratingPackage(false);
+      return;
+    }
+
+    const jobId = data.jobId;
+    setHiggsPackJob({ jobId, status: 'generating', progress: `Generating ${data.sceneCount} scenes...` });
+
+    // Poll for completion
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/creatives/higgsfield-pack?jobId=${jobId}`);
+        const pollData = await res.json();
+        if (pollData.success) {
+          setHiggsPackJob({
+            jobId, status: pollData.status,
+            progress: pollData.progress,
+            videoUrl: pollData.videoUrl,
+            scenes: pollData.scenes,
+          });
+
+          if (pollData.status === 'completed' || pollData.status === 'failed') {
+            clearInterval(pollInterval);
+            setGeneratingPackage(false);
+            if (pollData.status === 'completed') {
+              loadCreatives();
+            } else {
+              setGenPackageError(pollData.error || 'Higgsfield pack generation failed');
+            }
+          }
+        }
+      } catch {}
+    }, 5000);
+
+    // Safety timeout after 6 minutes
+    setTimeout(() => {
+      clearInterval(pollInterval);
+      if (generatingPackage) setGeneratingPackage(false);
+    }, 360000);
+  }
+
   async function handleGeneratePackage() {
     if (!storeFilter) return;
-    if (!window.confirm(`Generate ${genConfig.quantity} creative package(s) using ChatGPT? This will call the OpenAI API.`)) return;
+    // If Higgsfield engine is selected, use the pack generator instead
+    if (genConfig.engine === 'higgsfield') {
+      return handleHiggsfieldPack();
+    }
+    // ═══ CLONE AD MODE — uses separate pipeline ═══
+    if (genConfig.genMode === 'clone_ad') {
+      if (!referenceVideoUrl) {
+        setGenPackageError('Paste a reference video URL to clone.');
+        return;
+      }
+      if (!window.confirm(`Clone ad from reference video? This will analyze the video frame-by-frame and generate ${genConfig.quantity} Seedance-optimized packages.`)) return;
+      setGeneratingPackage(true);
+      setGenPackageError('');
+      setGenPackages([]);
+      setRenderJobs({});
+      setGenStrategy(null);
+      const selectedProduct = genConfig.productId ? products.find(p => p.id === genConfig.productId) : null;
+      const { data, error } = await safeJsonFetch('/api/creatives/clone-ad', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storeId: storeFilter,
+          referenceUrl: referenceVideoUrl,
+          productId: genConfig.productId || undefined,
+          productName: selectedProduct?.title || undefined,
+          coverImageUrl: genConfig.coverImageUrl || undefined,
+          quantity: genConfig.quantity,
+          videoDuration: genConfig.videoDuration,
+        }),
+      });
+      if (error) {
+        setGenPackageError(error === 'Failed to fetch' ? 'Server connection lost. Try again.' : error);
+      } else if (data?.success) {
+        setGenPackages(data.packages || []);
+        setGenPackageConfig(data.config);
+        setGenStrategy(null);
+        setExpandedPackage(0);
+        setGenCurrentId(null);
+        setGenVersion(1);
+      } else {
+        setGenPackageError(data?.error?.message || data?.error || 'Clone failed');
+      }
+      setGeneratingPackage(false);
+      return;
+    }
+    if (!window.confirm(`Generate ${genConfig.quantity} creative package(s)? This will call AI APIs.`)) return;
     setGeneratingPackage(true);
     setGenPackageError('');
     setGenPackages([]);
+    setRenderJobs({});
     setGenStrategy(null);
     setViewingHistory(null);
     const { data, error } = await safeJsonFetch('/api/creatives/generate-package', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ storeId: storeFilter, ...genConfig }),
+      body: JSON.stringify({
+        storeId: storeFilter, ...genConfig,
+        ...(matchedWinnerRef ? { winnerReferenceId: matchedWinnerRef.id, moreLikeThis: true } : {}),
+        ...(activeConceptAction ? { conceptAction: activeConceptAction } : {}),
+      }),
     });
     if (error) {
-      setGenPackageError(error);
+      // Translate raw fetch errors into friendly messages
+      const msg = error === 'Failed to fetch'
+        ? 'Server connection lost — may be restarting. Try again in a few seconds.'
+        : error.includes('timed out') ? 'Generation timed out. Try again or reduce quantity.'
+        : error;
+      setGenPackageError(msg);
     } else if (data?.success) {
       setGenPackages(data.packages || []);
+      setRenderJobs({});
       setGenPackageConfig(data.config);
       setGenStrategy(data.strategy);
       setExpandedPackage(0);
@@ -1092,26 +1659,31 @@ function CreativesContent() {
       setGenVersion(data.version || 1);
       setComparingPackages([]);
       setViewingHistory(null);
+      if (data.winnerReference) {
+        setMatchedWinnerRef({ id: data.winnerReference.id, title: data.winnerReference.title, _matchScore: data.winnerReference.matchScore });
+      }
       loadGenHistory();
       if (data.fallback) {
-        setGenPackageError(data.fallbackReason || 'AI unavailable — draft packages generated from rules.');
+        setGenPackageError(data.fallbackReason || 'AI providers unavailable — draft packages generated from rules. You can still edit and use them.');
+      } else if (data.failoverNote) {
+        setGenPackageError(data.failoverNote);
       } else if (data.cached) {
         setGenPackageError(data.cacheReason || 'Returned cached result from a recent identical generation.');
       }
     } else {
       const errObj = data?.error;
-      if (errObj?.code === 'insufficient_quota' || errObj?.code === 'GENERATION_FAILED') {
-        setGenPackageError('AI generation temporarily unavailable. Please check OpenAI billing or try again later.');
-      } else {
-        const errMsg = errObj?.message || data?.error || 'Generation failed';
-        setGenPackageError(typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg));
-      }
+      const errMsg = errObj?.message || data?.error || 'Generation failed';
+      setGenPackageError(typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg));
     }
     setGeneratingPackage(false);
   }
 
   async function handleGenerateVariations(packageIndex: number) {
-    if (!storeFilter || !genCurrentId) return;
+    if (!storeFilter) return;
+    if (!genCurrentId) {
+      setGenPackageError('Generate a creative package first before creating variations.');
+      return;
+    }
     if (!window.confirm(`Generate ${genConfig.quantity} variations of package #${packageIndex + 1}? This will call the OpenAI API.`)) return;
     setGeneratingPackage(true);
     setGenPackageError('');
@@ -1128,7 +1700,9 @@ function CreativesContent() {
     if (error) {
       setGenPackageError(error);
     } else if (data?.success) {
-      setGenPackages(data.packages || []);
+      const newPackages = data.packages || [];
+      setGenPackages(newPackages);
+      setRenderJobs({});
       setGenPackageConfig(data.config);
       setGenStrategy(data.strategy);
       setExpandedPackage(0);
@@ -1136,69 +1710,607 @@ function CreativesContent() {
       setGenVersion(data.version || 1);
       setComparingPackages([]);
       loadGenHistory();
+      // Auto-render all image variation packages
+      if (data.config?.contentType !== 'video' && newPackages.length > 0) {
+        setTimeout(() => {
+          for (let i = 0; i < newPackages.length; i++) {
+            fireRenderJob(newPackages[i], i);
+          }
+        }, 100);
+      }
     } else {
       setGenPackageError(data?.error?.message || data?.error || 'Variation generation failed');
     }
     setGeneratingPackage(false);
   }
 
+  // Load product foundation when product changes
+  async function loadFoundation(pid: string) {
+    if (!pid) { setProductFoundation(null); return; }
+    setFoundationLoading(true);
+    try {
+      const res = await fetch(`/api/creatives/foundations?productId=${pid}`);
+      const data = await res.json();
+      if (data.success && data.foundation) {
+        setProductFoundation({
+          beliefs: data.foundation.beliefs || [],
+          uniqueMechanism: data.foundation.unique_mechanism || '',
+          avatarSummary: data.foundation.avatar_summary || '',
+          offerBrief: data.foundation.offer_brief || '',
+          researchNotes: data.foundation.research_notes || '',
+        });
+      } else {
+        setProductFoundation({ beliefs: [], uniqueMechanism: '', avatarSummary: '', offerBrief: '', researchNotes: '' });
+      }
+    } catch { setProductFoundation(null); }
+    setFoundationLoading(false);
+  }
+
+  async function saveFoundation() {
+    if (!genConfig.productId || !productFoundation) return;
+    setFoundationSaving(true);
+    try {
+      await fetch('/api/creatives/foundations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storeId: storeFilter,
+          productId: genConfig.productId,
+          beliefs: productFoundation.beliefs,
+          avatarSummary: productFoundation.avatarSummary,
+          offerBrief: productFoundation.offerBrief,
+          uniqueMechanism: productFoundation.uniqueMechanism,
+          researchNotes: productFoundation.researchNotes,
+        }),
+      });
+    } catch {}
+    setFoundationSaving(false);
+  }
+
+  /** Build ordered product image URLs with cover image first */
+  function getProductImageUrls(): string[] {
+    const selectedProduct = genConfig.productId ? products.find(p => p.id === genConfig.productId) : null;
+    if (!selectedProduct) return [];
+    const allImgs: string[] = [];
+    if (selectedProduct.image_url) allImgs.push(selectedProduct.image_url);
+    if (selectedProduct.images) {
+      try { const parsed = JSON.parse(selectedProduct.images) as string[]; for (const u of parsed) { if (u && !allImgs.includes(u)) allImgs.push(u); } } catch {}
+    }
+    // Filter: must be https, must be JPG/PNG/WEBP (no SVG — AI engines can't process it)
+    const publicUrls = allImgs.filter(u => {
+      if (!u.startsWith('https://')) return false;
+      const lower = u.toLowerCase().split('?')[0];
+      if (lower.endsWith('.svg')) return false;
+      return true;
+    });
+    // Put user-selected cover image first (if it's a valid non-SVG image)
+    const cover = genConfig.coverImageUrl;
+    if (cover && publicUrls.includes(cover)) {
+      console.log('[COVER] Using selected cover:', cover.substring(0, 80));
+      return [cover, ...publicUrls.filter(u => u !== cover)];
+    }
+    if (cover && !publicUrls.includes(cover)) {
+      console.log('[COVER] Selected cover not in valid list (may be SVG or invalid), using default first');
+    }
+    return publicUrls;
+  }
+
+  function buildImageRenderPayload(pkg: any, idx: number) {
+    const selectedProduct = genConfig.productId ? products.find(p => p.id === genConfig.productId) : null;
+    const productName = (selectedProduct?.title || '').replace(/[™®©–—]/g, '').trim();
+    const publicImageUrls = getProductImageUrls();
+
+    // ═══ AUTHORITATIVE COVER IMAGE ═══
+    // The user's explicit selection is the ONLY image that reaches the provider.
+    // No fallback to random array elements. If no cover is selected, use the first valid image.
+    const coverImage = genConfig.coverImageUrl || publicImageUrls[0] || '';
+    const hasRef = !!coverImage;
+    console.log(`[IMG-RENDER] Cover image: ${coverImage ? coverImage.substring(0, 100) : '(none)'} | userSelected=${!!genConfig.coverImageUrl}`);
+
+    // Build format-aware, platform-aware, funnel-aware render prompt
+    const renderPrompt = buildImageRenderDirective(pkg, {
+      productName: productName || undefined,
+      platform: genConfig.platformTarget || 'meta',
+      funnelStage: genConfig.funnelStage || 'mof',
+      hasReferenceImage: hasRef,
+    });
+
+    // Use selected dimension preset (auto resolves to platform default)
+    const platform = genConfig.platformTarget || 'meta';
+    const resolution = dimensionToResolution(genConfig.dimension, platform, 'image');
+
+    return {
+      storeId: storeFilter,
+      type: 'text-to-image',
+      prompt: renderPrompt.substring(0, 4000),
+      title: pkg.title || `Image Ad ${idx + 1}`,
+      angle: pkg.angle || undefined,
+      resolution,
+      // Send ONLY the user's chosen cover image — not the full array.
+      // This is the authoritative source; the backend must use this and nothing else.
+      coverImageUrl: coverImage || undefined,
+      imageUrls: coverImage ? [coverImage] : undefined,
+      packageId: genCurrentId,
+      packageIndex: idx,
+      publicImageUrls,
+      imageFormat: pkg.imageFormat || 'product_highlight',
+    };
+  }
+
+  /**
+   * Select the best image provider based on format, product availability, and platform.
+   * - gpt-image-1 (dalle): Best for product fidelity — can see reference images via /images/edits
+   * - gemini-image: Good all-around with reference image support
+   * - minimax-image: Backup, no reference image support
+   */
+  /**
+   * Deterministic image provider selection based on creative type.
+   * Mirrors the server-side provider-router.ts logic.
+   * Text-heavy → Ideogram, Product-fidelity → Stability, Fallback → GPT Image.
+   */
+  function selectImageProvider(format: string, hasProductImages: boolean): string {
+    // If user explicitly selected an image engine from the UI, use it directly.
+    // Exception: Ideogram can't use reference images — swap to Nano Banana if product images exist.
+    const imageEngines = ['nano-banana', 'stability', 'ideogram'];
+    if (imageEngines.includes(genConfig.engine)) {
+      if (genConfig.engine === 'ideogram' && hasProductImages) return 'nano-banana';
+      return genConfig.engine;
+    }
+
+    // Auto mode: 3-tier strategy (matches backend provider-router.ts)
+    const ct = genConfig.creativeType || '';
+    // Tier 3 — Text-heavy → Ideogram (but not when product images exist)
+    const textHeavyTypes = ['testimonial', 'review_stack', 'social_proof', 'offer_stack', 'problem_solution',
+      'before_after', 'comparison', 'authority_claim', 'myth_busting', 'hook_viral', 'pattern_interrupt'];
+    if (textHeavyTypes.includes(ct) && !hasProductImages) return 'ideogram';
+    // Tier 2 — Product-fidelity → Stability
+    const productTypes = ['product_demo', 'product_highlight', 'faceless_product_only', 'routine'];
+    if (productTypes.includes(ct)) return 'stability';
+    // Tier 1 — Everything else → Nano Banana 2 (default, fast, supports reference images)
+    return 'nano-banana';
+  }
+
+  function fireRenderJob(pkg: any, idx: number, engineOverride?: string) {
+    if (!storeFilter) return;
+    if (renderJobs[idx]?.status === 'rendering' || renderJobs[idx]?.status === 'queued') return;
+
+    const payload = buildImageRenderPayload(pkg, idx);
+    const hasProductImages = payload.publicImageUrls.length > 0;
+
+    // Block if product selected but no images
+    if (genConfig.productId && !hasProductImages) {
+      setRenderJobs(prev => ({ ...prev, [idx]: { status: 'failed', engine: 'dalle', error: 'No product images. Add images first.', startedAt: new Date().toISOString() } }));
+      return;
+    }
+
+    // Select provider: per-package override > global engine selection > auto-routing
+    const isManual = !!engineOverride;
+    const engine = engineOverride || selectImageProvider(payload.imageFormat, hasProductImages);
+    const engineLabels: Record<string, string> = { dalle: 'GPT Image', 'gemini-image': 'Gemini', 'minimax-image': 'MiniMax', stability: 'Stability', 'nano-banana': 'Nano Banana', ideogram: 'Ideogram' };
+    const engineLabel = engineLabels[engine] || engine;
+
+    // Set queued immediately, then fire
+    setRenderJobs(prev => ({ ...prev, [idx]: { status: 'queued', engine, startedAt: new Date().toISOString() } }));
+
+    // Remove non-API fields from the fetch payload
+    const { publicImageUrls, imageFormat, ...fetchPayload } = payload;
+
+    // Submit job (returns instantly) then poll for result
+    (async () => {
+      setRenderJobs(prev => ({ ...prev, [idx]: { ...prev[idx], status: 'rendering' } }));
+
+      // Step 1: Submit render job — returns jobId immediately
+      const { data, error } = await safeJsonFetch('/api/creatives/render-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...fetchPayload,
+          engine: isManual ? engine : undefined, // let server router pick if not manual
+          creativeType: genConfig.creativeType,
+          autoFailover: !isManual,
+          // composite: false — NEVER paste product on top of background.
+          // Product is passed as a reference image so the AI integrates it naturally.
+          composite: false,
+        }),
+      });
+
+      if (error || !data?.success) {
+        const reason = error || data?.error?.message || 'Failed to start render';
+        setRenderJobs(prev => ({ ...prev, [idx]: { ...prev[idx], status: 'failed', error: reason.substring(0, 300), completedAt: new Date().toISOString() } }));
+        return;
+      }
+
+      const jobId = data.jobId || data.id;
+      setRenderJobs(prev => ({ ...prev, [idx]: { ...prev[idx], creativeId: jobId } }));
+
+      // Step 2: Poll for completion every 3 seconds
+      let polls = 0;
+      const maxPolls = 60; // 3min max (60 * 3s)
+      const pollInterval = 3000;
+
+      const poll = async () => {
+        polls++;
+        try {
+          const res = await fetch(`/api/creatives/render-image?jobId=${jobId}`);
+          const pollData = await res.json().catch(() => null);
+
+          if (pollData?.status === 'completed' && pollData?.imageUrl) {
+            const actualEngine = pollData.engine || engine;
+            const failoverNote = pollData.failoverLog?.length > 0
+              ? `${engineLabels[engine] || engine} unavailable, used ${engineLabels[actualEngine] || actualEngine}`
+              : '';
+            setRenderJobs(prev => ({ ...prev, [idx]: {
+              ...prev[idx], status: 'completed', engine: actualEngine,
+              imageUrl: pollData.imageUrl, creativeId: jobId,
+              completedAt: new Date().toISOString(),
+              ...(failoverNote ? { error: failoverNote } : {}),
+            } }));
+            loadCreatives();
+            return;
+          }
+
+          if (pollData?.status === 'failed') {
+            setRenderJobs(prev => ({ ...prev, [idx]: { ...prev[idx], status: 'failed', error: (pollData.error || 'Render failed').substring(0, 300), completedAt: new Date().toISOString() } }));
+            return;
+          }
+
+          // Still rendering — continue polling
+          if (polls < maxPolls) {
+            setTimeout(poll, pollInterval);
+          } else {
+            setRenderJobs(prev => ({ ...prev, [idx]: { ...prev[idx], status: 'failed', error: 'Render timed out after 3 minutes. Check Generated tab.', completedAt: new Date().toISOString() } }));
+          }
+        } catch {
+          // Network error during poll — retry polling (don't fail the job)
+          if (polls < maxPolls) {
+            setTimeout(poll, pollInterval * 2); // slower retry on network error
+          } else {
+            setRenderJobs(prev => ({ ...prev, [idx]: { ...prev[idx], status: 'failed', error: 'Lost connection while checking render status.', completedAt: new Date().toISOString() } }));
+          }
+        }
+      };
+
+      // Start polling after a short delay (give the backend time to start)
+      setTimeout(poll, 2000);
+    })();
+  }
+
+  function handleRenderImage(pkg: any, idx: number, engine?: string) {
+    fireRenderJob(pkg, idx, engine);
+  }
+
+  function handleBulkRender(indices?: number[], engine?: string) {
+    // Only fire render for packages that are IMAGE packages (per-package, so mixed batches work)
+    const targets = indices || genPackages.map((_, i) => i);
+    const renderableTargets = targets.filter(i => {
+      if (!isVideoPackage(genPackages[i], genPackageConfig?.contentType)) {
+        const job = renderJobs[i];
+        return !job || job.status === 'failed' || job.status === 'completed';
+      }
+      return false;
+    });
+    if (renderableTargets.length === 0) return;
+    if (!window.confirm(`Render ${renderableTargets.length} image${renderableTargets.length > 1 ? 's' : ''} with AI? This will call the API and may incur costs.`)) return;
+    for (const i of renderableTargets) {
+      fireRenderJob(genPackages[i], i, engine);
+    }
+  }
+
+  function handleRetryRender(pkg: any, idx: number) {
+    setRenderJobs(prev => { const n = { ...prev }; delete n[idx]; return n; });
+    fireRenderJob(pkg, idx);
+  }
+
+  /**
+   * Fire video generation for a single package WITHOUT the confirm dialog.
+   * Used by bulk generation to avoid per-item confirms.
+   */
+  function fireVideoJob(pkg: any, idx: number, engine?: string) {
+    if (!storeFilter) return;
+    if (generatingIdxSet.has(idx)) return;
+    if (packageVideoStatus[idx]) return;
+    const resolvedEngine = engine || bestEngineForDuration(genConfig.videoDuration || 20);
+    setGeneratingIdxSet(prev => new Set(prev).add(idx));
+    (async () => {
+      const selectedProduct = genConfig.productId ? products.find(p => p.id === genConfig.productId) : null;
+      const productName = selectedProduct?.title || '';
+      const productImageUrls = getProductImageUrls();
+
+      setPackageVideoStatus(prev => { const n = { ...prev }; delete n[idx]; return n; });
+
+      if (genConfig.productId && productImageUrls.length === 0) {
+        setPackageVideoStatus(prev => ({ ...prev, [idx]: { id: '', status: 'failed', engine: resolvedEngine, reason: 'No product images.' } }));
+        setGeneratingIdxSet(prev => { const n = new Set(prev); n.delete(idx); return n; });
+        return;
+      }
+
+      const dur = genConfig.videoDuration || 20;
+      const isSeedance = resolvedEngine === 'seedance';
+      const parts: string[] = [];
+
+      if (isSeedance) {
+        // SEEDANCE PROMPT STRUCTURE:
+        // Dialogue FIRST in quotes (Seedance voices everything, so script must be on top)
+        // Visual directions in [brackets] after (Seedance deprioritizes bracketed text for audio)
+        if (pkg.script) parts.push(`"${pkg.script}"`);
+        parts.push(`[Visual: ${dur}s video, natural UGC pacing, handheld iPhone camera, natural lighting]`);
+        if (productName) {
+          parts.push(`[Product: show "${productName}" naturally in scene, match packaging and branding]`);
+        }
+        if (pkg.visualDirection) parts.push(`[Direction: ${pkg.visualDirection}]`);
+        if (pkg.sceneStructure) parts.push(`[Timing: ${pkg.sceneStructure}]`);
+      } else {
+        // Non-Seedance engines (Sora, Veo, etc.) — keep full verbose prompt
+        parts.push(`CRITICAL PACING: This is a ${dur}-SECOND video. Use the FULL ${dur} seconds. Do NOT rush. Hold each shot for 2-4 seconds. Slow, natural pacing. The CTA must appear in the LAST 3 seconds and must NOT be cut off.`);
+        parts.push('RULES: Handheld iPhone camera, natural lighting. UGC native feel.');
+        if (productName) {
+          const desc = (selectedProduct?.description || '').toString().substring(0, 400);
+          parts.push(`PRODUCT REFERENCE (do not show as a still photo — depict the product naturally within the scene): "${productName}"${desc ? ` — ${desc}` : ''}. Match brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
+        }
+        if (pkg.visualDirection) parts.push(pkg.visualDirection);
+        if (pkg.script) parts.push(`Script (MUST fit in ${dur}s — speak slowly and naturally): ${pkg.script}`);
+        if (pkg.sceneStructure) parts.push(`Scene timing: ${pkg.sceneStructure}`);
+        parts.push('OPENING FRAME: Start on an action, location, or person — NOT on a static product photo or poster. The product appears naturally in the scene as it unfolds, not as the first visual.');
+      }
+      let prompt = parts.join('\n\n') || pkg.script || pkg.adCopy || '';
+      // Strip all audio references — Sora generates glitchy sounds from any audio mention
+      prompt = prompt.replace(/\b(background music|ambient music|soundtrack|cinematic score|room tone|ambient sound|sound effect|natural room tone|music bed|audio cue|upbeat track)\b/gi, '');
+
+      const dim = genConfig.dimension === 'auto'
+        ? (genConfig.platformTarget === 'tiktok' ? '9:16' : '4:5')
+        : genConfig.dimension;
+      const videoResolution =
+        dim === '9:16' || dim === '4:5' ? '720p-vertical' :
+        dim === '16:9' ? '720p' : '720p-vertical';
+      const videoDuration = String(dur);
+
+      // Authoritative cover image = the one the user explicitly selected.
+      // Fall back to the first valid product image only if no selection was made.
+      const chosenCover = genConfig.coverImageUrl || productImageUrls[0] || '';
+      console.log('[CREATIVE-GEN] Sending cover image URL:', chosenCover.substring(0, 120));
+      console.log('[CREATIVE-GEN] User selected cover:', genConfig.coverImageUrl ? 'YES' : 'NO (defaulted)');
+
+      const { data, error } = await safeJsonFetch('/api/creatives/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storeId: storeFilter, engine: resolvedEngine,
+          // Always text-to-video — the cover image is a reference (via vision description)
+          // injected into the text prompt, NOT the literal opening frame of the video.
+          type: 'text-to-video',
+          prompt: prompt.substring(0, 4000), title: pkg.title || `Video ${idx + 1}`,
+          angle: pkg.angle || undefined,
+          resolution: videoResolution,
+          duration: videoDuration,
+          dimension: dim,
+          creativeType: genConfig.creativeType,
+          coverImageUrl: chosenCover || undefined,
+          userSelectedCover: !!genConfig.coverImageUrl,
+          packageId: genCurrentId, packageIndex: idx,
+        }),
+      });
+
+      if (error) {
+        setPackageVideoStatus(prev => ({ ...prev, [idx]: { id: '', status: 'failed', engine: resolvedEngine, reason: error } }));
+      } else if (data?.success) {
+        setPackageVideoStatus(prev => ({ ...prev, [idx]: { id: data.id, status: 'processing', engine: resolvedEngine } }));
+        loadCreatives();
+      } else {
+        setPackageVideoStatus(prev => ({ ...prev, [idx]: { id: '', status: 'failed', engine: resolvedEngine, reason: data?.error?.message || 'Generation failed' } }));
+      }
+      setGeneratingIdxSet(prev => { const n = new Set(prev); n.delete(idx); return n; });
+    })();
+  }
+
+  /**
+   * Generate All — works for both image and video packages.
+   * mode: 'all' fires everything at once, 'sequential' fires one at a time.
+   */
+  // Pick the best video engine based on the requested duration
+  function bestEngineForDuration(duration: number): string {
+    // If user explicitly selected an engine (not auto), use it
+    if (genConfig.engine && genConfig.engine !== 'auto') return genConfig.engine;
+    if (duration <= 8) return 'veo';         // Veo: 4-8s
+    if (duration <= 10) return 'runway';     // Runway: 5-10s
+    return 'sora';                           // Sora: 8-20s
+  }
+
+  function handleGenerateAll(mode: 'all' | 'sequential' = 'all', engine?: string) {
+    const count = genPackages.length;
+    if (count === 0) return;
+
+    // Split packages into video and image groups (mixed batches work correctly)
+    const videoIndices: number[] = [];
+    const imageIndices: number[] = [];
+    for (let i = 0; i < count; i++) {
+      if (isVideoPackage(genPackages[i], genPackageConfig?.contentType)) videoIndices.push(i);
+      else imageIndices.push(i);
+    }
+
+    const autoEngine = bestEngineForDuration(genConfig.videoDuration || 20);
+    const videoEngine = engine || autoEngine;
+    const parts: string[] = [];
+    if (videoIndices.length > 0) parts.push(`${videoIndices.length} video${videoIndices.length > 1 ? 's' : ''}`);
+    if (imageIndices.length > 0) parts.push(`${imageIndices.length} image${imageIndices.length > 1 ? 's' : ''}`);
+    if (!window.confirm(`Generate ${parts.join(' + ')}? This will call APIs and may incur costs.`)) return;
+
+    // VIDEOS
+    if (videoIndices.length > 0) {
+      if (mode === 'all') {
+        for (const i of videoIndices) {
+          if (!packageVideoStatus[i] && !generatingIdxSet.has(i)) {
+            fireVideoJob(genPackages[i], i, videoEngine);
+          }
+        }
+      } else {
+        let cur = 0;
+        const fireNext = () => {
+          while (cur < videoIndices.length && (packageVideoStatus[videoIndices[cur]] || generatingIdxSet.has(videoIndices[cur]))) cur++;
+          if (cur < videoIndices.length) {
+            fireVideoJob(genPackages[videoIndices[cur]], videoIndices[cur], videoEngine);
+            cur++;
+            setTimeout(fireNext, 2000);
+          }
+        };
+        fireNext();
+      }
+    }
+
+    // IMAGES
+    if (imageIndices.length > 0) {
+      const renderable = imageIndices.filter(i => { const job = renderJobs[i]; return !job || job.status === 'failed' || job.status === 'completed'; });
+      if (mode === 'all') {
+        for (const i of renderable) fireRenderJob(genPackages[i], i, engine);
+      } else {
+        let cur = 0;
+        const fireNext = () => {
+          if (cur < renderable.length) {
+            fireRenderJob(genPackages[renderable[cur]], renderable[cur], engine);
+            cur++;
+            setTimeout(fireNext, 1500);
+          }
+        };
+        fireNext();
+      }
+    }
+  }
+
+  async function handleLaunchToMeta() {
+    if (!storeFilter || !selectedProfileId || !launchLinkUrl) return;
+
+    // Only launch rendered image creatives
+    const renderedPackages = genPackages
+      .map((pkg, idx) => ({ pkg, idx, job: renderJobs[idx] }))
+      .filter(({ job }) => job?.status === 'completed' && job?.imageUrl);
+
+    if (renderedPackages.length === 0) {
+      setLaunchError('No rendered images to launch. Render images first.');
+      return;
+    }
+
+    // Group by concept/angle
+    const conceptGroups: Record<string, any[]> = {};
+    for (const { pkg, job } of renderedPackages) {
+      const concept = (pkg as any).angle || (pkg as any).conceptAngle || (pkg as any).title || 'General';
+      if (!conceptGroups[concept]) conceptGroups[concept] = [];
+      conceptGroups[concept].push({
+        id: job!.creativeId || '',
+        title: (pkg as any).title || concept,
+        headline: (pkg as any).headline || (pkg as any).hookText || (pkg as any).title || '',
+        primaryText: (pkg as any).adCopy || (pkg as any).headline || '',
+        imageUrl: job!.imageUrl!,
+        linkUrl: launchLinkUrl,
+        callToAction: 'SHOP_NOW',
+      });
+    }
+
+    const packages = Object.entries(conceptGroups).map(([concept, creatives]) => ({
+      concept,
+      creatives,
+    }));
+
+    if (!window.confirm(`Launch ${renderedPackages.length} ads into ${packages.length} ad set(s) on Meta?\n\nBudget: $30/day per ad set\nStatus: PAUSED (you can activate in Ads Manager)\n\nThis will create real campaigns in your ad account.`)) return;
+
+    setLaunching(true);
+    setLaunchError('');
+    setLaunchResult(null);
+
+    const { data, error } = await safeJsonFetch('/api/creatives/launch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        storeId: storeFilter,
+        profileId: selectedProfileId,
+        packages,
+        dailyBudget: 3000,
+        status: 'PAUSED',
+      }),
+    });
+
+    if (error) {
+      setLaunchError(error);
+    } else if (data?.success) {
+      setLaunchResult(data);
+    } else {
+      setLaunchError(data?.error?.message || 'Launch failed');
+    }
+    setLaunching(false);
+  }
+
   function toggleCompare(idx: number) {
     setComparingPackages(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx].slice(0, 3));
   }
 
-  async function handleGenerateVideoFromPackage(pkg: any, idx: number, engine: string = 'sora') {
+  async function handleGenerateVideoFromPackage(pkg: any, idx: number, engine?: string) {
+    const resolvedEngine = engine || bestEngineForDuration(genConfig.videoDuration || 20);
     if (!storeFilter) return;
-    const isVideo = genPackageConfig?.contentType === 'video';
+    // Per-package routing — mixed batches have both video + image packages
+    const isVideo = isVideoPackage(pkg, genPackageConfig?.contentType);
     if (!isVideo) {
-      if (!window.confirm('Generate image with MiniMax? This will call the API.')) return;
-    } else {
-      const engineNames: Record<string, string> = { sora: 'Sora', veo: 'Veo', minimax: 'Hailuo', runway: 'Runway', higgsfield: 'Higgsfield' };
-      if (!window.confirm(`Generate video with ${engineNames[engine] || engine}? This will call the API and may incur costs.`)) return;
+      // Route image packages to the image render pipeline instead
+      return fireRenderJob(pkg, idx, engine);
     }
-    setGeneratingVideoIdx(idx);
+    const engineNames: Record<string, string> = { sora: 'Sora', veo: 'Veo', minimax: 'Hailuo', runway: 'Runway', higgsfield: 'Higgsfield' };
+    if (!window.confirm(`Generate ${genConfig.videoDuration}s video with ${engineNames[resolvedEngine] || resolvedEngine}? This will call the API and may incur costs.`)) return;
+    setGeneratingIdxSet(prev => new Set(prev).add(idx));
 
-    // Gather product images FIRST (needed for image plan + prompt + payload)
+    // Gather product images FIRST — only public URLs (providers can't access local uploads)
     const selectedProduct = genConfig.productId ? products.find(p => p.id === genConfig.productId) : null;
     const productName = selectedProduct?.title || '';
-    const productImageUrls: string[] = [];
-    if (selectedProduct?.image_url) productImageUrls.push(selectedProduct.image_url);
-    if (selectedProduct?.images) {
-      try { const parsed = JSON.parse(selectedProduct.images) as string[]; for (const u of parsed) { if (u && !productImageUrls.includes(u)) productImageUrls.push(u); } } catch {}
-    }
+    const productImageUrls = getProductImageUrls();
 
     // Clear any previous failed status for this package
     setPackageVideoStatus(prev => { const n = { ...prev }; delete n[idx]; return n; });
 
     // Block generation if product is selected but has no images
     if (genConfig.productId && productImageUrls.length === 0) {
-      setPackageVideoStatus(prev => ({ ...prev, [idx]: { id: '', status: 'failed', engine, reason: 'No product images. Add images first.' } }));
-      setGeneratingVideoIdx(null);
+      setPackageVideoStatus(prev => ({ ...prev, [idx]: { id: '', status: 'failed', engine: resolvedEngine, reason: 'No product images. Add images first.' } }));
+      setGeneratingIdxSet(prev => { const n = new Set(prev); n.delete(idx); return n; });
       return;
     }
 
-    // Build video prompt with realism + brand fidelity + multi-image plan
+    // Build video prompt with realism + brand fidelity + duration pacing
+    const dur = genConfig.videoDuration || 20;
+    const isSeedance = resolvedEngine === 'seedance';
     const parts: string[] = [];
-    parts.push('RULES: Handheld iPhone camera, natural lighting, real environment. NO background music, NO soundtrack — voice and room tone only. UGC native feel.');
-    if (productName) {
-      parts.push(`BRAND FIDELITY (STRICT): The product MUST be "${productName}" exactly as shown in the ${productImageUrls.length} provided reference images. Use exact bottle shape, cap color, label layout, color palette. Do NOT replace with generic bottle. Do NOT hallucinate label text. Use medium/wide shots for branding. Avoid extreme close-ups of labels.`);
-    }
-    const imagePlan = buildProductImagePlan(productImageUrls.length, genConfig.creativeType, genPackageConfig?.contentType || 'video');
-    if (imagePlan.promptDirective) parts.push(imagePlan.promptDirective);
-    if (pkg.visualDirection) parts.push(pkg.visualDirection);
-    if (pkg.script) parts.push(`Script: ${pkg.script}`);
-    if (pkg.sceneStructure) parts.push(`Scene structure: ${pkg.sceneStructure}`);
-    if (pkg.brollDirection) parts.push(`B-roll: ${pkg.brollDirection}`);
-    if (pkg.avatarSuggestion || pkg.presenterBehavior) parts.push(`Presenter: ${pkg.presenterBehavior || pkg.avatarSuggestion}`);
-    if (!isVideo) {
-      if (pkg.visualComposition) parts.push(pkg.visualComposition);
-      if (pkg.headline) parts.push(`Headline: ${pkg.headline}`);
+
+    if (isSeedance) {
+      // SEEDANCE: dialogue first in quotes, visual directions in brackets
+      if (pkg.script) parts.push(`"${pkg.script}"`);
+      parts.push(`[Visual: ${dur}s video, natural UGC pacing, handheld iPhone camera, natural lighting]`);
+      if (productName) {
+        parts.push(`[Product: show "${productName}" naturally in scene, match packaging and branding]`);
+      }
+      if (pkg.visualDirection) parts.push(`[Direction: ${pkg.visualDirection}]`);
+      if (pkg.sceneStructure) parts.push(`[Timing: ${pkg.sceneStructure}]`);
+      if (pkg.brollDirection) parts.push(`[B-roll: ${pkg.brollDirection}]`);
+      if (pkg.presenterBehavior || pkg.avatarSuggestion) parts.push(`[Presenter: ${pkg.presenterBehavior || pkg.avatarSuggestion}]`);
+    } else {
+      // Non-Seedance engines — keep full verbose prompt
+      parts.push(`CRITICAL PACING: This is a ${dur}-SECOND video. Use the FULL ${dur} seconds. Hold each shot for 2-4 seconds. Slow, natural pacing. CTA in the LAST 3 seconds — must NOT be cut off.`);
+      parts.push('RULES: Handheld iPhone camera, natural lighting, real environment. NO background music, NO soundtrack — voice and room tone only. UGC native feel.');
+      if (productName) {
+        const desc = (selectedProduct?.description || '').toString().substring(0, 400);
+        parts.push(`PRODUCT REFERENCE (depict naturally within the scene, NOT as a static product photo): "${productName}"${desc ? ` — ${desc}` : ''}. Match the brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
+      }
+      if (pkg.visualDirection) parts.push(pkg.visualDirection);
+      if (pkg.script) parts.push(`Script (deliver slowly over ${dur} seconds — natural conversational pace, NOT rushed): ${pkg.script}`);
+      if (pkg.sceneStructure) parts.push(`Scene timing (${dur}s total): ${pkg.sceneStructure}`);
+      if (pkg.brollDirection) parts.push(`B-roll (hold each shot 2-4s): ${pkg.brollDirection}`);
+      if (pkg.avatarSuggestion || pkg.presenterBehavior) parts.push(`Presenter: ${pkg.presenterBehavior || pkg.avatarSuggestion}`);
+      if (!isVideo) {
+        if (pkg.visualComposition) parts.push(pkg.visualComposition);
+        if (pkg.headline) parts.push(`Headline: ${pkg.headline}`);
+      }
+      parts.push('OPENING FRAME: Start on an action, location, or person — NOT on a static product photo or poster. The product appears naturally in the scene as it unfolds, not as the first visual.');
     }
     let prompt = parts.join('\n\n') || pkg.script || pkg.adCopy || '';
-    prompt = prompt.replace(/\b(background music|ambient music|soundtrack|cinematic score|music bed|upbeat track|gentle melody|soft music|lo-fi beat|trending audio)\b/gi, 'natural room tone');
+    // Strip all audio references — Sora generates glitchy sounds from any audio mention
+    prompt = prompt.replace(/\b(background music|ambient music|soundtrack|cinematic score|music bed|upbeat track|gentle melody|soft music|lo-fi beat|trending audio|room tone|ambient sound|sound effect|natural room tone|audio cue)\b/gi, '');
 
     // Runway/Higgsfield need ultra-simple visual motion prompts with correct product behavior.
     let finalPrompt = prompt;
-    if (engine === 'runway' || engine === 'higgsfield') {
+    if (resolvedEngine === 'runway' || resolvedEngine === 'higgsfield') {
       const cleanProductName = (productName || 'the supplement').replace(/[™®©–—]/g, '').replace(/\s+/g, ' ').trim();
 
       // Pure visual motion prompt with strict supplement bottle behavior
@@ -1216,16 +2328,34 @@ function CreativesContent() {
       finalPrompt = prompt.substring(0, 2000);
     }
 
+    // Map dimension to provider resolution
+    const dim = genConfig.dimension === 'auto'
+      ? (genConfig.platformTarget === 'tiktok' ? '9:16' : '4:5')
+      : genConfig.dimension;
+    const videoRes =
+      dim === '9:16' || dim === '4:5' ? '720p-vertical' :
+      dim === '16:9' ? '720p' : '720p-vertical';
+
+    // Authoritative cover = user's explicit selection; fall back to first valid image only if unset.
+    const chosenCover = genConfig.coverImageUrl || productImageUrls[0] || '';
+    console.log('[CREATIVE-GEN] Sending cover image URL:', chosenCover.substring(0, 120));
+    console.log('[CREATIVE-GEN] User selected cover:', genConfig.coverImageUrl ? 'YES' : 'NO (defaulted)');
+
     const payload = {
       storeId: storeFilter,
-      engine: isVideo ? engine : 'minimax-image',
-      type: productImageUrls.length > 0 ? 'image-to-video' : 'text-to-video',
+      engine: isVideo ? resolvedEngine : undefined, // let router pick for images
+      // Always text-to-video for videos — cover image becomes a vision description injected
+      // into the text prompt, NOT the literal opening frame.
+      type: 'text-to-video',
       prompt: finalPrompt,
       title: pkg.title || `Package ${idx + 1}`,
       angle: pkg.angle || undefined,
-      imageUrls: productImageUrls.length > 0 ? productImageUrls : undefined,
-      resolution: '720p-vertical',
-      duration: 20,
+      coverImageUrl: chosenCover || undefined,
+      userSelectedCover: !!genConfig.coverImageUrl,
+      resolution: videoRes,
+      duration: String(genConfig.videoDuration || 20),
+      dimension: dim,
+      creativeType: genConfig.creativeType,
       packageId: genCurrentId,
       packageIndex: idx,
     };
@@ -1237,20 +2367,20 @@ function CreativesContent() {
     });
 
     if (error) {
-      setPackageVideoStatus(prev => ({ ...prev, [idx]: { id: '', status: 'failed', engine, reason: error } }));
+      setPackageVideoStatus(prev => ({ ...prev, [idx]: { id: '', status: 'failed', engine: resolvedEngine, reason: error } }));
     } else if (data?.success) {
-      setPackageVideoStatus(prev => ({ ...prev, [idx]: { id: data.id, status: 'processing', engine: data.engine || engine } }));
+      setPackageVideoStatus(prev => ({ ...prev, [idx]: { id: data.id, status: 'processing', engine: data.engine || resolvedEngine } }));
       loadCreatives();
     } else {
       const errCode = data?.error?.code;
       const reason = errCode === 'QUOTA_EXCEEDED'
-        ? `${engine} billing limit. Try another engine.`
+        ? `${resolvedEngine} billing limit. Try another engine.`
         : errCode === 'MISSING_IMAGE'
         ? 'Product image required.'
         : (data?.error?.message || 'Generation failed');
-      setPackageVideoStatus(prev => ({ ...prev, [idx]: { id: '', status: 'failed', engine, reason } }));
+      setPackageVideoStatus(prev => ({ ...prev, [idx]: { id: '', status: 'failed', engine: resolvedEngine, reason } }));
     }
-    setGeneratingVideoIdx(null);
+    setGeneratingIdxSet(prev => { const n = new Set(prev); n.delete(idx); return n; });
   }
 
   const totalSpend = adSets.reduce((s, a) => s + a.totalSpend, 0);
@@ -1313,6 +2443,14 @@ function CreativesContent() {
         >
           Creative Generator
         </button>
+        <button
+          onClick={() => setTab('library')}
+          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            tab === 'library' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          Library {libraryCounts.totalWinners > 0 && <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/20">{libraryCounts.totalWinners}</span>}
+        </button>
       </div>
 
       {/* Fetch error banner */}
@@ -1325,231 +2463,6 @@ function CreativesContent() {
           >
             Retry
           </button>
-        </div>
-      )}
-
-      {/* Push to Facebook Modal */}
-      {pushCreative && (
-        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={(e) => { if (e.target === e.currentTarget && !pushLoading) setPushCreative(null); }}>
-          <div className="bg-slate-900 border border-blue-900/50 rounded-xl p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-white">{bulkPushMode ? `Push ${bulkSelected.size} Videos to Facebook` : 'Push to Facebook'}</h2>
-              <button onClick={() => { if (!pushLoading) { setPushCreative(null); setBulkPushMode(false); } }} className="text-slate-400 hover:text-white text-sm">✕</button>
-            </div>
-
-            {/* Creative preview */}
-            <div className="bg-slate-800 rounded-lg p-3 mb-4">
-              {bulkPushMode ? (
-                <>
-                  <p className="text-xs text-white font-medium">{bulkSelected.size} videos selected</p>
-                  <p className="text-[10px] text-slate-400 mt-1">{creatives.filter(c => bulkSelected.has(c.id)).map(c => c.title).join(', ')}</p>
-                </>
-              ) : (
-                <>
-                  <p className="text-xs text-white font-medium truncate">{pushCreative.title}</p>
-                  <p className="text-[10px] text-slate-400">{pushCreative.template_id} · {pushCreative.angle || 'no angle'}</p>
-                </>
-              )}
-            </div>
-
-            {pushSuccess ? (
-              <div className="space-y-3">
-                <div className="px-3 py-2 bg-emerald-900/20 border border-emerald-800 rounded-lg">
-                  <p className="text-xs text-emerald-400">{pushSuccess}</p>
-                </div>
-                {pushError && <div className="px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg"><p className="text-xs text-red-400 whitespace-pre-wrap">{pushError}</p></div>}
-                <button onClick={() => { setPushCreative(null); setBulkPushMode(false); setBulkSelected(new Set()); }} className="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium rounded-lg">Close</button>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {/* Campaign */}
-                <div>
-                  <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Campaign</label>
-                  <div className="flex gap-1.5 mb-2">
-                    <button onClick={() => setFbCampaignMode('existing')} className={`flex-1 px-2 py-1 rounded text-[10px] font-medium ${fbCampaignMode === 'existing' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'}`}>Existing</button>
-                    <button onClick={() => setFbCampaignMode('new')} className={`flex-1 px-2 py-1 rounded text-[10px] font-medium ${fbCampaignMode === 'new' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'}`}>New</button>
-                  </div>
-                  {loadingCampaigns ? <p className="text-[10px] text-slate-500">Loading campaigns...</p> :
-                    fbCampaignMode === 'existing' ? (
-                      fbCampaigns.length > 0 ? (
-                        <select value={fbSelectedCampaign} onChange={e => setFbSelectedCampaign(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
-                          {fbCampaigns.map((c: any) => <option key={c.id} value={c.id}>{c.name} ({c.status})</option>)}
-                        </select>
-                      ) : <p className="text-[10px] text-slate-500">No campaigns found. Create a new one.</p>
-                    ) : (
-                      <div className="space-y-1.5">
-                        <input value={fbNewCampaignName} onChange={e => setFbNewCampaignName(e.target.value)} placeholder="Campaign name" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
-                        <select value={fbNewCampaignObjective} onChange={e => setFbNewCampaignObjective(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
-                          <option value="OUTCOME_SALES">Sales</option>
-                          <option value="OUTCOME_TRAFFIC">Traffic</option>
-                          <option value="OUTCOME_ENGAGEMENT">Engagement</option>
-                          <option value="OUTCOME_LEADS">Leads</option>
-                        </select>
-                      </div>
-                    )
-                  }
-                </div>
-
-                {/* Ad Set */}
-                <div>
-                  <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Ad Set</label>
-                  <div className="flex gap-1.5 mb-2">
-                    <button onClick={() => setFbAdSetMode('existing')} className={`flex-1 px-2 py-1 rounded text-[10px] font-medium ${fbAdSetMode === 'existing' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'}`}>Existing</button>
-                    <button onClick={() => setFbAdSetMode('new')} className={`flex-1 px-2 py-1 rounded text-[10px] font-medium ${fbAdSetMode === 'new' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'}`}>New</button>
-                  </div>
-                  {loadingAdSets ? <p className="text-[10px] text-slate-500">Loading ad sets...</p> :
-                    fbAdSetMode === 'existing' ? (
-                      fbAdSets.length > 0 ? (
-                        <select value={fbSelectedAdSet} onChange={e => setFbSelectedAdSet(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
-                          {fbAdSets.map((a: any) => <option key={a.id} value={a.id}>{a.name} ({a.status})</option>)}
-                        </select>
-                      ) : <p className="text-[10px] text-slate-500">No ad sets found. Create a new one.</p>
-                    ) : (
-                      <div className="space-y-1.5">
-                        <input value={fbNewAdSetName} onChange={e => setFbNewAdSetName(e.target.value)} placeholder="Ad set name" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
-                        <div className="flex gap-2">
-                          <div className="flex-1">
-                            <label className="text-[9px] text-slate-500 mb-0.5 block">Daily Budget ($)</label>
-                            <input value={fbNewAdSetBudget} onChange={e => setFbNewAdSetBudget(e.target.value)} type="number" min="1" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
-                          </div>
-                          <div className="flex-1">
-                            <label className="text-[9px] text-slate-500 mb-0.5 block">Countries</label>
-                            <input value={fbNewAdSetCountries} onChange={e => setFbNewAdSetCountries(e.target.value)} placeholder="US,CA" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  }
-                </div>
-
-                {/* Ad Details */}
-                <div>
-                  <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Headline</label>
-                  <input value={fbHeadline} onChange={e => setFbHeadline(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
-                </div>
-                <div>
-                  <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Primary Text</label>
-                  <textarea value={fbPrimaryText} onChange={e => setFbPrimaryText(e.target.value)} rows={2} placeholder="Ad copy shown above the video" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
-                </div>
-                <div className="flex gap-2">
-                  <div className="flex-1">
-                    <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">CTA Button</label>
-                    <select value={fbCtaType} onChange={e => setFbCtaType(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
-                      <option value="SHOP_NOW">Shop Now</option>
-                      <option value="LEARN_MORE">Learn More</option>
-                      <option value="BUY_NOW">Buy Now</option>
-                      <option value="ORDER_NOW">Order Now</option>
-                      <option value="SIGN_UP">Sign Up</option>
-                    </select>
-                  </div>
-                  <div className="flex-1">
-                    <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Status</label>
-                    <div className="flex gap-1">
-                      <button onClick={() => setFbAdStatus('PAUSED')} className={`flex-1 px-2 py-1.5 rounded text-[10px] font-medium ${fbAdStatus === 'PAUSED' ? 'bg-yellow-600 text-white' : 'bg-slate-800 text-slate-400'}`}>Paused</button>
-                      <button onClick={() => setFbAdStatus('ACTIVE')} className={`flex-1 px-2 py-1.5 rounded text-[10px] font-medium ${fbAdStatus === 'ACTIVE' ? 'bg-green-600 text-white' : 'bg-slate-800 text-slate-400'}`}>Active</button>
-                    </div>
-                  </div>
-                </div>
-                <div>
-                  <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Landing Page URL</label>
-                  <input value={fbLandingUrl} onChange={e => setFbLandingUrl(e.target.value)} placeholder="https://yourstore.com/product" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
-                </div>
-
-                {pushError && <div className="px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg"><p className="text-xs text-red-400 whitespace-pre-wrap">{pushError}</p></div>}
-                {bulkPushProgress && <div className="px-3 py-2 bg-blue-900/20 border border-blue-800 rounded-lg"><p className="text-xs text-blue-400">{bulkPushProgress}</p></div>}
-
-                <div className="flex gap-2 pt-1">
-                  <button onClick={() => { setPushCreative(null); setBulkPushMode(false); }} disabled={pushLoading} className="flex-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg">Cancel</button>
-                  <button onClick={bulkPushMode ? handleBulkPushToFB : handlePushToFB} disabled={pushLoading || !fbHeadline || !fbLandingUrl} className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg">
-                    {pushLoading ? (bulkPushMode ? bulkPushProgress || 'Pushing...' : 'Pushing...') : (bulkPushMode ? `Push ${bulkSelected.size} Ads` : 'Push to Facebook')}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Pipeline Modal */}
-      {showPipeline && (
-        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={(e) => { if (e.target === e.currentTarget && !plStarting && plStatus !== 'polling' && plStatus !== 'editing') setShowPipeline(false); }}>
-          <div className="bg-slate-900 border border-purple-900/50 rounded-xl p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-white">Create Ad Pipeline</h2>
-              <button onClick={() => setShowPipeline(false)} className="text-slate-400 hover:text-white text-sm">✕</button>
-            </div>
-
-            {plFinalUrl ? (
-              <div className="space-y-3">
-                <div className="px-3 py-2 bg-emerald-900/20 border border-emerald-800 rounded-lg">
-                  <p className="text-xs text-emerald-400">Pipeline complete! Final video ready.</p>
-                </div>
-                <video src={plFinalUrl} controls className="w-full rounded-lg aspect-[9/16] bg-black" />
-                <button onClick={() => setShowPipeline(false)} className="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium rounded-lg">Close</button>
-              </div>
-            ) : plPipelineId ? (
-              <div className="space-y-3">
-                <div className="px-3 py-2 bg-blue-900/20 border border-blue-800 rounded-lg">
-                  <p className="text-xs text-blue-400 capitalize">{plStatus === 'generating_prompts' ? 'Generating B-roll prompts...' : plStatus === 'generating_clips' ? 'Generating clips...' : plStatus === 'polling' ? `Waiting for clips (${plCompleted}/${plTotal})...` : plStatus === 'editing' ? 'Auto-editing final video...' : plStatus === 'failed' ? 'Pipeline failed' : plStatus}</p>
-                </div>
-                {plStatus !== 'failed' && (
-                  <div className="w-full bg-slate-800 rounded-full h-2">
-                    <div className="bg-purple-600 h-2 rounded-full transition-all" style={{ width: `${plStatus === 'editing' ? 90 : plStatus === 'generating_prompts' ? 5 : plTotal > 0 ? Math.round((plCompleted / plTotal) * 80) + 10 : 10}%` }} />
-                  </div>
-                )}
-                {plError && <div className="px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg"><p className="text-xs text-red-400">{plError}</p></div>}
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {plLoadingAvatars ? (
-                  <div className="flex items-center justify-center h-20"><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-purple-400" /></div>
-                ) : (
-                  <>
-                    <div>
-                      <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Product</label>
-                      <select value={plProductId} onChange={e => setPlProductId(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
-                        <option value="">Select product...</option>
-                        {products.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Ad Script</label>
-                      <textarea value={plScript} onChange={e => setPlScript(e.target.value)} rows={4} placeholder="The full script the avatar will speak to camera..." className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" />
-                    </div>
-                    <div className="flex gap-2">
-                      <div className="flex-1">
-                        <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Avatar</label>
-                        <select value={plAvatarId} onChange={e => setPlAvatarId(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
-                          {plAvatars.map((a: any) => <option key={a.avatar_id} value={a.avatar_id}>{a.avatar_name} ({a.gender})</option>)}
-                        </select>
-                      </div>
-                      <div className="flex-1">
-                        <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">Voice</label>
-                        <select value={plVoiceId} onChange={e => setPlVoiceId(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
-                          {plVoices.map((v: any) => <option key={v.voice_id} value={v.voice_id}>{v.name} ({v.gender} · {v.language})</option>)}
-                        </select>
-                      </div>
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">B-Roll Clips: {plBrollCount}</label>
-                      <input type="range" min={3} max={10} value={plBrollCount} onChange={e => setPlBrollCount(parseInt(e.target.value))} className="w-full" />
-                      <div className="flex justify-between text-[9px] text-slate-500"><span>3</span><span>10</span></div>
-                    </div>
-
-                    {plError && <div className="px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg"><p className="text-xs text-red-400">{plError}</p></div>}
-
-                    <div className="flex gap-2 pt-1">
-                      <button onClick={() => setShowPipeline(false)} className="flex-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium rounded-lg">Cancel</button>
-                      <button onClick={startPipeline} disabled={plStarting || !plProductId || !plScript || !plAvatarId || !plVoiceId} className="flex-1 px-3 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg">
-                        {plStarting ? 'Starting...' : 'Start Pipeline'}
-                      </button>
-                    </div>
-                    <p className="text-[9px] text-slate-600 text-center">Estimated cost: ~$3 · Creates {plBrollCount} B-roll clips + 1 avatar video → auto-edited final ad</p>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
         </div>
       )}
 
@@ -2242,16 +3155,38 @@ function CreativesContent() {
       {/* Generated Creatives Tab */}
       {tab === 'generated' && (
         <>
-          {/* Pipeline button */}
-          <div className="flex items-center justify-end mb-4">
-            <button
-              onClick={openPipelineModal}
-              disabled={!storeFilter}
-              className="px-4 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg"
-            >
-              Create Ad Pipeline
-            </button>
-          </div>
+          {/* ── Bulk action bar — appears when 1+ creatives selected ── */}
+          {selectedCreativeIds.size > 0 && (
+            <div className="sticky top-0 z-20 mb-4 bg-blue-900/20 border border-blue-700/50 rounded-xl p-3 backdrop-blur-sm flex flex-wrap items-center gap-3">
+              <span className="text-sm text-blue-300 font-medium">
+                {selectedCreativeIds.size} selected
+              </span>
+              <div className="flex-1" />
+              <button onClick={selectAllVisibleCreatives}
+                className="px-3 py-1.5 text-xs text-blue-300 hover:text-white border border-blue-700 rounded-lg">
+                Select all launchable
+              </button>
+              <button onClick={clearCreativeSelection}
+                className="px-3 py-1.5 text-xs text-slate-400 hover:text-white border border-slate-700 rounded-lg">
+                Clear
+              </button>
+              <button onClick={openBulkLaunchModal}
+                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg">
+                Launch to Facebook ({selectedCreativeIds.size})
+              </button>
+            </div>
+          )}
+
+          {/* ── Always-visible "Select All" / "Launch" entry point when nothing is selected ── */}
+          {selectedCreativeIds.size === 0 && creatives.length > 0 && (
+            <div className="mb-4 flex items-center justify-between">
+              <p className="text-xs text-slate-500">Select creatives to launch them to Facebook</p>
+              <button onClick={selectAllVisibleCreatives}
+                className="px-3 py-1.5 text-xs text-blue-400 hover:text-blue-300 border border-blue-900/50 rounded-lg">
+                Select all launchable
+              </button>
+            </div>
+          )}
 
           {loading ? (
             <div className="flex items-center justify-center h-32"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400" /></div>
@@ -2261,37 +3196,29 @@ function CreativesContent() {
               <p className="text-xs text-slate-500 mt-1">Generate videos using Sora, Veo, Hailuo, or NanoBanana</p>
             </div>
           ) : (
-            <>
-            {/* Bulk action bar */}
-            {bulkSelected.size > 0 && (
-              <div className="mb-4 px-4 py-3 bg-blue-900/20 border border-blue-800/50 rounded-xl flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <span className="text-xs text-blue-300 font-medium">{bulkSelected.size} selected</span>
-                  <button onClick={() => setBulkSelected(new Set())} className="text-[10px] text-slate-400 hover:text-white">Clear</button>
-                  <button onClick={() => {
-                    const completedIds = creatives.filter(c => c.nb_status === 'completed' && c.file_url).map(c => c.id);
-                    setBulkSelected(new Set(completedIds));
-                  }} className="text-[10px] text-slate-400 hover:text-white">Select All</button>
-                </div>
-                <button onClick={openBulkPushModal} className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg">
-                  Push {bulkSelected.size} to Facebook
-                </button>
-              </div>
-            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {creatives.map((c) => (
-                <div key={c.id} className={`bg-slate-900 border rounded-xl overflow-hidden relative ${bulkSelected.has(c.id) ? 'border-blue-500 ring-1 ring-blue-500/30' : 'border-slate-800'}`}>
-                  {/* Bulk select checkbox */}
-                  {c.nb_status === 'completed' && c.file_url && (
+              {creatives.map((c) => {
+                const launchable = isCreativeLaunchable(c);
+                const selected = selectedCreativeIds.has(c.id);
+                return (
+                <div key={c.id} className={`bg-slate-900 border rounded-xl overflow-hidden relative transition-colors ${selected ? 'border-blue-500 ring-2 ring-blue-500/30' : 'border-slate-800'}`}>
+                  {/* Winner badge — top-right overlay */}
+                  {isCreativeWinner(c.id) && (
+                    <span className="absolute top-2 right-2 z-10 text-[9px] px-2 py-0.5 rounded-full bg-amber-500 text-black font-bold shadow-lg">WINNER</span>
+                  )}
+                  {/* Selection checkbox — top-left overlay */}
+                  {launchable && (
                     <button
-                      onClick={(e) => { e.stopPropagation(); toggleBulkSelect(c.id); }}
-                      className={`absolute top-2 left-2 z-10 w-6 h-6 rounded border-2 flex items-center justify-center transition-all ${
-                        bulkSelected.has(c.id)
-                          ? 'bg-blue-600 border-blue-500 text-white'
-                          : 'bg-black/50 border-slate-500 text-transparent hover:border-blue-400'
+                      onClick={() => toggleCreativeSelection(c.id)}
+                      className={`absolute top-2 left-2 z-10 w-7 h-7 rounded-md border-2 flex items-center justify-center transition-colors ${
+                        selected ? 'bg-blue-600 border-blue-400' : 'bg-slate-900/80 border-slate-600 hover:border-blue-400 backdrop-blur-sm'
                       }`}
-                    >
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                      title={selected ? 'Deselect' : 'Select for launch'}>
+                      {selected && (
+                        <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
                     </button>
                   )}
                   {/* Thumbnail */}
@@ -2319,9 +3246,7 @@ function CreativesContent() {
                       {c.nb_status === 'processing' ? (
                         <div className="text-center">
                           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-400 mx-auto mb-2" />
-                          <p className="text-xs text-purple-400">
-                            {c.progress != null ? `Generating... ${c.progress}%` : 'Generating...'}
-                          </p>
+                          <p className="text-xs text-purple-400">Generating...</p>
                         </div>
                       ) : (
                         <svg className="w-12 h-12 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2366,6 +3291,9 @@ function CreativesContent() {
                             'bg-slate-800 text-slate-400'
                           }`}>{c.template_id}</span>
                         )}
+                        {c.format && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-900/30 text-emerald-400" title="Aspect ratio">{c.format}</span>
+                        )}
                         <span className="text-[10px] text-slate-600">{new Date(c.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
                       </div>
                       <div className="flex gap-2">
@@ -2388,18 +3316,251 @@ function CreativesContent() {
                             >
                               Download
                             </a>
-                            <button onClick={() => openPushModal(c)} className="text-[10px] text-blue-400 hover:text-blue-300">
-                              Push to FB
+                            <button
+                              onClick={() => {
+                                setSelectedCreativeIds(new Set([c.id]));
+                                setTimeout(() => openBulkLaunchModal(), 50);
+                              }}
+                              className="text-[10px] text-blue-400 hover:text-blue-300"
+                              title="Launch this creative to Facebook"
+                            >
+                              Launch
                             </button>
+                            {!isCreativeWinner(c.id) ? (
+                              <button
+                                onClick={() => setShowWinnerModal({ pkg: { title: c.title, script: c.description, angle: c.angle }, idx: 0, creativeId: c.id })}
+                                className="text-[10px] text-amber-400 hover:text-amber-300"
+                                title="Save as Winner Reference"
+                              >
+                                Save Winner
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => { const w = winners.find(w => w.creative_id === c.id); if (w) handleGenerateMoreLikeThis(w); }}
+                                className="text-[10px] text-purple-400 hover:text-purple-300"
+                                title="Generate more creatives like this winner"
+                              >
+                                More Like This
+                              </button>
+                            )}
                           </>
                         )}
                       </div>
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
-            </>
+          )}
+
+          {/* ── Bulk Launch to Facebook Modal ── */}
+          {showBulkLaunchModal && (
+            <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => !bulkLaunching && setShowBulkLaunchModal(false)}>
+              <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-white">Launch to Facebook Ads</h3>
+                  <button onClick={() => !bulkLaunching && setShowBulkLaunchModal(false)} className="text-slate-400 hover:text-white">
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+                </div>
+
+                <div className="mb-4 p-3 bg-blue-900/20 border border-blue-700/50 rounded-lg">
+                  <p className="text-sm text-blue-300">{selectedCreativeIds.size} creative{selectedCreativeIds.size !== 1 ? 's' : ''} selected</p>
+                  {launchMode === 'new' ? (
+                    <p className="text-[10px] text-blue-400 mt-1">1 concept = 1 ad set. Existing ad sets are auto-reused (no duplicates). Image + video creatives go in the same ad set. $30/day per new ad set, broad 18–65 US targeting, all PAUSED.</p>
+                  ) : (
+                    <p className="text-[10px] text-yellow-400 mt-1">SCALE MODE: adds new ads into existing ad sets. No new campaign or ad sets will be created. New ads land PAUSED.</p>
+                  )}
+                </div>
+
+                {/* Mode toggle */}
+                <div className="mb-4">
+                  <label className="text-[10px] text-slate-500 mb-2 block uppercase font-semibold">Launch Mode</label>
+                  <div className="flex gap-2">
+                    <button onClick={() => {
+                      setLaunchMode('new');
+                      setConceptAdSetMap({});
+                    }}
+                      className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium border ${launchMode === 'new' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'}`}>
+                      New Campaign
+                      <div className="text-[9px] font-normal opacity-80 mt-0.5">Fresh ad sets for testing</div>
+                    </button>
+                    <button onClick={() => {
+                      setLaunchMode('scale');
+                      if (bulkLaunchProfileId) loadCampaignsForProfile(bulkLaunchProfileId);
+                    }}
+                      className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium border ${launchMode === 'scale' ? 'bg-yellow-600 border-yellow-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'}`}>
+                      Scale Existing
+                      <div className="text-[9px] font-normal opacity-80 mt-0.5">Add to winning ad sets</div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Ad Account selector */}
+                <div className="mb-3">
+                  <label className="text-[10px] text-slate-500 mb-1 block uppercase font-semibold">Ad Account</label>
+                  <select value={bulkLaunchProfileId} onChange={e => {
+                    setBulkLaunchProfileId(e.target.value);
+                    loadPagesForProfile(e.target.value);
+                    if (launchMode === 'scale') loadCampaignsForProfile(e.target.value);
+                  }}
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white">
+                    {fbProfiles.length === 0 && <option value="">No ad accounts linked</option>}
+                    {fbProfiles.map((p: any) => (
+                      <option key={p.id} value={p.id}>{p.ad_account_name || p.profile_name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* ═══ SCALE MODE: Campaign + Concept→AdSet mapping ═══ */}
+                {launchMode === 'scale' && (
+                  <>
+                    <div className="mb-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[10px] text-slate-500 uppercase font-semibold">Existing Campaign</label>
+                        {loadingCampaigns && <span className="text-[10px] text-slate-500">Loading...</span>}
+                      </div>
+                      <select value={selectedCampaignId} onChange={e => {
+                        setSelectedCampaignId(e.target.value);
+                        if (bulkLaunchProfileId && e.target.value) loadAdSetsForCampaign(bulkLaunchProfileId, e.target.value);
+                      }}
+                        className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white">
+                        {fbCampaigns.length === 0 && <option value="">No campaigns — click Scale button to load</option>}
+                        {fbCampaigns.map(c => (
+                          <option key={c.id} value={c.id}>{c.name} [{c.status}]</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Concept → Ad Set mapping */}
+                    {fbAdSets.length > 0 && (
+                      <div className="mb-3">
+                        <label className="text-[10px] text-slate-500 mb-1 block uppercase font-semibold">Concept → Ad Set Mapping</label>
+                        <div className="space-y-2 max-h-60 overflow-y-auto">
+                          {getSelectedConcepts().map(concept => {
+                            const mapped = conceptAdSetMap[concept];
+                            const mappedAdSet = fbAdSets.find(a => a.id === mapped);
+                            const wouldExceed = mappedAdSet && mappedAdSet.adCount >= 8;
+                            return (
+                              <div key={concept} className="p-2 bg-slate-800/50 border border-slate-700 rounded-lg">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-xs text-white font-medium truncate flex-1" title={concept}>{concept}</span>
+                                  {mapped && !wouldExceed && <span className="text-[9px] text-emerald-400">✓ matched</span>}
+                                  {wouldExceed && <span className="text-[9px] text-red-400">⚠ full</span>}
+                                  {!mapped && <span className="text-[9px] text-red-400">no match</span>}
+                                </div>
+                                <select value={mapped || ''} onChange={e => setConceptAdSetMap(prev => ({ ...prev, [concept]: e.target.value }))}
+                                  className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-[10px] text-white">
+                                  <option value="">— select ad set —</option>
+                                  {fbAdSets.map(a => (
+                                    <option key={a.id} value={a.id}>
+                                      {a.name} ({a.adCount} ads{a.adCount >= 8 ? ' — FULL' : ''})
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {loadingAdSets && <p className="text-[10px] text-slate-500 mb-3">Loading ad sets...</p>}
+                  </>
+                )}
+
+                {/* Page selector — CRITICAL: shows exactly which page will be used */}
+                <div className="mb-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] text-slate-500 uppercase font-semibold">Facebook Page (ad creative)</label>
+                    {loadingPages && <span className="text-[10px] text-slate-500">Loading pages...</span>}
+                  </div>
+                  {!loadingPages && availablePages.length === 0 && (
+                    <div className="px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg text-xs text-red-400">
+                      No pages accessible with this ad account's token.
+                    </div>
+                  )}
+                  {availablePages.length > 0 && (
+                    <select value={selectedPageId} onChange={e => setSelectedPageId(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white">
+                      {availablePages.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({p.id}){p.id === currentProfilePageId ? ' ← stored' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {/* Show which page will be used */}
+                  {selectedPageId && (
+                    <p className="text-[10px] text-emerald-400 mt-1">
+                      Will use: {availablePages.find(p => p.id === selectedPageId)?.name} ({selectedPageId})
+                    </p>
+                  )}
+                  {/* Warning if different from stored */}
+                  {selectedPageId && currentProfilePageId && selectedPageId !== currentProfilePageId && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <input type="checkbox" id="savePageDefault" checked={savePageAsDefault}
+                        onChange={e => setSavePageAsDefault(e.target.checked)}
+                        className="w-3 h-3" />
+                      <label htmlFor="savePageDefault" className="text-[10px] text-yellow-400">
+                        Save this page as the default for this ad account (overwrites stored {currentProfilePageName || currentProfilePageId})
+                      </label>
+                    </div>
+                  )}
+                </div>
+
+                {/* Landing page URL */}
+                <div className="mb-4">
+                  <label className="text-[10px] text-slate-500 mb-1 block uppercase font-semibold">Landing Page URL</label>
+                  <input type="url" value={bulkLaunchLinkUrl} onChange={e => setBulkLaunchLinkUrl(e.target.value)}
+                    placeholder="https://yourdomain.com/product"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-600" />
+                </div>
+
+                {bulkLaunching && bulkLaunchProgress && (
+                  <div className="mb-3 px-3 py-2 bg-blue-900/20 border border-blue-800 rounded-lg flex items-center gap-2">
+                    <svg className="w-4 h-4 animate-spin text-blue-400" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                    <p className="text-xs text-blue-300">{bulkLaunchProgress}</p>
+                  </div>
+                )}
+                {bulkLaunchError && (
+                  <div className="mb-3 px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg text-xs text-red-400">{bulkLaunchError}</div>
+                )}
+                {bulkLaunchResult && (
+                  <div className={`mb-3 px-3 py-2 border rounded-lg ${bulkLaunchResult.partial ? 'bg-yellow-900/20 border-yellow-800' : 'bg-emerald-900/20 border-emerald-800'}`}>
+                    <p className={`text-xs font-medium ${bulkLaunchResult.partial ? 'text-yellow-400' : 'text-emerald-400'}`}>
+                      {bulkLaunchResult.partial ? 'Partial success: ' : 'Launched: '}
+                      {bulkLaunchResult.summary?.adsCreated} ads in {bulkLaunchResult.summary?.adSetsCreated} ad sets
+                    </p>
+                    {(bulkLaunchResult.summary?.adSetsReused > 0 || bulkLaunchResult.summary?.adSetsNewlyCreated > 0) && (
+                      <p className="text-[10px] text-slate-300 mt-1">
+                        {bulkLaunchResult.summary?.adSetsReused > 0 && `${bulkLaunchResult.summary.adSetsReused} reused`}
+                        {bulkLaunchResult.summary?.adSetsReused > 0 && bulkLaunchResult.summary?.adSetsNewlyCreated > 0 && ', '}
+                        {bulkLaunchResult.summary?.adSetsNewlyCreated > 0 && `${bulkLaunchResult.summary.adSetsNewlyCreated} newly created`}
+                      </p>
+                    )}
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Campaign: {bulkLaunchResult.campaign?.name} ({bulkLaunchResult.summary?.status})
+                    </p>
+                    {bulkLaunchResult.summary?.errorsCount > 0 && (
+                      <p className="text-[10px] text-yellow-400 mt-1">{bulkLaunchResult.summary.errorsCount} errors — check Ads Manager</p>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex gap-2 justify-end">
+                  <button onClick={() => !bulkLaunching && setShowBulkLaunchModal(false)} disabled={bulkLaunching}
+                    className="px-4 py-2 text-sm text-slate-400 hover:text-white border border-slate-700 rounded-lg disabled:opacity-50">
+                    Cancel
+                  </button>
+                  <button onClick={handleBulkLaunchToFB}
+                    disabled={bulkLaunching || !bulkLaunchProfileId || !bulkLaunchLinkUrl || !selectedPageId || (launchMode === 'scale' && (!selectedCampaignId || getSelectedConcepts().some(c => !conceptAdSetMap[c])))}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg">
+                    {bulkLaunching ? 'Launching...' : `Launch ${selectedCreativeIds.size} to Facebook`}
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </>
       )}
@@ -2731,10 +3892,7 @@ function CreativesContent() {
                                         'text-red-400'
                                       }`}>{c.nb_status}</span>
                                       {c.file_url && c.nb_status === 'completed' && (
-                                        <div className="flex gap-2">
-                                          <a href={mediaUrl(c.file_url)} download className="text-[9px] text-blue-400 hover:text-blue-300">Download</a>
-                                          <button onClick={() => openPushModal(c)} className="text-[9px] text-cyan-400 hover:text-cyan-300">Push to FB</button>
-                                        </div>
+                                        <a href={mediaUrl(c.file_url)} download className="text-[9px] text-blue-400 hover:text-blue-300">Download</a>
                                       )}
                                     </div>
                                   </div>
@@ -2785,200 +3943,634 @@ function CreativesContent() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {/* LEFT: Generator Form */}
               <div className="lg:col-span-2 space-y-5">
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-                  <h2 className="text-sm font-semibold text-white mb-4">Creative Generator</h2>
+                {/* ═══ CLEAN GENERATOR FORM ═══ */}
+                <div className="space-y-4">
 
-                  {/* Content Type */}
-                  <div className="mb-4">
-                    <label className="text-[10px] text-slate-500 uppercase font-semibold mb-2 block">Content Type</label>
-                    <div className="flex gap-2">
-                      {(['video', 'image'] as const).map(t => (
-                        <button key={t} onClick={() => setGenConfig(c => ({ ...c, contentType: t }))}
-                          className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium border transition-colors ${
-                            genConfig.contentType === t ? 'bg-purple-600 border-purple-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                          }`}>{t === 'video' ? 'Video' : 'Image'}</button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Creative Type */}
-                  <div className="mb-4">
-                    <label className="text-[10px] text-slate-500 uppercase font-semibold mb-2 block">Creative Type</label>
-                    <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
-                      {CREATIVE_TYPES.map(ct => (
-                        <button key={ct.key} onClick={() => setGenConfig(c => ({ ...c, creativeType: ct.key }))}
-                          className={`px-2 py-2 rounded-lg text-[10px] font-medium border transition-colors text-center ${
-                            genConfig.creativeType === ct.key ? 'bg-purple-600 border-purple-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                          }`}>
-                          <span className="block text-sm mb-0.5">{ct.icon}</span>{ct.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Funnel Stage */}
-                  <div className="mb-4">
-                    <label className="text-[10px] text-slate-500 uppercase font-semibold mb-2 block">Funnel Stage</label>
-                    <div className="flex gap-2">
-                      {([
-                        { key: 'tof', label: 'Top of Funnel', desc: 'Awareness' },
-                        { key: 'mof', label: 'Middle of Funnel', desc: 'Consideration' },
-                        { key: 'bof', label: 'Bottom of Funnel', desc: 'Conversion' },
-                      ] as const).map(f => (
-                        <button key={f.key} onClick={() => setGenConfig(c => ({ ...c, funnelStage: f.key }))}
-                          className={`flex-1 px-3 py-2.5 rounded-lg text-xs font-medium border transition-colors ${
-                            genConfig.funnelStage === f.key ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                          }`}>
-                          {f.label}<br /><span className="text-[9px] opacity-60">{f.desc}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Product & Offer */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                  {/* ── STEP 1: CONTENT TYPE + ENGINE ── */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+                    {/* Content Type selector */}
                     <div>
-                      <label className="text-[10px] text-slate-500 uppercase font-semibold mb-1 block">Product</label>
-                      <select value={genConfig.productId} onChange={e => setGenConfig(c => ({ ...c, productId: e.target.value }))}
-                        className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-purple-500">
-                        <option value="">Select product...</option>
-                        {products.map(p => <option key={p.id} value={p.id}>{p.title} — {cents(p.price_cents)}</option>)}
-                      </select>
-                      {/* Product image preview */}
-                      {(() => {
-                        if (!genConfig.productId) return null;
-                        const selProduct = products.find(p => p.id === genConfig.productId);
-                        if (!selProduct) return null;
-                        const allImgs: string[] = [];
-                        if (selProduct.image_url) allImgs.push(selProduct.image_url);
-                        if (selProduct.images) {
-                          try {
-                            const parsed = JSON.parse(selProduct.images) as string[];
-                            for (const u of parsed) { if (u && !allImgs.includes(u)) allImgs.push(u); }
-                          } catch {}
-                        }
-                        if (allImgs.length === 0) return (
-                          <div className="mt-2 px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg">
-                            <p className="text-[10px] text-slate-500">No product images available</p>
+                      <label className="text-[10px] text-purple-400 uppercase font-bold mb-2 block">1. Content Type</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button onClick={() => setGenConfig(c => ({
+                          ...c,
+                          contentType: 'video',
+                          contentMix: c.contentMix === 'image' ? 'video' : c.contentMix,
+                          // Reset engine to auto if currently set to an image-only engine
+                          engine: ['nano-banana', 'stability', 'ideogram'].includes(c.engine) ? 'auto' : c.engine,
+                        }))}
+                          className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
+                            genConfig.contentType === 'video' ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                          }`}>
+                          Video<br /><span className="text-[8px] font-normal opacity-70">AI-generated video ads</span>
+                        </button>
+                        <button onClick={() => setGenConfig(c => ({
+                          ...c,
+                          contentType: 'image',
+                          contentMix: 'image',
+                          // Reset engine to auto if currently set to a video-only engine
+                          engine: ['sora', 'runway', 'higgsfield', 'veo', 'seedance'].includes(c.engine) ? 'auto' : c.engine,
+                        }))}
+                          className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
+                            genConfig.contentType === 'image' ? 'bg-orange-600 border-orange-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                          }`}>
+                          Image<br /><span className="text-[8px] font-normal opacity-70">Static ad creatives</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Dynamic Engine selector — shows only engines matching the selected content type */}
+                    <div>
+                      <label className="text-[10px] text-slate-500 uppercase font-semibold mb-2 block">Engine</label>
+                      <div className="grid grid-cols-4 gap-2">
+                        {genConfig.contentType === 'video' ? (
+                          <>
+                            {([
+                              { key: 'auto' as const, label: 'Auto', desc: 'Best for task' },
+                              { key: 'seedance' as const, label: 'Seedance', desc: '4-15s + audio' },
+                              { key: 'sora' as const, label: 'Sora', desc: '8-20s video' },
+                              { key: 'runway' as const, label: 'Runway', desc: '5-10s video' },
+                              { key: 'higgsfield' as const, label: 'Higgs', desc: 'Multi-scene' },
+                              { key: 'veo' as const, label: 'Veo', desc: '4-8s video' },
+                            ]).map(e => (
+                              <button key={e.key} onClick={() => setGenConfig(c => ({ ...c, engine: e.key }))}
+                                className={`px-2 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
+                                  genConfig.engine === e.key ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                                }`}>
+                                {e.label}<br /><span className="text-[8px] font-normal opacity-70">{e.desc}</span>
+                              </button>
+                            ))}
+                          </>
+                        ) : (
+                          <>
+                            {([
+                              { key: 'auto' as const, label: 'Auto', desc: 'Best for type' },
+                              { key: 'nano-banana' as const, label: 'Nano Banana', desc: 'Fast statics' },
+                              { key: 'stability' as const, label: 'Stability', desc: 'Product fidelity' },
+                              { key: 'ideogram' as const, label: 'Ideogram', desc: 'Text-heavy ads' },
+                            ]).map(e => (
+                              <button key={e.key} onClick={() => setGenConfig(c => ({ ...c, engine: e.key }))}
+                                className={`px-2 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
+                                  genConfig.engine === e.key ? 'bg-orange-600 border-orange-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                                }`}>
+                                {e.label}<br /><span className="text-[8px] font-normal opacity-70">{e.desc}</span>
+                              </button>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── HIGGSFIELD STYLE PRESETS — only when Higgsfield engine selected ── */}
+                  {genConfig.engine === 'higgsfield' && (
+                    <div className="bg-slate-900 border border-orange-900/50 rounded-xl p-4">
+                      <label className="text-[10px] text-orange-400 uppercase font-bold mb-2 block">Higgsfield Style</label>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {([
+                          { key: 'product_showcase', label: 'Product Showcase', icon: '📦' },
+                          { key: 'broll', label: 'B-Roll', icon: '🎬' },
+                          { key: 'ugc', label: 'UGC Style', icon: '📱' },
+                          { key: 'cartoon', label: 'Cartoon', icon: '🎨' },
+                          { key: 'asmr', label: 'ASMR', icon: '✨' },
+                          { key: 'cinematic', label: 'Cinematic', icon: '🎥' },
+                          { key: 'unboxing', label: 'Unboxing', icon: '📬' },
+                        ]).map(s => (
+                          <button key={s.key} onClick={() => setHiggsStyle(s.key)}
+                            className={`px-2 py-2 rounded-lg text-[10px] font-semibold border transition-colors text-center ${
+                              higgsStyle === s.key ? 'bg-orange-600 border-orange-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                            }`}>
+                            <span className="text-sm block">{s.icon}</span>{s.label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[9px] text-orange-400/60 mt-2">Each style generates 3-4 sequential scenes that get stitched into one continuous video</p>
+                    </div>
+                  )}
+
+                  {/* ── STEP 2: CONCEPT SOURCE ── */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <label className="text-[10px] text-purple-400 uppercase font-bold mb-2 block">2. Concept Source</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      <button onClick={() => setGenConfig(c => ({ ...c, genMode: 'new' as const, conceptAngle: '' }))}
+                        className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
+                          genConfig.genMode === 'new' && !genConfig.conceptAngle ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                        }`}>Auto Generate</button>
+                      <button onClick={() => setGenConfig(c => ({ ...c, genMode: 'new' as const, conceptAngle: c.conceptAngle || ' ' }))}
+                        className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
+                          genConfig.genMode === 'new' && genConfig.conceptAngle ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                        }`}>My Angle</button>
+                      <button onClick={() => setGenConfig(c => ({ ...c, genMode: 'existing' as const }))}
+                        className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
+                          genConfig.genMode === 'existing' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                        }`}>From Existing</button>
+                      <button onClick={() => setGenConfig(c => ({ ...c, genMode: 'clone_ad' as const, contentType: 'video', contentMix: 'video' }))}
+                        className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
+                          genConfig.genMode === 'clone_ad' ? 'bg-pink-600 border-pink-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                        }`}>Clone Ad<br /><span className="text-[8px] font-normal opacity-70">From reference</span></button>
+                    </div>
+                    {/* Angle input — shows when My Angle is selected */}
+                    {genConfig.genMode === 'new' && genConfig.conceptAngle !== '' && (
+                      <div className="mt-3">
+                        <textarea value={genConfig.conceptAngle.trim() === '' ? '' : genConfig.conceptAngle} onChange={e => setGenConfig(c => ({ ...c, conceptAngle: e.target.value }))}
+                          placeholder='Type your angle — e.g. "Sleep angle — people who struggle falling asleep" or "Before/after skin transformation"'
+                          className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-600 resize-none h-14" autoFocus />
+                      </div>
+                    )}
+                    {genConfig.genMode === 'existing' && (
+                      <div className="mt-3 bg-slate-800/50 border border-slate-700/50 rounded-lg p-3">
+                        <label className="text-[10px] text-amber-400 uppercase font-bold mb-2 block">Select Concept</label>
+                        {winners.length === 0 ? (
+                          <p className="text-xs text-slate-500">No saved concepts yet. Generate first, then save winners.</p>
+                        ) : (
+                          <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                            {winners.map(w => (
+                              <button key={w.id} onClick={() => { setSelectedExistingConcept(w); handleGenerateMoreLikeThis(w); }}
+                                className={`w-full text-left px-3 py-2 rounded-lg text-[10px] transition-colors ${
+                                  selectedExistingConcept?.id === w.id ? 'bg-amber-900/30 border border-amber-700' : 'bg-slate-800/50 hover:bg-slate-800'
+                                }`}>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-amber-500 text-black font-bold">W</span>
+                                  <span className="text-white font-medium truncate">{w.title}</span>
+                                </div>
+                              </button>
+                            ))}
                           </div>
-                        );
-                        return (
-                          <div className="mt-2 bg-slate-800/50 border border-slate-700/50 rounded-lg p-2.5">
-                            <div className="flex gap-2.5">
-                              <img src={allImgs[0]} alt={selProduct.title} className="w-16 h-16 rounded-lg object-cover bg-slate-800 border border-slate-700 flex-shrink-0" />
-                              <div className="flex-1 min-w-0">
-                                <p className="text-xs text-white font-medium truncate">{selProduct.title}</p>
-                                <p className="text-[10px] text-slate-400">{cents(selProduct.price_cents)} <span className="text-emerald-400 ml-1">{allImgs.length} image{allImgs.length !== 1 ? 's' : ''} will be used</span></p>
-                                {selProduct.description && <p className="text-[10px] text-slate-500 truncate mt-0.5">{selProduct.description}</p>}
-                              </div>
+                        )}
+                      </div>
+                    )}
+                    {/* Clone Ad — reference video URL input */}
+                    {genConfig.genMode === 'clone_ad' && (
+                      <div className="mt-3 bg-pink-950/20 border border-pink-900/40 rounded-lg p-3 space-y-2">
+                        <label className="text-[10px] text-pink-400 uppercase font-bold block">Reference Video URL</label>
+                        <p className="text-[9px] text-slate-400">Paste a direct video URL (MP4, MOV, WebM). The system will analyze each scene frame-by-frame and generate Seedance-optimized prompts that clone the ad's structure.</p>
+                        <input
+                          type="url"
+                          value={referenceVideoUrl}
+                          onChange={e => setReferenceVideoUrl(e.target.value)}
+                          placeholder="https://example.com/winning-ad.mp4"
+                          className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-600"
+                        />
+                        <p className="text-[9px] text-pink-400/60">Tip: Use a direct video link — not YouTube. You can use URLs from your Generated tab, fal.media links, or any public .mp4 URL.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ── STEP 3: OUTPUT STRATEGY ── */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+                    <div>
+                      <label className="text-[10px] text-purple-400 uppercase font-bold mb-2 block">3. Output Strategy</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button onClick={() => setGenConfig(c => ({ ...c, funnelStructure: c.funnelStructure === 'full' ? 'tof' : c.funnelStructure, genMode: c.genMode === 'full_funnel' ? 'new' : c.genMode }))}
+                          className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
+                            genConfig.funnelStructure !== 'full' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                          }`}>Single Stage</button>
+                        <button onClick={() => setGenConfig(c => ({ ...c, funnelStructure: 'full', genMode: c.genMode === 'existing' ? c.genMode : 'new', contentMix: c.contentMix === 'video' || c.contentMix === 'image' ? c.contentMix : 'mixed' }))}
+                          className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
+                            genConfig.funnelStructure === 'full' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                          }`}>Full Funnel Pack</button>
+                      </div>
+                    </div>
+
+                    {/* Stage Focus — only for Single Stage */}
+                    {genConfig.funnelStructure !== 'full' && (
+                      <div>
+                        <label className="text-[10px] text-slate-500 uppercase font-semibold mb-2 block">Stage Focus</label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {([
+                            { key: 'tof' as const, label: 'Awareness', desc: 'TOF' },
+                            { key: 'mof' as const, label: 'Consideration', desc: 'MOF' },
+                            { key: 'bof' as const, label: 'Conversion', desc: 'BOF' },
+                          ]).map(f => (
+                            <button key={f.key} onClick={() => setGenConfig(c => ({ ...c, funnelStructure: f.key, funnelStage: f.key }))}
+                              className={`px-2 py-2 rounded-lg text-[10px] font-semibold border transition-colors text-center ${
+                                genConfig.funnelStructure === f.key ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                              }`}>{f.label}<br /><span className="text-[8px] font-normal opacity-60">{f.desc}</span></button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Full Funnel helper */}
+                    {genConfig.funnelStructure === 'full' && (
+                      <div className="bg-blue-950/30 border border-blue-900/40 rounded-lg px-3 py-2">
+                        <p className="text-[10px] text-blue-400">Full Funnel Pack generates TOF + MOF + BOF for each concept.</p>
+                      </div>
+                    )}
+
+                    {/* Content Mix — only shown for Video content type (Image content type = always images) */}
+                    {genConfig.contentType === 'video' && (
+                    <div>
+                      <label className="text-[10px] text-purple-400 uppercase font-bold mb-2 block">4. Content Mix</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {([
+                          { key: 'video' as const, label: 'Video Only' },
+                          { key: 'image' as const, label: 'Image Only' },
+                          { key: 'mixed' as const, label: 'Mixed' },
+                        ]).map(m => (
+                          <button key={m.key} onClick={() => setGenConfig(c => ({
+                            ...c, contentMix: m.key, contentType: m.key === 'image' ? 'image' : 'video',
+                          }))}
+                            className={`px-2 py-2 rounded-lg text-[10px] font-semibold border transition-colors ${
+                              genConfig.contentMix === m.key ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                            }`}>{m.label}</button>
+                        ))}
+                      </div>
+                    </div>
+                    )}
+                  </div>
+
+                  {/* ── STEP 3: PRODUCT + CONCEPT ── */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+                    <label className="text-[10px] text-purple-400 uppercase font-bold block">5. Product & Concept</label>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        {(() => {
+                          // Normalizer — strip punctuation so "Serevia™" and "SereviaTM" both match "serevia"
+                          const norm = (s: string) => s.toLowerCase().replace(/[™®©+\-–—.,|]/g, ' ').replace(/\s+/g, ' ').trim();
+                          // HARD FILTER: only products whose title contains the active store's brand name.
+                          // The DB has mass-imported generic products polluting every store; this ensures the
+                          // creative generator only operates on actual brand products. No escape toggle.
+                          const activeStore = stores.find(s => s.id === storeFilter);
+                          const brandName = activeStore?.name ? norm(activeStore.name) : '';
+                          const isOnBrand = (p: any) => brandName ? norm(String(p.title || '')).includes(brandName) : true;
+                          const brandFiltered = brandName ? products.filter(isOnBrand) : products;
+                          // Apply search on top
+                          const tokens = norm(productSearch).split(' ').filter(Boolean);
+                          const searchFiltered = tokens.length === 0
+                            ? brandFiltered
+                            : brandFiltered.filter(p => { const t = norm(String(p.title || '')); return tokens.every(tok => t.includes(tok)); });
+                          return (
+                            <>
+                              <label className="text-[9px] text-slate-500 uppercase mb-1 flex items-center justify-between">
+                                <span>Product{activeStore?.name ? ` (${activeStore.name} only)` : ''}</span>
+                                <span className="text-slate-600 normal-case">{brandFiltered.length} products</span>
+                              </label>
+                              {/* Search filter */}
+                              <input
+                                type="text"
+                                value={productSearch}
+                                onChange={e => setProductSearch(e.target.value)}
+                                placeholder={brandFiltered.length > 0 ? `Search ${brandFiltered.length} ${activeStore?.name || 'store'} product${brandFiltered.length !== 1 ? 's' : ''}...` : 'No on-brand products'}
+                                className="w-full px-3 py-1.5 mb-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-600"
+                              />
+                              <select value={genConfig.productId} onChange={e => { setGenConfig(c => ({ ...c, productId: e.target.value, coverImageUrl: '' })); loadFoundation(e.target.value); }}
+                                className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white">
+                                <option value="">Select {activeStore?.name || 'store'} product...</option>
+                                {searchFiltered.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+                              </select>
+                              {/* Empty-state when store has zero brand-matched products */}
+                              {brandName && brandFiltered.length === 0 && products.length > 0 && (
+                                <p className="text-[9px] text-yellow-400 mt-1">
+                                  No products with "{activeStore?.name}" in the title. {products.length} products are assigned to this store in the DB but none match the brand name — they need to be renamed or reassigned.
+                                </p>
+                              )}
+                              {productSearch && (
+                                <p className="text-[9px] text-slate-500 mt-1">
+                                  {searchFiltered.length} match{searchFiltered.length === 1 ? '' : 'es'}
+                                </p>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </div>
+                      <div>
+                        <label className="text-[9px] text-slate-500 uppercase mb-1 block">Concepts</label>
+                        <div className="flex gap-1.5">
+                          {[1, 3, 5].map(q => (
+                            <button key={q} onClick={() => setGenConfig(c => ({ ...c, quantity: q }))}
+                              className={`flex-1 px-2 py-2 rounded-lg text-sm font-semibold border ${
+                                genConfig.quantity === q ? 'bg-purple-600 border-purple-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                              }`}>{q}</button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Per-concept volume — split when mixed */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {genConfig.contentMix !== 'image' && (
+                        <div>
+                          <label className="text-[9px] text-slate-500 uppercase mb-1 block">Videos per concept{genConfig.funnelStructure === 'full' ? ' / stage' : ''}</label>
+                          <div className="flex gap-1.5">
+                            {[1, 2, 3, 5].map(q => (
+                              <button key={q} onClick={() => setGenConfig(c => ({ ...c, videosPerConcept: q }))}
+                                className={`flex-1 px-2 py-2 rounded-lg text-sm font-semibold border ${
+                                  genConfig.videosPerConcept === q ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                                }`}>{q}</button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {genConfig.contentMix !== 'video' && (
+                        <div>
+                          <label className="text-[9px] text-slate-500 uppercase mb-1 block">Images per concept{genConfig.funnelStructure === 'full' ? ' / stage' : ''}</label>
+                          <div className="flex gap-1.5">
+                            {[1, 2, 3, 5].map(q => (
+                              <button key={q} onClick={() => setGenConfig(c => ({ ...c, imagesPerConcept: q }))}
+                                className={`flex-1 px-2 py-2 rounded-lg text-sm font-semibold border ${
+                                  genConfig.imagesPerConcept === q ? 'bg-orange-600 border-orange-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                                }`}>{q}</button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Live Output Preview */}
+                    {(() => {
+                      const stages = genConfig.funnelStructure === 'full' ? 3 : 1;
+                      const concepts = genConfig.quantity;
+                      const wantsVideos = genConfig.contentMix !== 'image';
+                      const wantsImages = genConfig.contentMix !== 'video';
+                      const vTotal = wantsVideos ? concepts * genConfig.videosPerConcept * stages : 0;
+                      const iTotal = wantsImages ? concepts * genConfig.imagesPerConcept * stages : 0;
+                      const total = vTotal + iTotal;
+                      return (
+                        <div className="bg-purple-950/20 border border-purple-900/30 rounded-lg px-3 py-2 mt-2">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
+                            <span className="text-purple-400 font-bold">Output:</span>
+                            <span className="text-white font-semibold">{concepts} concept{concepts > 1 ? 's' : ''}</span>
+                            {genConfig.funnelStructure === 'full' ? (
+                              <span className="text-blue-400">× TOF + MOF + BOF</span>
+                            ) : (
+                              <span className="text-blue-400">× {genConfig.funnelStage.toUpperCase()} only</span>
+                            )}
+                            {wantsVideos && <span className="text-slate-400">× {genConfig.videosPerConcept}v</span>}
+                            {wantsImages && <span className="text-slate-400">× {genConfig.imagesPerConcept}i</span>}
+                            <span className="text-slate-300">=</span>
+                            {vTotal > 0 && <span className="text-emerald-400 font-bold">{vTotal} video{vTotal !== 1 ? 's' : ''}</span>}
+                            {vTotal > 0 && iTotal > 0 && <span className="text-slate-500">+</span>}
+                            {iTotal > 0 && <span className="text-orange-400 font-bold">{iTotal} image{iTotal !== 1 ? 's' : ''}</span>}
+                            <span className="text-slate-500">({total} total)</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Product image selector */}
+                    {(() => {
+                      if (!genConfig.productId) return null;
+                      const selProduct = products.find(p => p.id === genConfig.productId);
+                      if (!selProduct) return null;
+                      const rawImgs: string[] = [];
+                      if (selProduct.image_url) rawImgs.push(selProduct.image_url);
+                      if (selProduct.images) {
+                        try { const parsed = JSON.parse(selProduct.images) as string[]; for (const u of parsed) { if (u && !rawImgs.includes(u)) rawImgs.push(u); } } catch {}
+                      }
+                      // Filter out SVGs — AI engines can't process them
+                      const allImgs = rawImgs.filter(u => {
+                        const lower = u.toLowerCase().split('?')[0];
+                        return !lower.endsWith('.svg');
+                      });
+                      if (allImgs.length === 0) return null;
+                      const coverImg = genConfig.coverImageUrl && allImgs.includes(genConfig.coverImageUrl) ? genConfig.coverImageUrl : allImgs[0];
+                      return (
+                        <div className="bg-slate-800/50 border border-slate-700/50 rounded-lg p-3">
+                          <div className="flex gap-3 mb-2">
+                            <img src={coverImg} alt="" className="w-16 h-16 rounded-lg object-cover border-2 border-purple-500 flex-shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs text-white font-medium truncate">{selProduct.title}</p>
+                              <p className="text-[10px] text-purple-400 mt-0.5">Product reference — NOT the video's opening frame</p>
                             </div>
-                            {allImgs.length > 1 && (
-                              <div className="flex gap-1.5 mt-2 overflow-x-auto pb-1">
-                                {allImgs.slice(1).map((url, i) => (
-                                  <img key={i} src={url} alt="" className="w-10 h-10 rounded object-cover bg-slate-800 border border-slate-700 flex-shrink-0" />
-                                ))}
-                              </div>
+                          </div>
+                          {allImgs.length > 1 && (
+                            <div className="grid grid-cols-6 gap-1.5">
+                              {allImgs.map((url, i) => (
+                                <button key={i} onClick={() => setGenConfig(c => ({ ...c, coverImageUrl: url }))}
+                                  className={`relative rounded-lg overflow-hidden border-2 aspect-square ${
+                                    url === coverImg ? 'border-purple-500 ring-1 ring-purple-500/30' : 'border-slate-700 hover:border-purple-400'
+                                  }`}>
+                                  <img src={url} alt="" className="w-full h-full object-cover" />
+                                  {url === coverImg && <div className="absolute inset-0 bg-purple-600/20 flex items-center justify-center"><svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg></div>}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Concept / Angle — only show here if not already shown under Concept Source */}
+                    {genConfig.genMode !== 'new' && (
+                      <div>
+                        <label className="text-[9px] text-slate-500 uppercase mb-1 block">Concept / Angle</label>
+                        <textarea value={genConfig.conceptAngle} onChange={e => setGenConfig(c => ({ ...c, conceptAngle: e.target.value }))}
+                          placeholder='e.g. "Sleep angle — people who struggle falling asleep"'
+                          className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-600 resize-none h-14" />
+                      </div>
+                    )}
+
+                    {/* Product Foundation — beliefs, unique mechanism */}
+                    {genConfig.productId && (
+                      <div className="bg-slate-800/30 border border-amber-900/30 rounded-lg overflow-hidden">
+                        <button onClick={() => setShowFoundation(!showFoundation)}
+                          className="w-full px-3 py-2 flex items-center justify-between text-left hover:bg-slate-800/50 transition-colors">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-amber-400 uppercase font-bold">Product Foundation</span>
+                            {productFoundation?.beliefs && productFoundation.beliefs.filter(b => b.trim()).length > 0 && (
+                              <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400">{productFoundation.beliefs.filter(b => b.trim()).length} beliefs</span>
                             )}
                           </div>
-                        );
-                      })()}
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-500 uppercase font-semibold mb-1 block">Offer / Bundle</label>
-                      <input type="text" value={genConfig.offer} onChange={e => setGenConfig(c => ({ ...c, offer: e.target.value }))}
-                        placeholder="e.g. Buy 2 Get 1 Free" className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-purple-500" />
-                    </div>
-                  </div>
-
-                  {/* Hook Style & Avatar */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-                    <div>
-                      <label className="text-[10px] text-slate-500 uppercase font-semibold mb-2 block">Hook Style</label>
-                      <div className="flex flex-wrap gap-1.5">
-                        {HOOK_STYLES.map(h => (
-                          <button key={h.key} onClick={() => setGenConfig(c => ({ ...c, hookStyle: h.key }))}
-                            className={`px-3 py-1.5 rounded-lg text-[10px] font-medium border ${
-                              genConfig.hookStyle === h.key ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                            }`}>{h.label}</button>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-500 uppercase font-semibold mb-2 block">Avatar / Presenter</label>
-                      <div className="flex flex-wrap gap-1.5">
-                        {AVATAR_STYLES.map(a => (
-                          <button key={a.key} onClick={() => setGenConfig(c => ({ ...c, avatarStyle: a.key }))}
-                            className={`px-3 py-1.5 rounded-lg text-[10px] font-medium border ${
-                              genConfig.avatarStyle === a.key ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                            }`}>{a.label}</button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Generation Goal */}
-                  <div className="mb-4">
-                    <label className="text-[10px] text-slate-500 uppercase font-semibold mb-2 block">Generation Goal</label>
-                    <div className="flex flex-wrap gap-1.5">
-                      {GENERATION_GOALS.map(g => (
-                        <button key={g.key} onClick={() => setGenConfig(c => ({ ...c, generationGoal: g.key }))}
-                          className={`px-3 py-2 rounded-lg text-[10px] font-medium border ${
-                            genConfig.generationGoal === g.key ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                          }`}>{g.label}</button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Platform Target */}
-                  <div className="mb-4">
-                    <label className="text-[10px] text-slate-500 uppercase font-semibold mb-2 block">Platform</label>
-                    <div className="flex gap-2">
-                      {([
-                        { key: 'meta', label: 'Facebook / Meta', desc: 'Feed, Reels, Stories' },
-                        { key: 'tiktok', label: 'TikTok', desc: 'For You Page' },
-                      ] as const).map(p => (
-                        <button key={p.key} onClick={() => setGenConfig(c => ({ ...c, platformTarget: p.key }))}
-                          className={`flex-1 px-3 py-2.5 rounded-lg text-xs font-medium border transition-colors ${
-                            genConfig.platformTarget === p.key ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                          }`}>
-                          {p.label}<br /><span className="text-[9px] opacity-60">{p.desc}</span>
+                          <svg className={`w-3 h-3 text-slate-500 transition-transform ${showFoundation ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                         </button>
-                      ))}
-                    </div>
+                        {showFoundation && productFoundation && (
+                          <div className="px-3 pb-3 space-y-2 border-t border-slate-800">
+                            <p className="text-[9px] text-slate-500 mt-2">What must the customer believe before buying? Each belief drives a different ad.</p>
+
+                            {/* Beliefs */}
+                            <div>
+                              <label className="text-[9px] text-amber-400 uppercase font-semibold mb-1 block">Necessary Beliefs (max 6)</label>
+                              {(productFoundation.beliefs.length === 0 ? [''] : productFoundation.beliefs).map((belief, bi) => (
+                                <div key={bi} className="flex gap-1 mb-1">
+                                  <span className="text-[9px] text-slate-600 mt-1.5 w-3 flex-shrink-0">{bi + 1}.</span>
+                                  <input value={belief} onChange={e => {
+                                    const newBeliefs = [...productFoundation.beliefs];
+                                    if (bi >= newBeliefs.length) newBeliefs.push('');
+                                    newBeliefs[bi] = e.target.value;
+                                    setProductFoundation({ ...productFoundation, beliefs: newBeliefs });
+                                  }}
+                                    placeholder={`e.g. "I believe ${bi === 0 ? 'this product is different from what I\'ve tried' : bi === 1 ? 'natural ingredients work better' : 'this is worth the price'}"` }
+                                    className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-[10px] text-white placeholder-slate-600" />
+                                </div>
+                              ))}
+                              {productFoundation.beliefs.length < 6 && (
+                                <button onClick={() => setProductFoundation({ ...productFoundation, beliefs: [...productFoundation.beliefs, ''] })}
+                                  className="text-[9px] text-amber-400 hover:text-amber-300 mt-1">+ Add belief</button>
+                              )}
+                            </div>
+
+                            {/* Unique Mechanism */}
+                            <div>
+                              <label className="text-[9px] text-slate-500 uppercase mb-1 block">Unique Mechanism</label>
+                              <input value={productFoundation.uniqueMechanism} onChange={e => setProductFoundation({ ...productFoundation, uniqueMechanism: e.target.value })}
+                                placeholder="What makes this product different and proprietary? Why can't they get this elsewhere?"
+                                className="w-full px-2 py-1 bg-slate-800 border border-slate-700 rounded text-[10px] text-white placeholder-slate-600" />
+                            </div>
+
+                            {/* Offer Brief */}
+                            <div>
+                              <label className="text-[9px] text-slate-500 uppercase mb-1 block">Offer Brief</label>
+                              <textarea value={productFoundation.offerBrief} onChange={e => setProductFoundation({ ...productFoundation, offerBrief: e.target.value })}
+                                placeholder="What's the offer? What do they get? Why is it a no-brainer?"
+                                className="w-full px-2 py-1 bg-slate-800 border border-slate-700 rounded text-[10px] text-white placeholder-slate-600 resize-none h-10" />
+                            </div>
+
+                            {/* Save */}
+                            <button onClick={saveFoundation} disabled={foundationSaving}
+                              className="px-3 py-1 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-[9px] font-medium rounded">
+                              {foundationSaving ? 'Saving...' : 'Save Foundation'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
-                  {/* Quantity */}
-                  <div className="mb-5">
-                    <label className="text-[10px] text-slate-500 uppercase font-semibold mb-2 block">Quantity</label>
-                    <div className="flex gap-2">
-                      {[1, 3, 5, 10].map(q => (
-                        <button key={q} onClick={() => setGenConfig(c => ({ ...c, quantity: q }))}
-                          className={`px-4 py-2 rounded-lg text-sm font-medium border ${
-                            genConfig.quantity === q ? 'bg-purple-600 border-purple-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                          }`}>{q}</button>
-                      ))}
-                    </div>
+                  {/* ── ADVANCED (collapsed) ── */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                    <button onClick={() => setShowAdvanced(!showAdvanced)}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/30 transition-colors">
+                      <span className="text-[10px] text-slate-500 uppercase font-bold">Advanced Options</span>
+                      <svg className={`w-4 h-4 text-slate-500 transition-transform ${showAdvanced ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {showAdvanced && (
+                      <div className="px-4 pb-4 space-y-3 border-t border-slate-800">
+                        {/* Creative Type */}
+                        <div className="mt-3">
+                          <label className="text-[9px] text-slate-500 uppercase mb-1.5 block">Creative Type</label>
+                          <div className="grid grid-cols-3 sm:grid-cols-5 gap-1">
+                            {CREATIVE_TYPES.map(ct => (
+                              <button key={ct.key} onClick={() => setGenConfig(c => ({ ...c, creativeType: ct.key }))}
+                                className={`px-1.5 py-1.5 rounded text-[9px] font-medium border text-center ${
+                                  genConfig.creativeType === ct.key ? 'bg-purple-600 border-purple-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                                }`}>{ct.label}</button>
+                            ))}
+                          </div>
+                        </div>
+                        {/* Hook Style + Avatar */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase mb-1.5 block">Hook Style</label>
+                            <div className="flex flex-wrap gap-1">
+                              {HOOK_STYLES.map(h => (
+                                <button key={h.key} onClick={() => setGenConfig(c => ({ ...c, hookStyle: h.key }))}
+                                  className={`px-2 py-1 rounded text-[9px] font-medium border ${
+                                    genConfig.hookStyle === h.key ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                                  }`}>{h.label}</button>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase mb-1.5 block">Presenter</label>
+                            <div className="flex flex-wrap gap-1">
+                              {AVATAR_STYLES.map(a => (
+                                <button key={a.key} onClick={() => setGenConfig(c => ({ ...c, avatarStyle: a.key }))}
+                                  className={`px-2 py-1 rounded text-[9px] font-medium border ${
+                                    genConfig.avatarStyle === a.key ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                                  }`}>{a.label}</button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        {/* Duration + Aspect + Platform + Offer */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase mb-1.5 block">Video Duration</label>
+                            <div className="flex gap-1">
+                              {([8, 10, 15, 20] as const).map(d => (
+                                <button key={d} onClick={() => setGenConfig(c => ({ ...c, videoDuration: d }))}
+                                  className={`flex-1 px-2 py-1.5 rounded text-[10px] font-semibold border ${
+                                    genConfig.videoDuration === d ? 'bg-yellow-600 border-yellow-400 text-white' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
+                                  }`}>{d}s</button>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase mb-1.5 block">Aspect Ratio</label>
+                            <div className="flex gap-1">
+                              {(['4:5', '1:1', '9:16', '16:9'] as const).map(d => (
+                                <button key={d} onClick={() => setGenConfig(c => ({ ...c, dimension: d }))}
+                                  className={`flex-1 px-2 py-1.5 rounded text-[10px] font-semibold border ${
+                                    genConfig.dimension === d ? 'bg-emerald-600 border-emerald-400 text-white' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
+                                  }`}>{d}</button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase mb-1 block">Platform</label>
+                            <div className="flex gap-1">
+                              {(['meta', 'tiktok'] as const).map(p => (
+                                <button key={p} onClick={() => setGenConfig(c => ({ ...c, platformTarget: p }))}
+                                  className={`flex-1 px-2 py-1.5 rounded text-[10px] font-medium border ${
+                                    genConfig.platformTarget === p ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                                  }`}>{p === 'meta' ? 'Meta' : 'TikTok'}</button>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase mb-1 block">Offer / Bundle</label>
+                            <input type="text" value={genConfig.offer} onChange={e => setGenConfig(c => ({ ...c, offer: e.target.value }))}
+                              placeholder="e.g. Buy 2 Get 1 Free" className="w-full px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-[10px] text-white" />
+                          </div>
+                        </div>
+                        {/* Templates */}
+                        <div className="flex gap-2 pt-2 border-t border-slate-800">
+                          {setupTemplates.length > 0 && setupTemplates.map(t => (
+                            <button key={t.id} onClick={() => applyTemplate(t)}
+                              className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 text-[9px] rounded border border-slate-700 truncate max-w-[120px]">{t.name}</button>
+                          ))}
+                          <button onClick={() => setShowTemplateSave(true)}
+                            className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 text-[9px] rounded border border-slate-700">Save Setup</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
-                  {/* CTA Buttons */}
-                  {genPackageError && (
-                    <div className="mb-3 px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg text-xs text-red-400">{genPackageError}</div>
+                  {/* ── WINNER REFERENCE ── */}
+                  {matchedWinnerRef && (
+                    <div className="px-4 py-2.5 bg-amber-900/20 border border-amber-800/50 rounded-xl flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-500 text-black font-bold">WINNER DNA</span>
+                        <span className="text-xs text-amber-400">Using: "{matchedWinnerRef.title}"</span>
+                      </div>
+                      <button onClick={() => setMatchedWinnerRef(null)} className="text-[10px] text-slate-500 hover:text-white">Clear</button>
+                    </div>
                   )}
-                  <div className="flex gap-3">
-                    <button onClick={handleGeneratePackage} disabled={generatingPackage}
-                      className="flex-1 px-4 py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors">
-                      {generatingPackage ? 'Generating...' : 'Generate Creative Package'}
-                    </button>
-                    <button onClick={() => { setGenConfig(c => ({ ...c, generationGoal: 'generate_variations' })); handleGeneratePackage(); }}
-                      disabled={generatingPackage || genPackages.length === 0}
-                      className="px-4 py-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg border border-slate-700 transition-colors">
-                      Generate Variations
-                    </button>
-                  </div>
+
+                  {activeConceptAction && (
+                    <div className={`px-4 py-2.5 rounded-xl flex items-center justify-between ${
+                      activeConceptAction === 'scale' ? 'bg-emerald-900/20 border border-emerald-800/50' :
+                      activeConceptAction === 'refresh' ? 'bg-amber-900/20 border border-amber-800/50' :
+                      'bg-blue-900/20 border border-blue-800/50'
+                    }`}>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold ${
+                          activeConceptAction === 'scale' ? 'bg-emerald-500 text-black' :
+                          activeConceptAction === 'refresh' ? 'bg-amber-500 text-black' :
+                          'bg-blue-500 text-black'
+                        }`}>{activeConceptAction.toUpperCase().replace('_', ' ')}</span>
+                        <span className="text-xs text-slate-300">Concept: "{genConfig.conceptAngle}"</span>
+                      </div>
+                      <button onClick={() => { setActiveConceptAction(''); setGenConfig(c => ({ ...c, conceptAngle: '' })); }} className="text-[10px] text-slate-500 hover:text-white">Clear</button>
+                    </div>
+                  )}
+
+                  {/* ── GENERATE BUTTON ── */}
+                  {genPackageError && (
+                    <div className="px-3 py-2 bg-red-900/20 border border-red-800 rounded-lg text-xs text-red-400">{genPackageError}</div>
+                  )}
+                  <button onClick={handleGeneratePackage} disabled={generatingPackage}
+                    className="w-full px-4 py-4 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-colors shadow-lg shadow-purple-900/30">
+                    {generatingPackage ? (genConfig.genMode === 'clone_ad' ? 'Analyzing & Cloning...' : 'Generating...') : genConfig.engine === 'higgsfield' ? `Generate ${higgsStyle.replace(/_/g, ' ')} Pack` : genConfig.genMode === 'clone_ad' ? 'Clone Ad from Reference' : genConfig.funnelStructure === 'full' ? 'Generate Full Funnel Pack' : genConfig.genMode === 'existing' ? 'Generate More For Concept' : 'Generate Creative Package'}
+                  </button>
                 </div>
 
                 {/* ═══ Generated Output Area ═══ */}
-                {generatingPackage && (
+                {generatingPackage && !higgsPackJob && (
                   <div className="bg-slate-900 border border-purple-900/30 rounded-xl p-6 text-center">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-400 mx-auto mb-3" />
                     <p className="text-white font-medium text-sm">Generating {genConfig.quantity} creative package{genConfig.quantity > 1 ? 's' : ''}...</p>
@@ -2991,6 +4583,55 @@ function CreativesContent() {
                   </div>
                 )}
 
+                {/* Higgsfield Pack Progress */}
+                {higgsPackJob && (
+                  <div className={`bg-slate-900 border rounded-xl p-5 ${higgsPackJob.status === 'completed' ? 'border-emerald-800/50' : higgsPackJob.status === 'failed' ? 'border-red-800/50' : 'border-orange-900/50'}`}>
+                    <div className="flex items-center gap-3 mb-3">
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 font-bold uppercase">Higgsfield Pack</span>
+                      <span className={`text-xs font-medium ${
+                        higgsPackJob.status === 'completed' ? 'text-emerald-400' :
+                        higgsPackJob.status === 'failed' ? 'text-red-400' :
+                        'text-orange-400'
+                      }`}>{higgsPackJob.status}</span>
+                    </div>
+                    <p className="text-sm text-white mb-3">{higgsPackJob.progress || 'Processing...'}</p>
+                    {/* Scene progress */}
+                    {higgsPackJob.scenes && higgsPackJob.scenes.length > 0 && (
+                      <div className="grid grid-cols-4 gap-2 mb-3">
+                        {higgsPackJob.scenes.map((s: any, i: number) => (
+                          <div key={i} className={`px-2 py-1.5 rounded-lg text-center text-[9px] border ${
+                            s.status === 'completed' ? 'bg-emerald-900/20 border-emerald-800 text-emerald-400' :
+                            s.status === 'failed' ? 'bg-red-900/20 border-red-800 text-red-400' :
+                            'bg-slate-800 border-slate-700 text-slate-400'
+                          }`}>
+                            <span className="block font-semibold">{s.name}</span>
+                            <span className="opacity-70">{s.status}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* Completed video */}
+                    {higgsPackJob.status === 'completed' && higgsPackJob.videoUrl && (
+                      <div className="mt-3">
+                        <video src={higgsPackJob.videoUrl} controls className="w-full rounded-lg max-h-80 bg-black" />
+                        <div className="flex gap-2 mt-2">
+                          <a href={higgsPackJob.videoUrl} download target="_blank" rel="noopener noreferrer"
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-medium rounded-lg">Download</a>
+                          <button onClick={() => setHiggsPackJob(null)}
+                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 text-[10px] rounded-lg border border-slate-700">Dismiss</button>
+                        </div>
+                      </div>
+                    )}
+                    {/* Spinner for in-progress */}
+                    {(higgsPackJob.status === 'generating' || higgsPackJob.status === 'stitching' || higgsPackJob.status === 'planning') && (
+                      <div className="flex items-center gap-2 mt-2">
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-orange-400" />
+                        <span className="text-[10px] text-orange-400">This may take 2-5 minutes</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {genPackages.length > 0 && (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
@@ -2998,13 +4639,114 @@ function CreativesContent() {
                         <h3 className="text-sm font-semibold text-white">Generated Packages ({genPackages.length})</h3>
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">v{genVersion}</span>
                         {genVersion > 1 && <span className="text-[10px] text-purple-400">variation</span>}
+                        {matchedWinnerRef && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+                            Based on Winner: {matchedWinnerRef.title}
+                          </span>
+                        )}
                       </div>
                       {comparingPackages.length >= 2 && (
                         <span className="text-[10px] text-blue-400">{comparingPackages.length} selected for comparison</span>
                       )}
+                      {/* Bulk generate buttons — works for BOTH image and video (mixed batches aware) */}
+                      {genPackages.length > 0 && (() => {
+                        // Split packages by per-package content type
+                        const vCount = genPackages.filter(p => isVideoPackage(p, genPackageConfig?.contentType)).length;
+                        const iCount = genPackages.length - vCount;
+                        const isMixed = vCount > 0 && iCount > 0;
+                        const primaryColor = isMixed ? 'bg-purple-600 hover:bg-purple-700' : vCount > 0 ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-orange-600 hover:bg-orange-700';
+                        const secondaryColor = isMixed ? 'bg-purple-700 hover:bg-purple-800' : vCount > 0 ? 'bg-emerald-700 hover:bg-emerald-800' : 'bg-orange-700 hover:bg-orange-800';
+                        const btnLabelParts: string[] = [];
+                        if (vCount > 0) btnLabelParts.push(`${vCount} ${genConfig.videoDuration}s video${vCount !== 1 ? 's' : ''}`);
+                        if (iCount > 0) btnLabelParts.push(`${iCount} image${iCount !== 1 ? 's' : ''}`);
+                        return (
+                        <div className="flex items-center gap-2">
+                          {/* Progress indicator */}
+                          {(() => {
+                            const vActive = generatingIdxSet.size;
+                            const vDone = Object.values(packageVideoStatus).filter(s => s.status === 'completed' || s.status === 'processing').length;
+                            const iActive = Object.values(renderJobs).filter(j => j.status === 'queued' || j.status === 'rendering').length;
+                            const iDone = Object.values(renderJobs).filter(j => j.status === 'completed').length;
+                            const totalActive = vActive + iActive;
+                            const totalDone = vDone + iDone;
+                            return totalActive > 0 ? (
+                              <span className="text-[10px] text-yellow-400 flex items-center gap-1">
+                                <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                                {totalActive} generating{totalDone > 0 ? `, ${totalDone} started` : ''}
+                              </span>
+                            ) : totalDone > 0 ? (
+                              <span className="text-[10px] text-emerald-400">{totalDone}/{genPackages.length} started</span>
+                            ) : null;
+                          })()}
+                          {/* Generate All button */}
+                          <button onClick={() => handleGenerateAll('all')}
+                            className={`px-3 py-1 ${primaryColor} text-white text-[10px] font-medium rounded-lg`}>
+                            Generate All ({btnLabelParts.join(' + ')})
+                          </button>
+                          {/* 1-by-1 button */}
+                          <button onClick={() => handleGenerateAll('sequential')}
+                            className={`px-3 py-1 ${secondaryColor} text-white text-[10px] font-medium rounded-lg`}>
+                            1-by-1
+                          </button>
+                        </div>
+                        );
+                      })()}
                     </div>
+                    {/* ═══ LAUNCH TO META ═══ (shows when any image in batch has rendered) */}
+                    {Object.values(renderJobs).some(j => j.status === 'completed') && (
+                      <div className="bg-slate-900 border border-blue-900/30 rounded-xl p-4">
+                        <div className="flex items-center gap-3 mb-3">
+                          <h4 className="text-xs font-semibold text-white">Launch to Meta Ads</h4>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-900/30 text-blue-400">ABO • $30/ad set/day</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2 items-end">
+                          {/* Ad Account selector */}
+                          <div className="flex-1 min-w-[180px]">
+                            <label className="text-[10px] text-slate-500 mb-1 block">Ad Account</label>
+                            <select value={selectedProfileId} onChange={e => setSelectedProfileId(e.target.value)}
+                              className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white">
+                              {fbProfiles.length === 0 && <option value="">No ad accounts linked</option>}
+                              {fbProfiles.map((p: any) => (
+                                <option key={p.id} value={p.id}>{p.ad_account_name || p.profile_name} {p.fb_page_id ? '' : '(no page)'}</option>
+                              ))}
+                            </select>
+                          </div>
+                          {/* Landing page URL */}
+                          <div className="flex-1 min-w-[220px]">
+                            <label className="text-[10px] text-slate-500 mb-1 block">Landing Page URL</label>
+                            <input type="url" value={launchLinkUrl} onChange={e => setLaunchLinkUrl(e.target.value)}
+                              placeholder="https://yourdomain.com/product"
+                              className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-600" />
+                          </div>
+                          {/* Launch button */}
+                          <button onClick={handleLaunchToMeta}
+                            disabled={launching || !selectedProfileId || !launchLinkUrl}
+                            className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-[10px] font-medium rounded-lg whitespace-nowrap">
+                            {launching ? 'Launching...' : `Launch ${Object.values(renderJobs).filter(j => j.status === 'completed').length} Ads`}
+                          </button>
+                        </div>
+                        {launchError && (
+                          <div className="mt-2 px-3 py-1.5 bg-red-900/20 border border-red-800 rounded-lg text-[10px] text-red-400">{launchError}</div>
+                        )}
+                        {launchResult && (
+                          <div className="mt-2 px-3 py-2 bg-emerald-900/20 border border-emerald-800 rounded-lg">
+                            <p className="text-[10px] text-emerald-400 font-medium mb-1">
+                              Launched: {launchResult.summary?.adsCreated} ads in {launchResult.summary?.adSetsCreated} ad sets
+                            </p>
+                            <p className="text-[10px] text-slate-400">
+                              Campaign: {launchResult.campaign?.name} ({launchResult.summary?.status}) • {launchResult.summary?.budgetPerAdSet} per ad set
+                            </p>
+                            {launchResult.summary?.errorsCount > 0 && (
+                              <p className="text-[10px] text-yellow-400 mt-1">{launchResult.summary.errorsCount} error(s) — check Ads Manager</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {genPackages.map((pkg, idx) => {
-                      const isVideo = genPackageConfig?.contentType === 'video';
+                      const isVideo = isVideoPackage(pkg, genPackageConfig?.contentType);
+                      const pkgStage = String((pkg as any).stage || '').toUpperCase();
                       const isOpen = expandedPackage === idx;
                       return (
                         <div key={idx} className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
@@ -3018,6 +4760,26 @@ function CreativesContent() {
                                 <span className={`text-[10px] px-2 py-0.5 rounded-full ${isVideo ? 'bg-blue-900/30 text-blue-400' : 'bg-orange-900/30 text-orange-400'}`}>
                                   {isVideo ? 'Video' : 'Image'}
                                 </span>
+                                {pkgStage && ['TOF', 'MOF', 'BOF'].includes(pkgStage) && (
+                                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                                    pkgStage === 'TOF' ? 'bg-sky-900/30 text-sky-400' :
+                                    pkgStage === 'MOF' ? 'bg-violet-900/30 text-violet-400' :
+                                    'bg-pink-900/30 text-pink-400'
+                                  }`}>{pkgStage}</span>
+                                )}
+                                {/* Render status badge (visible when collapsed) */}
+                                {!isVideo && renderJobs[idx] && (
+                                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${
+                                    renderJobs[idx].status === 'completed' ? 'bg-emerald-900/30 text-emerald-400' :
+                                    renderJobs[idx].status === 'failed' ? 'bg-red-900/30 text-red-400' :
+                                    renderJobs[idx].status === 'rendering' ? 'bg-yellow-900/30 text-yellow-400' :
+                                    'bg-blue-900/30 text-blue-400'
+                                  }`}>
+                                    {renderJobs[idx].status === 'completed' ? 'Rendered' :
+                                     renderJobs[idx].status === 'failed' ? 'Failed' :
+                                     renderJobs[idx].status === 'rendering' ? 'Rendering...' : 'Queued'}
+                                  </span>
+                                )}
                               </div>
                               <p className="text-xs text-slate-500 truncate">{(pkg as any).angle || (pkg as any).conceptAngle || ''}</p>
                             </div>
@@ -3033,7 +4795,20 @@ function CreativesContent() {
                                     <div><p className="text-[10px] text-purple-400 uppercase font-semibold mb-1">Hook (0-3s)</p><p className="text-sm text-white bg-purple-900/20 border border-purple-900/30 rounded-lg p-3">{(pkg as VideoPackage).hook}</p></div>
                                   )}
                                   {(pkg as VideoPackage).script && (
-                                    <div><p className="text-[10px] text-blue-400 uppercase font-semibold mb-1">Full Script</p><pre className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 whitespace-pre-wrap leading-relaxed">{(pkg as VideoPackage).script}</pre></div>
+                                    <div>
+                                      <div className="flex items-center justify-between mb-1">
+                                        <p className="text-[10px] text-blue-400 uppercase font-semibold">Full Script</p>
+                                        {(pkg as any)._finalEstimatedSeconds !== undefined && (pkg as any)._duration && (
+                                          <span className={`text-[9px] px-2 py-0.5 rounded-full ${
+                                            (pkg as any)._validationPass ? 'bg-emerald-900/30 text-emerald-400' : 'bg-yellow-900/30 text-yellow-400'
+                                          }`}>
+                                            {(pkg as any)._finalWordCount} words • ~{(pkg as any)._finalEstimatedSeconds}s / {(pkg as any)._duration}s
+                                            {(pkg as any)._compressed && ' (compressed)'}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <pre className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 whitespace-pre-wrap leading-relaxed">{(pkg as VideoPackage).script}</pre>
+                                    </div>
                                   )}
                                   {(pkg as VideoPackage).sceneStructure && (
                                     <div><p className="text-[10px] text-cyan-400 uppercase font-semibold mb-1">Scene Structure</p><p className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 whitespace-pre-wrap">{(pkg as VideoPackage).sceneStructure}</p></div>
@@ -3053,20 +4828,51 @@ function CreativesContent() {
                                 </>
                               ) : (
                                 <>
+                                  {(pkg as ImagePackage).imageFormat && (
+                                    <div className="mb-2"><span className="text-[10px] px-2 py-0.5 rounded-full bg-orange-900/30 text-orange-400 uppercase">{(pkg as ImagePackage).imageFormat.replace(/_/g, ' ')}</span></div>
+                                  )}
                                   {(pkg as ImagePackage).headline && (
                                     <div><p className="text-[10px] text-purple-400 uppercase font-semibold mb-1">Headline</p><p className="text-lg text-white font-bold">{(pkg as ImagePackage).headline}</p></div>
                                   )}
-                                  {(pkg as ImagePackage).conceptAngle && (
-                                    <div><p className="text-[10px] text-blue-400 uppercase font-semibold mb-1">Concept</p><p className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 whitespace-pre-wrap">{(pkg as ImagePackage).conceptAngle}</p></div>
+                                  {(pkg as ImagePackage).hookText && (
+                                    <div><p className="text-[10px] text-pink-400 uppercase font-semibold mb-1">Hook Text (scroll-stop overlay)</p><p className="text-sm text-pink-300 font-semibold bg-pink-900/10 border border-pink-900/20 rounded-lg p-2">{(pkg as ImagePackage).hookText}</p></div>
+                                  )}
+                                  {(pkg as ImagePackage).proofElement && (
+                                    <div><p className="text-[10px] text-amber-400 uppercase font-semibold mb-1">Proof Element</p><p className="text-xs text-slate-300">{(pkg as ImagePackage).proofElement}</p></div>
+                                  )}
+                                  {(pkg as ImagePackage).productPlacement && (
+                                    <div><p className="text-[10px] text-blue-400 uppercase font-semibold mb-1">Product Placement</p><p className="text-xs text-slate-300">{(pkg as ImagePackage).productPlacement}</p></div>
                                   )}
                                   {(pkg as ImagePackage).visualComposition && (
-                                    <div><p className="text-[10px] text-indigo-400 uppercase font-semibold mb-1">Visual Composition</p><p className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 whitespace-pre-wrap">{(pkg as ImagePackage).visualComposition}</p></div>
+                                    <div><p className="text-[10px] text-indigo-400 uppercase font-semibold mb-1">Layout Blueprint</p><p className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 whitespace-pre-wrap">{(pkg as ImagePackage).visualComposition}</p></div>
+                                  )}
+                                  {(pkg as ImagePackage).textOverlays && (pkg as ImagePackage).textOverlays!.length > 0 && (
+                                    <div>
+                                      <p className="text-[10px] text-cyan-400 uppercase font-semibold mb-1">Text Overlays (CapCut-ready)</p>
+                                      <div className="space-y-1">
+                                        {(pkg as ImagePackage).textOverlays!.map((t, ti) => (
+                                          <div key={ti} className="flex items-center gap-2 bg-slate-800/60 rounded px-2 py-1">
+                                            <span className="text-[9px] text-slate-500 uppercase w-12">{t.position}</span>
+                                            <span className="text-xs text-white" style={{ fontWeight: t.fontWeight === 'bold' ? 700 : 400 }}>{t.text}</span>
+                                            <span className="text-[8px] text-slate-600 ml-auto">{t.fontSize} {t.color}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {(pkg as ImagePackage).colorScheme && (
+                                    <div className="flex gap-2 items-center">
+                                      <p className="text-[10px] text-slate-500">Colors:</p>
+                                      {Object.entries((pkg as ImagePackage).colorScheme!).map(([k, v]) => (
+                                        <div key={k} className="flex items-center gap-1"><div className="w-4 h-4 rounded border border-slate-600" style={{ backgroundColor: v }} /><span className="text-[9px] text-slate-500">{k}</span></div>
+                                      ))}
+                                    </div>
                                   )}
                                   {(pkg as ImagePackage).offerPlacement && (
-                                    <div><p className="text-[10px] text-amber-400 uppercase font-semibold mb-1">Offer Placement</p><p className="text-xs text-slate-300">{(pkg as ImagePackage).offerPlacement}</p></div>
+                                    <div><p className="text-[10px] text-amber-400 uppercase font-semibold mb-1">Offer</p><p className="text-xs text-slate-300">{(pkg as ImagePackage).offerPlacement}</p></div>
                                   )}
-                                  {(pkg as ImagePackage).ctaDirection && (
-                                    <div><p className="text-[10px] text-emerald-400 uppercase font-semibold mb-1">CTA Direction</p><p className="text-sm text-emerald-300 font-medium">{(pkg as ImagePackage).ctaDirection}</p></div>
+                                  {(pkg as ImagePackage).ctaText && (
+                                    <div><p className="text-[10px] text-emerald-400 uppercase font-semibold mb-1">CTA</p><p className="text-sm text-emerald-300 font-medium">{(pkg as ImagePackage).ctaText} <span className="text-[9px] text-slate-500">({(pkg as ImagePackage).ctaPlacement})</span></p></div>
                                   )}
                                 </>
                               )}
@@ -3087,23 +4893,87 @@ function CreativesContent() {
                               )}
                               {/* Action Buttons */}
                               <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-800">
-                                {/* Generate Video — one-click pipeline */}
-                                {isVideo && !packageVideoStatus[idx] && (
-                                  <div className="flex gap-1">
-                                    <button onClick={() => handleGenerateVideoFromPackage(pkg, idx, 'sora')} disabled={generatingVideoIdx !== null}
-                                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-[10px] font-medium rounded-l-lg">
-                                      {generatingVideoIdx === idx ? 'Sending...' : 'Generate Video'}
-                                    </button>
-                                    <button onClick={() => handleGenerateVideoFromPackage(pkg, idx, 'veo')} disabled={generatingVideoIdx !== null}
-                                      className="px-2 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-[9px] font-medium border-l border-emerald-500">Veo</button>
-                                    <button onClick={() => handleGenerateVideoFromPackage(pkg, idx, 'minimax')} disabled={generatingVideoIdx !== null}
-                                      className="px-2 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-[9px] font-medium border-l border-emerald-500">MM</button>
-                                    <button onClick={() => handleGenerateVideoFromPackage(pkg, idx, 'runway')} disabled={generatingVideoIdx !== null}
-                                      className="px-2 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-[9px] font-medium border-l border-emerald-500">Runway</button>
-                                    <button onClick={() => handleGenerateVideoFromPackage(pkg, idx, 'higgsfield')} disabled={generatingVideoIdx !== null}
-                                      className="px-2 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-[9px] font-medium rounded-r-lg border-l border-emerald-500">Higgs</button>
+                                {/* === IMAGE RENDER QUEUE === */}
+                                {!isVideo && (() => {
+                                  const job = renderJobs[idx];
+                                  if (!job || job.status === 'completed') {
+                                    return (
+                                      <div className="flex gap-1">
+                                        <button onClick={() => handleRenderImage(pkg, idx)}
+                                          className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white text-[10px] font-medium rounded-l-lg">
+                                          {job?.status === 'completed' ? 'Re-render' : 'Render Image'}
+                                        </button>
+                                        <button onClick={() => handleRenderImage(pkg, idx, 'dalle')}
+                                          className="px-2 py-1.5 bg-orange-700 hover:bg-orange-800 text-white text-[9px] font-medium border-l border-orange-500" title="OpenAI GPT Image (best product fidelity)">GPT</button>
+                                        <button onClick={() => handleRenderImage(pkg, idx, 'gemini-image')}
+                                          className="px-2 py-1.5 bg-orange-700 hover:bg-orange-800 text-white text-[9px] font-medium border-l border-orange-500" title="Google Gemini (good all-around)">Gem</button>
+                                        <button onClick={() => handleRenderImage(pkg, idx, 'stability')}
+                                          className="px-2 py-1.5 bg-orange-700 hover:bg-orange-800 text-white text-[9px] font-medium border-l border-orange-500" title="Stability AI SDXL (strong prompt adherence)">SD</button>
+                                        <button onClick={() => handleRenderImage(pkg, idx, 'nano-banana')}
+                                          className="px-2 py-1.5 bg-orange-700 hover:bg-orange-800 text-white text-[9px] font-medium rounded-r-lg border-l border-orange-500" title="Nano Banana 2 (best text rendering + product scenes)">NB</button>
+                                      </div>
+                                    );
+                                  }
+                                  if (job.status === 'queued') {
+                                    return (
+                                      <span className="px-3 py-1.5 text-[10px] font-medium rounded-lg bg-blue-900/30 text-blue-400 flex items-center gap-1.5">
+                                        <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />Queued ({job.engine === 'dalle' ? 'GPT' : job.engine === 'gemini-image' ? 'Gemini' : job.engine === 'ideogram' ? 'Ideogram' : job.engine === 'stability' ? 'Stability' : job.engine})...
+                                      </span>
+                                    );
+                                  }
+                                  if (job.status === 'rendering') {
+                                    const engineLabel = job.engine === 'dalle' ? 'GPT Image' : job.engine === 'gemini-image' ? 'Gemini' : job.engine === 'ideogram' ? 'Ideogram' : job.engine === 'stability' ? 'Stability AI' : job.engine;
+                                    return (
+                                      <span className="px-3 py-1.5 text-[10px] font-medium rounded-lg bg-yellow-900/30 text-yellow-400 flex items-center gap-1.5">
+                                        <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                                        Rendering with {engineLabel}...
+                                      </span>
+                                    );
+                                  }
+                                  if (job.status === 'failed') {
+                                    return (
+                                      <button onClick={() => handleRetryRender(pkg, idx)}
+                                        className="px-3 py-1.5 text-[10px] font-medium rounded-lg bg-red-900/30 text-red-400 hover:bg-red-900/50 cursor-pointer"
+                                        title="Click to retry">
+                                        {job.error || 'Failed'} — retry
+                                      </button>
+                                    );
+                                  }
+                                  return null;
+                                })()}
+                                {/* Rendered image preview */}
+                                {!isVideo && renderJobs[idx]?.status === 'completed' && renderJobs[idx]?.imageUrl && (
+                                  <div className="w-full mt-2 rounded-lg overflow-hidden border border-emerald-900/30 bg-slate-950">
+                                    <div className="flex items-center justify-between px-3 py-1.5 bg-emerald-900/20">
+                                      <span className="text-[10px] text-emerald-400 font-medium">Rendered via {renderJobs[idx].engine === 'dalle' ? 'GPT Image' : renderJobs[idx].engine === 'gemini-image' ? 'Gemini' : renderJobs[idx].engine === 'stability' ? 'Stability AI' : renderJobs[idx].engine === 'minimax-image' ? 'MiniMax' : renderJobs[idx].engine}</span>
+                                      <a href={renderJobs[idx].imageUrl!} target="_blank" rel="noopener noreferrer"
+                                        className="text-[10px] text-emerald-500 hover:text-emerald-300 underline">Open full size</a>
+                                    </div>
+                                    <img src={renderJobs[idx].imageUrl!} alt={`Rendered: ${(pkg as any).title || ''}`}
+                                      className="w-full max-h-64 object-contain bg-slate-950" />
                                   </div>
                                 )}
+                                {/* === VIDEO GENERATION (unchanged) === */}
+                                {isVideo && !packageVideoStatus[idx] && (() => {
+                                  const autoEng = bestEngineForDuration(genConfig.videoDuration || 20);
+                                  const engLabel: Record<string, string> = { sora: 'Sora', veo: 'Veo', minimax: 'Hailuo', runway: 'Runway', higgsfield: 'Higgs' };
+                                  return (
+                                  <div className="flex gap-1">
+                                    <button onClick={() => handleGenerateVideoFromPackage(pkg, idx)} disabled={generatingIdxSet.has(idx)}
+                                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-[10px] font-medium rounded-l-lg">
+                                      {generatingIdxSet.has(idx) ? 'Sending...' : `Generate ${genConfig.videoDuration}s (${engLabel[autoEng] || autoEng})`}
+                                    </button>
+                                    <button onClick={() => handleGenerateVideoFromPackage(pkg, idx, 'sora')} disabled={generatingIdxSet.has(idx)}
+                                      className="px-2 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-[9px] font-medium border-l border-emerald-500">Sora</button>
+                                    <button onClick={() => handleGenerateVideoFromPackage(pkg, idx, 'veo')} disabled={generatingIdxSet.has(idx)}
+                                      className="px-2 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-[9px] font-medium border-l border-emerald-500">Veo</button>
+                                    <button onClick={() => handleGenerateVideoFromPackage(pkg, idx, 'runway')} disabled={generatingIdxSet.has(idx)}
+                                      className="px-2 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-[9px] font-medium border-l border-emerald-500">Runway</button>
+                                    <button onClick={() => handleGenerateVideoFromPackage(pkg, idx, 'higgsfield')} disabled={generatingIdxSet.has(idx)}
+                                      className="px-2 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-[9px] font-medium rounded-r-lg border-l border-emerald-500">Higgs</button>
+                                  </div>
+                                  );
+                                })()}
                                 {packageVideoStatus[idx] && (
                                   packageVideoStatus[idx].status === 'failed' ? (
                                     <button onClick={() => setPackageVideoStatus(prev => { const n = { ...prev }; delete n[idx]; return n; })}
@@ -3123,6 +4993,8 @@ function CreativesContent() {
                                 )}
                                 <button onClick={() => handleGenerateVariations(idx)} disabled={generatingPackage}
                                   className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-[10px] font-medium rounded-lg">Vary</button>
+                                <button onClick={() => setShowWinnerModal({ pkg, idx })}
+                                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-medium rounded-lg">Save Winner</button>
                                 <button onClick={() => toggleCompare(idx)}
                                   className={`px-3 py-1.5 text-[10px] font-medium rounded-lg border ${comparingPackages.includes(idx) ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'}`}>
                                   {comparingPackages.includes(idx) ? 'Comparing' : 'Compare'}
@@ -3151,7 +5023,7 @@ function CreativesContent() {
                       {comparingPackages.map(idx => {
                         const pkg = genPackages[idx];
                         if (!pkg) return null;
-                        const isVideo = genPackageConfig?.contentType === 'video';
+                        const isVideo = isVideoPackage(pkg, genPackageConfig?.contentType);
                         return (
                           <div key={idx} className="bg-slate-800/50 rounded-lg p-3 space-y-2">
                             <div className="flex items-center gap-2 mb-2">
@@ -3199,11 +5071,24 @@ function CreativesContent() {
                       {accountIntel.recommendations.reasons.length > 0 && (
                         <div className="pt-2">{accountIntel.recommendations.reasons.map((r, i) => <p key={i} className="text-[10px] text-slate-400 mb-0.5">• {r}</p>)}</div>
                       )}
+                      {accountIntel.recommendations.provider && accountIntel.recommendations.provider !== 'auto' && (
+                        <div className="flex justify-between items-center"><span className="text-[10px] text-slate-500">Provider</span><span className="text-xs text-white font-medium capitalize">{accountIntel.recommendations.provider}</span></div>
+                      )}
+                      {accountIntel.recommendations.aspectRatio && (
+                        <div className="flex justify-between items-center"><span className="text-[10px] text-slate-500">Aspect Ratio</span><span className="text-xs text-white font-medium">{accountIntel.recommendations.aspectRatio}</span></div>
+                      )}
+                      {accountIntel.recommendations.duration && (
+                        <div className="flex justify-between items-center"><span className="text-[10px] text-slate-500">Duration</span><span className="text-xs text-white font-medium">{accountIntel.recommendations.duration}s</span></div>
+                      )}
                       <button onClick={() => setGenConfig(c => ({
                         ...c,
                         contentType: accountIntel!.recommendations.contentType as any,
+                        contentMix: accountIntel!.recommendations.contentType as any,
                         funnelStage: accountIntel!.recommendations.funnelStage as any,
+                        funnelStructure: accountIntel!.recommendations.funnelStage as any,
                         hookStyle: accountIntel!.recommendations.hookStyle,
+                        dimension: (accountIntel!.recommendations as any).aspectRatio || c.dimension,
+                        videoDuration: (accountIntel!.recommendations as any).duration || c.videoDuration,
                       }))} className="w-full mt-2 px-3 py-2 bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-800/50 text-indigo-400 text-[10px] font-medium rounded-lg">Apply Recommendations</button>
                     </div>
                   ) : (
@@ -3323,6 +5208,63 @@ function CreativesContent() {
                           ))}
                         </div>
                       )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Concept Scorecards */}
+                {accountIntel && (accountIntel as any).conceptScores?.length > 0 && (
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <h3 className="text-[10px] text-purple-400 uppercase font-semibold mb-3">Concept Intelligence</h3>
+                    <div className="space-y-2">
+                      {(accountIntel as any).conceptScores.slice(0, 8).map((c: any, i: number) => (
+                        <div key={i} className={`rounded-lg p-2 border ${
+                          c.action === 'scale' ? 'bg-emerald-950/20 border-emerald-800/30' :
+                          c.action === 'pause' ? 'bg-red-950/20 border-red-800/30' :
+                          c.action === 'refresh' ? 'bg-amber-950/20 border-amber-800/30' :
+                          'bg-slate-800/30 border-slate-700/30'
+                        }`}>
+                          <div className="flex items-center justify-between mb-1">
+                            <p className="text-[10px] text-white font-medium truncate flex-1">{c.conceptName}</p>
+                            <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-semibold ${
+                              c.action === 'scale' ? 'bg-emerald-500/20 text-emerald-400' :
+                              c.action === 'pause' ? 'bg-red-500/20 text-red-400' :
+                              c.action === 'refresh' ? 'bg-amber-500/20 text-amber-400' :
+                              c.action === 'generate_more' ? 'bg-purple-500/20 text-purple-400' :
+                              'bg-blue-500/20 text-blue-400'
+                            }`}>{c.action === 'scale' ? 'SCALE' : c.action === 'pause' ? 'PAUSE' : c.action === 'refresh' ? 'REFRESH' : c.action === 'generate_more' ? 'MORE' : c.action === 'add_bof' ? '+BOF' : '+TOF'}</span>
+                          </div>
+                          <div className="flex gap-2 text-[9px]">
+                            <span className="text-emerald-400">{c.roas}x</span>
+                            <span className="text-slate-500">{c.purchases}p</span>
+                            <span className="text-slate-500">${(c.spendCents / 100).toFixed(0)}</span>
+                            <span className="text-slate-500">{c.adCount} ads</span>
+                            {c.isFatigued && <span className="text-amber-400">fatiguing</span>}
+                            {c.isRising && <span className="text-emerald-400">rising</span>}
+                          </div>
+                          {/* Action buttons */}
+                          <div className="flex gap-1 mt-1.5">
+                            {c.action !== 'pause' && (
+                              <button onClick={() => handleConceptAction(c, c.action)}
+                                className={`px-1.5 py-0.5 rounded text-[8px] font-semibold ${
+                                  c.action === 'scale' ? 'bg-emerald-600 text-white' :
+                                  c.action === 'refresh' ? 'bg-amber-600 text-white' :
+                                  'bg-blue-600 text-white'
+                                }`}>
+                                {c.action === 'scale' ? 'Scale' : c.action === 'refresh' ? 'Refresh' : c.action === 'generate_more' ? 'More' : c.action === 'add_bof' ? '+BOF' : '+TOF'}
+                              </button>
+                            )}
+                            {c.action !== 'add_tof' && c.action !== 'pause' && (
+                              <button onClick={() => handleConceptAction(c, 'add_tof')}
+                                className="px-1.5 py-0.5 rounded text-[8px] font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">+TOF</button>
+                            )}
+                            {c.action !== 'add_bof' && c.action !== 'pause' && (
+                              <button onClick={() => handleConceptAction(c, 'add_bof')}
+                                className="px-1.5 py-0.5 rounded text-[8px] font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">+BOF</button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -3532,6 +5474,368 @@ function CreativesContent() {
             </div>
           )}
         </>
+      )}
+
+      {/* ═══ Library Tab ═══ */}
+      {tab === 'library' && (
+        <>
+          {!storeFilter ? (
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
+              <p className="text-slate-400">Select a store to view your creative library</p>
+            </div>
+          ) : libraryLoading ? (
+            <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-amber-400" /></div>
+          ) : (
+            <div className="space-y-6">
+              {/* Stats Row */}
+              <div className="grid grid-cols-3 gap-4">
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-white">{libraryCounts.totalPackages}</p>
+                  <p className="text-[10px] text-slate-500 uppercase">Generations</p>
+                </div>
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-white">{libraryCounts.totalCreatives}</p>
+                  <p className="text-[10px] text-slate-500 uppercase">Creatives</p>
+                </div>
+                <div className="bg-amber-900/20 border border-amber-800/50 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-amber-400">{libraryCounts.totalWinners}</p>
+                  <p className="text-[10px] text-amber-500 uppercase">Winners</p>
+                </div>
+              </div>
+
+              {/* Filters + Search */}
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <div className="flex flex-wrap gap-3 items-end">
+                  <div className="flex-1 min-w-[200px]">
+                    <label className="text-[10px] text-slate-500 uppercase mb-1 block">Search</label>
+                    <input
+                      value={librarySearch}
+                      onChange={e => setLibrarySearch(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && loadLibrary()}
+                      placeholder="Search title, concept, hook..."
+                      className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 uppercase mb-1 block">Type</label>
+                    <select value={libraryFilters.contentType || ''} onChange={e => setLibraryFilters(f => ({ ...f, contentType: e.target.value || undefined }))}
+                      className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white">
+                      <option value="">All</option>
+                      <option value="video">Video</option>
+                      <option value="image">Image</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 uppercase mb-1 block">Funnel</label>
+                    <select value={libraryFilters.funnelStage || ''} onChange={e => setLibraryFilters(f => ({ ...f, funnelStage: e.target.value || undefined }))}
+                      className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white">
+                      <option value="">All</option>
+                      <option value="tof">TOF</option>
+                      <option value="mof">MOF</option>
+                      <option value="bof">BOF</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 uppercase mb-1 block">Provider</label>
+                    <select value={libraryFilters.provider || ''} onChange={e => setLibraryFilters(f => ({ ...f, provider: e.target.value || undefined }))}
+                      className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white">
+                      <option value="">All</option>
+                      <option value="sora">Sora</option>
+                      <option value="veo">Veo</option>
+                      <option value="minimax">MiniMax</option>
+                      <option value="dalle">GPT Image</option>
+                      <option value="gemini-image">Gemini</option>
+                      <option value="stability">Stability</option>
+                    </select>
+                  </div>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={!!libraryFilters.winnerOnly}
+                      onChange={e => setLibraryFilters(f => ({ ...f, winnerOnly: e.target.checked || undefined }))}
+                      className="rounded bg-slate-700 border-slate-600" />
+                    <span className="text-[10px] text-amber-400">Winners only</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={!!libraryFilters.launchedOnly}
+                      onChange={e => setLibraryFilters(f => ({ ...f, launchedOnly: e.target.checked || undefined }))}
+                      className="rounded bg-slate-700 border-slate-600" />
+                    <span className="text-[10px] text-blue-400">Launched only</span>
+                  </label>
+                  <button onClick={loadLibrary}
+                    className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-medium rounded-lg">
+                    Search
+                  </button>
+                </div>
+              </div>
+
+              {/* ── Winners Section ── */}
+              {libraryWinners.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold text-amber-400 mb-3">Saved Winners ({libraryWinners.length})</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {winners.map(w => (
+                      <div key={w.id} className="bg-slate-900 border border-amber-800/40 rounded-xl p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-500 text-black font-bold">WINNER</span>
+                          <span className="text-[10px] text-slate-500">{new Date(w.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                        </div>
+                        <h4 className="text-sm font-semibold text-white mb-1 truncate">{w.title || 'Untitled'}</h4>
+                        <p className="text-xs text-slate-500 mb-2 truncate">{w.concept || w.hook_pattern || ''}</p>
+                        <div className="flex flex-wrap gap-1 mb-3">
+                          {w.content_type && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-400">{w.content_type}</span>}
+                          {w.creative_type && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-purple-900/30 text-purple-400">{w.creative_type}</span>}
+                          {w.funnel_stage && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-900/30 text-blue-400">{w.funnel_stage.toUpperCase()}</span>}
+                          {w.provider && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-cyan-900/30 text-cyan-400">{w.provider}</span>}
+                          {w.performance_roas && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-900/30 text-emerald-400">{w.performance_roas}x ROAS</span>}
+                        </div>
+                        {w.energy_tone && <p className="text-[10px] text-slate-500 mb-1">Tone: {w.energy_tone}</p>}
+                        {w.hook_pattern && <p className="text-[10px] text-slate-500 mb-1 truncate">Hook: {w.hook_pattern}</p>}
+                        {w.user_notes && <p className="text-[10px] text-amber-400/70 mb-2 italic">"{w.user_notes}"</p>}
+                        <div className="flex gap-2 pt-2 border-t border-slate-800">
+                          <button onClick={() => handleGenerateMoreLikeThis(w)}
+                            className="px-2 py-1 bg-purple-600 hover:bg-purple-700 text-white text-[10px] font-medium rounded-lg flex-1">
+                            More Like This
+                          </button>
+                          <button onClick={() => handleDuplicateSetup(w)}
+                            className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-white text-[10px] font-medium rounded-lg border border-slate-700">
+                            Use Setup
+                          </button>
+                          <button onClick={() => removeWinner(w.id)}
+                            className="px-2 py-1 text-red-400 hover:text-red-300 text-[10px]">
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Past Generations Section ── */}
+              <div>
+                <h3 className="text-sm font-semibold text-white mb-3">Past Generations ({libraryPackages.length})</h3>
+                {libraryPackages.length === 0 ? (
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
+                    <p className="text-slate-500 text-sm">No past generations found</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {libraryPackages.map(lp => (
+                      <div key={lp.id} className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                        <button onClick={() => setExpandedLibraryPkg(expandedLibraryPkg === lp.id ? null : lp.id)}
+                          className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/30 transition-colors">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-0.5">
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${lp.content_type === 'video' ? 'bg-blue-900/30 text-blue-400' : 'bg-orange-900/30 text-orange-400'}`}>{lp.content_type}</span>
+                              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-purple-900/30 text-purple-400">{lp.creative_type}</span>
+                              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-400">{lp.funnel_stage?.toUpperCase()}</span>
+                              <span className="text-[9px] text-slate-500">x{lp.quantity}</span>
+                              {lp.hasWinner && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500 text-black font-bold">WINNER</span>}
+                              {lp.version > 1 && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-purple-900/30 text-purple-400">v{lp.version}</span>}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-white">{lp.product_title || 'No product'}</span>
+                              {lp.offer && <span className="text-[10px] text-emerald-400">{lp.offer}</span>}
+                              <span className="text-[10px] text-slate-600">{new Date(lp.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+                            </div>
+                          </div>
+                          <svg className={`w-4 h-4 text-slate-500 transition-transform ${expandedLibraryPkg === lp.id ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+                        {expandedLibraryPkg === lp.id && (
+                          <div className="border-t border-slate-800 px-4 py-3 space-y-3">
+                            {/* Package items */}
+                            {(lp.packages || []).map((lpkg: any, li: number) => (
+                              <div key={li} className="bg-slate-800/50 rounded-lg p-3">
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-900/30 text-purple-400">#{li + 1}</span>
+                                    <span className="text-xs text-white font-medium truncate">{lpkg.title || `Package ${li + 1}`}</span>
+                                  </div>
+                                  <div className="flex gap-1">
+                                    <button onClick={() => setShowWinnerModal({ pkg: lpkg, idx: li })}
+                                      className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[9px] font-medium rounded-lg">
+                                      Save Winner
+                                    </button>
+                                    <button onClick={() => navigator.clipboard.writeText(JSON.stringify(lpkg, null, 2))}
+                                      className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white text-[9px] rounded-lg">
+                                      Export
+                                    </button>
+                                  </div>
+                                </div>
+                                {lpkg.angle && <p className="text-[10px] text-slate-400 mb-1">Angle: {lpkg.angle || lpkg.conceptAngle}</p>}
+                                {lpkg.hook && <p className="text-[10px] text-purple-300 mb-1">Hook: {lpkg.hook}</p>}
+                                {lpkg.hookText && <p className="text-[10px] text-pink-300 mb-1">Hook: {lpkg.hookText}</p>}
+                                {lpkg.script && <p className="text-[10px] text-slate-400 line-clamp-3">{lpkg.script}</p>}
+                                {lpkg.headline && <p className="text-[10px] text-white font-medium">{lpkg.headline}</p>}
+                                {lpkg.cta && <p className="text-[10px] text-emerald-400 mt-1">CTA: {lpkg.cta}</p>}
+                                {lpkg.ctaText && <p className="text-[10px] text-emerald-400 mt-1">CTA: {lpkg.ctaText}</p>}
+                              </div>
+                            ))}
+                            {/* Actions row */}
+                            <div className="flex gap-2 pt-2 border-t border-slate-800">
+                              <button onClick={() => handleDuplicateSetup(lp)}
+                                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-[10px] font-medium rounded-lg">
+                                Duplicate Setup
+                              </button>
+                              <button onClick={() => { handleDuplicateSetup(lp); setTab('generator'); }}
+                                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-medium rounded-lg">
+                                Regenerate
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* ── Rendered Creatives Section ── */}
+              <div>
+                <h3 className="text-sm font-semibold text-white mb-3">Rendered Creatives ({libraryCreatives.length})</h3>
+                {libraryCreatives.length === 0 ? (
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
+                    <p className="text-slate-500 text-sm">No rendered creatives found</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    {libraryCreatives.slice(0, 40).map(lc => (
+                      <div key={lc.id} className={`bg-slate-900 border rounded-xl overflow-hidden ${lc.isWinner ? 'border-amber-700/50' : 'border-slate-800'}`}>
+                        {/* Thumbnail */}
+                        {lc.file_url && lc.nb_status === 'completed' ? (
+                          lc.type === 'video' ? (
+                            <video src={mediaUrl(lc.file_url)} poster={mediaUrl(lc.thumbnail_url)} controls preload="none" className="w-full aspect-square object-contain bg-black" />
+                          ) : (
+                            <img src={mediaUrl(lc.file_url)} alt="" className="w-full aspect-square object-contain bg-black" />
+                          )
+                        ) : (
+                          <div className="w-full aspect-square bg-slate-800 flex items-center justify-center">
+                            <span className={`text-xs ${lc.nb_status === 'processing' ? 'text-yellow-400' : lc.nb_status === 'failed' ? 'text-red-400' : 'text-slate-500'}`}>{lc.nb_status || 'no media'}</span>
+                          </div>
+                        )}
+                        <div className="p-3">
+                          <div className="flex items-center gap-1.5 mb-1">
+                            {lc.isWinner && <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-amber-500 text-black font-bold">W</span>}
+                            <h4 className="text-xs text-white font-medium truncate">{lc.title}</h4>
+                          </div>
+                          <div className="flex flex-wrap gap-1 mb-2">
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${lc.type === 'video' ? 'bg-blue-900/30 text-blue-400' : 'bg-purple-900/30 text-purple-400'}`}>{lc.type}</span>
+                            {lc.template_id && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-400">{lc.template_id}</span>}
+                            {lc.format && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-900/30 text-emerald-400">{lc.format}</span>}
+                          </div>
+                          <div className="flex gap-1.5">
+                            {lc.file_url && lc.nb_status === 'completed' && (
+                              <a href={mediaUrl(lc.file_url)} download target="_blank" rel="noopener noreferrer"
+                                className="text-[10px] text-emerald-400 hover:text-emerald-300">Download</a>
+                            )}
+                            {!lc.isWinner ? (
+                              <button onClick={() => setShowWinnerModal({ pkg: { title: lc.title, script: lc.description, angle: lc.angle }, idx: 0, creativeId: lc.id })}
+                                className="text-[10px] text-amber-400 hover:text-amber-300">Save Winner</button>
+                            ) : (
+                              <button onClick={() => { const w = winners.find(w => w.creative_id === lc.id); if (w) handleGenerateMoreLikeThis(w); }}
+                                className="text-[10px] text-purple-400 hover:text-purple-300">More Like This</button>
+                            )}
+                            <button onClick={() => {
+                              setSelectedCreativeIds(new Set([lc.id]));
+                              setTab('generated');
+                              setTimeout(() => openBulkLaunchModal(), 100);
+                            }}
+                              className="text-[10px] text-blue-400 hover:text-blue-300">Relaunch</button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ═══ Winner Save Modal ═══ */}
+      {showWinnerModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setShowWinnerModal(null)}>
+          <div className="bg-slate-900 border border-amber-800/50 rounded-xl p-6 max-w-md w-full" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500 text-black font-bold">WINNER</span>
+              <h3 className="text-lg font-semibold text-white">Save as Winner Reference</h3>
+            </div>
+            <p className="text-xs text-slate-400 mb-4">
+              This creative will be saved as a winner reference. The system will automatically use its DNA patterns
+              when you generate with a similar setup in the future.
+            </p>
+            <div className="mb-4">
+              <p className="text-sm text-white font-medium mb-1">{showWinnerModal.pkg?.title || 'Untitled'}</p>
+              <p className="text-xs text-slate-500">{showWinnerModal.pkg?.angle || showWinnerModal.pkg?.conceptAngle || ''}</p>
+            </div>
+            <div className="mb-4">
+              <label className="text-[10px] text-slate-500 uppercase font-semibold mb-1 block">Notes (optional)</label>
+              <textarea
+                value={winnerNotes}
+                onChange={e => setWinnerNotes(e.target.value)}
+                placeholder="Why is this a winner? What makes it special?"
+                className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-600 h-20 resize-none"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => saveAsWinner(showWinnerModal.pkg, showWinnerModal.idx, showWinnerModal.creativeId)}
+                disabled={!!savingWinner}
+                className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg"
+              >
+                {savingWinner ? 'Saving...' : 'Save as Winner'}
+              </button>
+              <button onClick={() => setShowWinnerModal(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 text-sm rounded-lg border border-slate-700">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Template Save Modal ═══ */}
+      {showTemplateSave && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setShowTemplateSave(false)}>
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-md w-full" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-white mb-4">Save Setup as Template</h3>
+            <p className="text-xs text-slate-400 mb-4">Save your current generator settings as a reusable template.</p>
+            <div className="mb-4">
+              <label className="text-[10px] text-slate-500 uppercase font-semibold mb-1 block">Template Name</label>
+              <input
+                value={templateName}
+                onChange={e => setTemplateName(e.target.value)}
+                placeholder='e.g., "My 10/10 Meta Testimonial Template"'
+                className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-600"
+              />
+            </div>
+            <div className="mb-4 bg-slate-800/50 rounded-lg p-3">
+              <p className="text-[10px] text-slate-500 uppercase mb-2">Settings to save:</p>
+              <div className="flex flex-wrap gap-1.5">
+                <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-700 text-slate-300">{genConfig.contentType}</span>
+                <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-700 text-slate-300">{genConfig.creativeType}</span>
+                <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-700 text-slate-300">{genConfig.funnelStage.toUpperCase()}</span>
+                <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-700 text-slate-300">{genConfig.hookStyle}</span>
+                <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-700 text-slate-300">{genConfig.avatarStyle}</span>
+                <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-700 text-slate-300">{genConfig.dimension}</span>
+                <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-700 text-slate-300">{genConfig.platformTarget}</span>
+                {genConfig.contentType === 'video' && <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-700 text-slate-300">{genConfig.videoDuration}s</span>}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={saveTemplate} disabled={!templateName.trim()}
+                className="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg">
+                Save Template
+              </button>
+              <button onClick={() => setShowTemplateSave(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 text-sm rounded-lg border border-slate-700">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
