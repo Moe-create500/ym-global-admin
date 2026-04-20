@@ -1383,3 +1383,132 @@ Do NOT ignore available images. Do NOT use only the first image for every scene.
 
   return { imageCount, plan: clampedPlan, promptDirective: directive };
 }
+
+/**
+ * Build a platform-aware, funnel-aware image render prompt from a creative package.
+ */
+export function buildImageRenderDirective(
+  pkg: {
+    title?: string;
+    angle?: string;
+    imageFormat?: string;
+    headline?: string;
+    subheadline?: string;
+    hookText?: string;
+    proofElement?: string;
+    productPlacement?: string;
+    conceptAngle?: string;
+    visualComposition?: string;
+    textOverlays?: { text: string; position: string; fontSize: string; fontWeight: string; color: string }[];
+    offerPlacement?: string;
+  },
+  opts: {
+    productName?: string;
+    platform?: string;
+    funnelStage?: string;
+    hasReferenceImage?: boolean;
+  }
+): string {
+  const parts: string[] = [];
+
+  // Platform-specific aspect ratio / format guidance
+  const platform = opts.platform || 'meta';
+  const funnelStage = opts.funnelStage || 'mof';
+  const format = pkg.imageFormat || 'product_highlight';
+
+  if (platform === 'tiktok') {
+    parts.push('Create a vertical (9:16) social media ad image optimized for TikTok.');
+  } else if (platform === 'google') {
+    parts.push('Create a display ad image suitable for Google Ads.');
+  } else {
+    parts.push('Create a high-converting social media ad image optimized for Meta (Facebook/Instagram).');
+  }
+
+  // Product name
+  if (opts.productName) {
+    parts.push(`Product: ${opts.productName}.`);
+  }
+
+  // Creative angle
+  if (pkg.angle) {
+    parts.push(`Creative angle: ${pkg.angle}.`);
+  }
+  if (pkg.conceptAngle && pkg.conceptAngle !== pkg.angle) {
+    parts.push(`Concept: ${pkg.conceptAngle}.`);
+  }
+
+  // Headline and hook
+  if (pkg.headline) {
+    parts.push(`Headline text overlay: "${pkg.headline}".`);
+  }
+  if (pkg.subheadline) {
+    parts.push(`Subheadline: "${pkg.subheadline}".`);
+  }
+  if (pkg.hookText) {
+    parts.push(`Hook text: "${pkg.hookText}".`);
+  }
+
+  // Visual composition
+  if (pkg.visualComposition) {
+    parts.push(`Visual composition: ${pkg.visualComposition}.`);
+  }
+  if (pkg.productPlacement) {
+    parts.push(`Product placement: ${pkg.productPlacement}.`);
+  }
+
+  // Proof element
+  if (pkg.proofElement) {
+    parts.push(`Include proof element: ${pkg.proofElement}.`);
+  }
+
+  // Offer placement
+  if (pkg.offerPlacement) {
+    parts.push(`Offer/CTA placement: ${pkg.offerPlacement}.`);
+  }
+
+  // Text overlays
+  if (pkg.textOverlays && pkg.textOverlays.length > 0) {
+    const overlayDesc = pkg.textOverlays.map(
+      o => `"${o.text}" at ${o.position} (${o.fontSize}, ${o.fontWeight}, ${o.color})`
+    ).join('; ');
+    parts.push(`Text overlays: ${overlayDesc}.`);
+  }
+
+  // Reference image guidance
+  if (opts.hasReferenceImage) {
+    parts.push('Use the provided product reference image as the hero visual. Maintain exact product appearance, colors, and packaging.');
+  }
+
+  // Funnel stage guidance
+  if (funnelStage === 'tof') {
+    parts.push('This is a top-of-funnel awareness ad — focus on attention-grabbing visuals and bold messaging.');
+  } else if (funnelStage === 'bof') {
+    parts.push('This is a bottom-of-funnel conversion ad — focus on urgency, social proof, and clear CTA.');
+  } else {
+    parts.push('This is a mid-funnel consideration ad — balance product education with persuasive visuals.');
+  }
+
+  // Format-specific guidance
+  const formatGuide: Record<string, string> = {
+    product_highlight: 'Hero product shot — clean background, product is the star. Professional product photography style.',
+    testimonial: 'Testimonial-style image with text overlay suggesting customer endorsement.',
+    social_proof: 'Social proof image — include elements like star ratings, review quotes, or user count.',
+    offer_stack: 'Offer stack — feature the deal/discount prominently with product.',
+    comparison: 'Side-by-side comparison layout — your product vs alternatives.',
+    before_after: 'Before/after transformation layout showing the product benefit.',
+    problem_solution: 'Problem → Solution visual — left side shows pain point, right side shows product as solution.',
+    hook_viral: 'Scroll-stopping viral hook — bold, unexpected visual that demands attention.',
+    pattern_interrupt: 'Pattern interrupt — unusual composition that breaks feed scroll.',
+    authority_claim: 'Authority/expert endorsement style with credibility markers.',
+    myth_busting: 'Myth-busting layout — crossed-out misconception with truth revealed.',
+    review_stack: 'Review stack layout — multiple mini-reviews arranged around the product.',
+  };
+
+  if (formatGuide[format]) {
+    parts.push(formatGuide[format]);
+  }
+
+  parts.push('Photo-realistic, high quality, professional advertising standard. Clean typography if text is included.');
+
+  return parts.join('\n\n');
+}
