@@ -287,7 +287,7 @@ export async function generateScenes(
       console.log(`[HIGGS-SCENE] Generating scene ${i + 1}: ${scene.name} ${inputImage ? `(image: ${inputImage.substring(0, 60)}...)` : '(text-only)'}`);
       let result;
       try {
-        result = await createVideo(scene.prompt, inputImage || undefined);
+        result = await createVideo(scene.prompt, inputImage || '');
       } catch (createErr: any) {
         // If image-based call fails, retry as text-only
         console.error(`[HIGGS-SCENE] Scene ${i + 1} failed with image, retrying text-only:`, createErr.message?.substring(0, 100));
