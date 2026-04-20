@@ -2,18 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { createSessionToken, verifySessionToken } from '@/lib/auth';
 
-export async function POST(req: NextRequest) {
+export async function GET(req: NextRequest) {
   // Verify caller is admin
   const cookie = req.cookies.get('ym_auth')?.value;
-  if (!cookie) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!cookie) return NextResponse.redirect(new URL('/login', req.url));
 
   const session = verifySessionToken(cookie);
   if (!session || session.role !== 'admin') {
-    return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+    return NextResponse.redirect(new URL('/dashboard/team', req.url));
   }
 
-  const { employeeId } = await req.json();
-  if (!employeeId) return NextResponse.json({ error: 'employeeId required' }, { status: 400 });
+  const employeeId = req.nextUrl.searchParams.get('id');
+  if (!employeeId) return NextResponse.redirect(new URL('/dashboard/team', req.url));
 
   const db = getDb();
   const employee: any = db.prepare(
@@ -21,14 +21,11 @@ export async function POST(req: NextRequest) {
   ).get(employeeId);
 
   if (!employee || !employee.is_active) {
-    return NextResponse.json({ error: 'Employee not found or inactive' }, { status: 404 });
+    return NextResponse.redirect(new URL('/dashboard/team', req.url));
   }
 
   const token = createSessionToken(employee.id, employee.role);
-  const res = NextResponse.json({
-    success: true,
-    employee: { id: employee.id, name: employee.name, email: employee.email, role: employee.role },
-  });
+  const res = NextResponse.redirect(new URL('/dashboard', req.url));
   res.cookies.set('ym_auth', token, {
     httpOnly: true,
     secure: false,
