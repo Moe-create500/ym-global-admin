@@ -72,6 +72,21 @@ export default function TeamPage() {
     loadData();
   }
 
+  async function handleLoginAs(emp: Employee) {
+    if (!confirm(`Login as ${emp.name}? You will be redirected to the dashboard as this user.`)) return;
+    const res = await fetch('/api/auth/impersonate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ employeeId: emp.id }),
+    });
+    if (res.ok) {
+      window.location.href = '/dashboard';
+    } else {
+      const data = await res.json();
+      alert(data.error || 'Failed to impersonate');
+    }
+  }
+
   function toggleStore(storeId: string) {
     setForm(prev => ({
       ...prev,
@@ -237,7 +252,13 @@ export default function TeamPage() {
                   </td>
                   <td className="px-5 py-3 text-center text-slate-400">{emp.store_count}</td>
                   <td className="px-5 py-3 text-slate-500 text-xs">{emp.last_login_at || 'Never'}</td>
-                  <td className="px-5 py-3 text-center">
+                  <td className="px-5 py-3 text-center flex items-center justify-center gap-3">
+                    <button
+                      onClick={() => handleLoginAs(emp)}
+                      className="text-xs text-blue-400 hover:text-blue-300"
+                    >
+                      Login As
+                    </button>
                     <button
                       onClick={() => handleDeactivate(emp.id)}
                       className="text-xs text-red-400 hover:text-red-300"
