@@ -2,11 +2,12 @@
  * Seedance 2.0 — ByteDance AI Video Generation via fal.ai
  *
  * Uses the same FAL_KEY as Nano Banana.
- * Supports: text-to-video, image-to-video, 4-15s duration,
- * 2K resolution, native audio generation, multi-aspect ratio.
+ * Supports: text-to-video, image-to-video, reference-to-video,
+ * 4-15s duration, up to 720p, multi-aspect ratio.
  *
- * Key advantage: native audio sync — generates voiceover/sound
- * IN the video, no separate TTS step needed.
+ * reference-to-video: submit up to 9 product photos as references
+ * so the model renders the ACTUAL product in the video (not a text guess).
+ * Reference images with @Image1, @Image2 etc. in the prompt.
  */
 
 const FAL_KEY = () => process.env.FAL_KEY || '';
@@ -159,6 +160,83 @@ export async function createImageToVideo(
   try { data = await res.json(); } catch { throw new Error('Seedance returned non-JSON response'); }
   console.log(`[SEEDANCE] I2V queued: ${data.request_id}`);
   return { requestId: data.request_id, model: 'seedance-2.0' };
+}
+
+/**
+ * Create a video from reference images + prompt (reference-to-video).
+ * The model sees the actual product photos and renders them faithfully.
+ * Use @Image1, @Image2 etc. in the prompt to reference each image.
+ */
+export async function createReferenceToVideo(
+  prompt: string,
+  imageUrls: string[],
+  options: {
+    duration?: number;
+    aspectRatio?: string;
+    resolution?: '480p' | '720p';
+    generateAudio?: boolean;
+    seed?: number;
+    fast?: boolean;
+  } = {}
+): Promise<{ requestId: string; model: string }> {
+  const key = FAL_KEY();
+  if (!key) {
+    const err = new Error('FAL_KEY not set') as any;
+    err.code = 'MISSING_KEY';
+    err.isQuota = false;
+    throw err;
+  }
+
+  const arMap: Record<string, string> = {
+    '1:1': '1:1', '4:5': '3:4', '9:16': '9:16', '16:9': '16:9',
+    '3:4': '3:4', '4:3': '4:3',
+  };
+
+  const duration = Math.max(4, Math.min(15, options.duration || 8));
+  const validImages = imageUrls.filter(u => u.startsWith('https://')).slice(0, 9);
+
+  const endpoint = options.fast
+    ? 'bytedance/seedance-2.0/fast/reference-to-video'
+    : 'bytedance/seedance-2.0/reference-to-video';
+
+  console.log(`[SEEDANCE] Reference-to-video: dur=${duration}s, images=${validImages.length}, fast=${!!options.fast}, prompt=${prompt.substring(0, 80)}...`);
+
+  let res: Response;
+  try {
+    res = await fetch(`https://queue.fal.run/${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Key ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        prompt: prompt.substring(0, 5000),
+        image_urls: validImages,
+        duration: String(duration),
+        aspect_ratio: arMap[options.aspectRatio || '9:16'] || '9:16',
+        resolution: options.resolution || '720p',
+        generate_audio: options.generateAudio !== false,
+        ...(options.seed ? { seed: options.seed } : {}),
+      }),
+    });
+  } catch (netErr: any) {
+    console.error(`[SEEDANCE] Network error:`, netErr.message);
+    throw new Error(`Seedance network error: ${netErr.message}`);
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => 'Unknown error');
+    console.error(`[SEEDANCE] R2V API error ${res.status}: ${text.substring(0, 300)}`);
+    const err = new Error(`Seedance API error ${res.status}: ${text.substring(0, 300)}`) as any;
+    err.status = res.status;
+    err.isQuota = res.status === 429 || res.status === 402;
+    throw err;
+  }
+
+  let data: any;
+  try { data = await res.json(); } catch { throw new Error('Seedance returned non-JSON response'); }
+  console.log(`[SEEDANCE] R2V queued: ${data.request_id}`);
+  return { requestId: data.request_id, model: 'seedance-2.0-ref' };
 }
 
 /**

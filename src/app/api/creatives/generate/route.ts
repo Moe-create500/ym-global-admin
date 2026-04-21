@@ -6,7 +6,7 @@ import { createVideo as veoCreate, getVideoStatus as veoGetStatus } from '@/lib/
 import { createVideo as mmCreateVideo, getVideoStatus as mmGetVideoStatus, generateImage as mmGenerateImage } from '@/lib/minimax';
 import { createVideo as runwayCreate, getVideoStatus as runwayGetStatus } from '@/lib/runway';
 import { createVideo as higgsCreate, getVideoStatus as higgsGetStatus } from '@/lib/higgsfield';
-import { createTextToVideo as seedanceT2V, createImageToVideo as seedanceI2V, getVideoStatus as seedanceGetStatus, waitForVideo as seedanceWait } from '@/lib/seedance';
+import { createTextToVideo as seedanceT2V, createImageToVideo as seedanceI2V, createReferenceToVideo as seedanceR2V, getVideoStatus as seedanceGetStatus, waitForVideo as seedanceWait } from '@/lib/seedance';
 import { generateImage as dalleGenerateImage } from '@/lib/dalle';
 import { generateImage as geminiGenerateImage } from '@/lib/gemini-image';
 import { generateImage as ideogramGenerateImage } from '@/lib/ideogram';
@@ -56,10 +56,9 @@ export async function POST(req: NextRequest) {
 
   // Generate a vision description of the user-selected cover and inject it into the prompt
   // so the text-to-video engine renders a product that matches THAT specific image.
-  // Only runs when a cover is provided. If vision fails, generation proceeds without the
-  // description (with a warning log) rather than blocking the user.
+  // Skip for Seedance — it uses reference-to-video with actual photos instead.
   let prompt = originalPrompt;
-  if (resolvedCover) {
+  if (resolvedCover && engine !== 'seedance') {
     const isVideoType = type !== 'text-to-image' && !['dalle', 'gemini-image', 'minimax-image', 'stability', 'ideogram'].includes(type || '');
     if (isVideoType) {
       try {
@@ -319,27 +318,33 @@ export async function POST(req: NextRequest) {
       return jsonSuccess({ id, engine: 'higgsfield', requestId: result.requestId });
 
     } else if (useEngine === 'seedance') {
-      // Seedance 2.0 — ByteDance via fal.ai. Supports 4-15s, native audio, 2K
-      // Uses cinematic prompt engineering from the Seedance skills framework
+      // Seedance 2.0 — ByteDance via fal.ai. Supports 4-15s, 720p
       const seedDuration = Math.max(4, Math.min(15, parseInt(duration) || 8));
       const seedAspect = dimension === '16:9' ? '16:9' : dimension === '1:1' ? '1:1' : '9:16';
 
-      // Audio disabled — Seedance native audio produces gibberish speech.
-      // Use the separate TTS/voiceover feature for clean speech instead.
-      const cinematicPrompt = `${prompt}\n\nTECHNICAL: ${seedDuration}-second video. Aspect ratio ${seedAspect}. Photorealistic, natural lighting. Normal conversational pacing — NOT slow motion. UGC authentic feel.`;
+      // Collect all valid product image URLs for reference-to-video
+      const refImages: string[] = [];
+      if (resolvedCover && resolvedCover.startsWith('https://')) refImages.push(resolvedCover);
+      if (Array.isArray(imageUrls)) {
+        for (const u of imageUrls) {
+          if (typeof u === 'string' && u.startsWith('https://') && !refImages.includes(u)) refImages.push(u);
+        }
+      }
 
       let result;
-      if (type === 'image-to-video' && imageUrls?.[0] && imageUrls[0].startsWith('https://')) {
-        // Legacy path — only triggered if caller explicitly sets image-to-video.
-        // The Creative Tab no longer uses this for video generation (cover image
-        // is injected via vision description in the prompt above), but we keep
-        // this branch for any direct API callers that want literal i2v.
-        console.log(`[COVER-TRACE][SEEDANCE-I2V] first-frame image=${imageUrls[0].substring(0, 120)}`);
-        result = await seedanceI2V(cinematicPrompt, imageUrls[0], {
-          duration: seedDuration, aspectRatio: seedAspect, generateAudio: false,
+      if (refImages.length > 0) {
+        // Reference-to-video: submit actual product photos so the model
+        // renders the REAL product — no text description workaround needed.
+        const refLabels = refImages.map((_, i) => `@Image${i + 1}`).join(', ');
+        const cinematicPrompt = `${originalPrompt}\n\nProduct reference images: ${refLabels} — show this EXACT product naturally in the scene, match packaging, colors, and branding precisely.\n\nTECHNICAL: ${seedDuration}-second video. Aspect ratio ${seedAspect}. Photorealistic, natural lighting. Normal conversational pacing — NOT slow motion. UGC authentic feel.`;
+        console.log(`[SEEDANCE-R2V] Reference-to-video: ${refImages.length} product images, prompt=${cinematicPrompt.length} chars`);
+        result = await seedanceR2V(cinematicPrompt, refImages, {
+          duration: seedDuration, aspectRatio: seedAspect, resolution: '720p', generateAudio: false,
         });
       } else {
-        console.log(`[COVER-TRACE][SEEDANCE-T2V] prompt length=${cinematicPrompt.length} (no opening frame; cover described in prompt)`);
+        // No product images — fall back to text-to-video
+        const cinematicPrompt = `${prompt}\n\nTECHNICAL: ${seedDuration}-second video. Aspect ratio ${seedAspect}. Photorealistic, natural lighting. Normal conversational pacing — NOT slow motion. UGC authentic feel.`;
+        console.log(`[SEEDANCE-T2V] Text-to-video (no product images): prompt=${cinematicPrompt.length} chars`);
         result = await seedanceT2V(cinematicPrompt, {
           duration: seedDuration, aspectRatio: seedAspect, generateAudio: false,
         });
