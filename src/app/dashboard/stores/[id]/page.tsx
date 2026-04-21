@@ -331,7 +331,7 @@ export default function StoreDetailPage() {
   // Shipments loader
   const loadShipments = useCallback(async () => {
     setShipLoading(true);
-    const p = new URLSearchParams({ storeId, page: String(shipPage), limit: '50' });
+    const p = new URLSearchParams({ storeId, page: String(shipPage), limit: '50', source: 'shipsourced' });
     if (shipDateRange.from) p.set('from', shipDateRange.from);
     if (shipDateRange.to) p.set('to', shipDateRange.to);
     const res = await fetch(`/api/orders?${p}`);
