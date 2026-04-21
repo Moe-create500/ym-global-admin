@@ -324,35 +324,9 @@ export async function POST(req: NextRequest) {
       const seedDuration = Math.max(4, Math.min(15, parseInt(duration) || 8));
       const seedAspect = dimension === '16:9' ? '16:9' : dimension === '1:1' ? '1:1' : '9:16';
 
-      // Keep the user's original prompt/script as the core content.
-      // Only add light technical framing — do NOT override the creative direction.
-      // Build pronunciation guide for common mispronounced brand/product terms
-      const pronunciationMap: Record<string, string> = {
-        'tallow': 'TAL-oh',
-        'ozempic': 'oh-ZEM-pik',
-        'magvita': 'mag-VEE-tah',
-        'marroomi': 'ma-ROO-mee',
-        'shipsourced': 'SHIP-sorsed',
-        'purebite': 'PURE-bite',
-        'collagen': 'COL-uh-jen',
-        'magnesium': 'mag-NEE-zee-um',
-        'keratin': 'KAIR-uh-tin',
-        'hyaluronic': 'hy-uh-loo-RON-ik',
-        'retinol': 'RET-in-all',
-        'niacinamide': 'ny-uh-SIN-uh-mide',
-        'probiotic': 'pro-by-OT-ik',
-        'ashwagandha': 'ash-wah-GAHN-dah',
-      };
-      const promptLower = prompt.toLowerCase();
-      const foundTerms: string[] = [];
-      for (const [term, phonetic] of Object.entries(pronunciationMap)) {
-        if (promptLower.includes(term)) foundTerms.push(`${term} = pronounced "${phonetic}"`);
-      }
-      const pronunciationHint = foundTerms.length > 0
-        ? `\n\nPRONUNCIATION GUIDE (critical — speakers must pronounce these correctly):\n${foundTerms.join('\n')}`
-        : '';
-
-      const cinematicPrompt = `${prompt}${pronunciationHint}\n\nTECHNICAL: ${seedDuration}-second video. Aspect ratio ${seedAspect}. Photorealistic, natural lighting. Normal conversational pacing — NOT slow motion. UGC authentic feel. Speakers must use clear, correct American English pronunciation of all brand names and ingredient names.`;
+      // Audio disabled — Seedance native audio produces gibberish speech.
+      // Use the separate TTS/voiceover feature for clean speech instead.
+      const cinematicPrompt = `${prompt}\n\nTECHNICAL: ${seedDuration}-second video. Aspect ratio ${seedAspect}. Photorealistic, natural lighting. Normal conversational pacing — NOT slow motion. UGC authentic feel.`;
 
       let result;
       if (type === 'image-to-video' && imageUrls?.[0] && imageUrls[0].startsWith('https://')) {
@@ -362,12 +336,12 @@ export async function POST(req: NextRequest) {
         // this branch for any direct API callers that want literal i2v.
         console.log(`[COVER-TRACE][SEEDANCE-I2V] first-frame image=${imageUrls[0].substring(0, 120)}`);
         result = await seedanceI2V(cinematicPrompt, imageUrls[0], {
-          duration: seedDuration, aspectRatio: seedAspect, generateAudio: true,
+          duration: seedDuration, aspectRatio: seedAspect, generateAudio: false,
         });
       } else {
         console.log(`[COVER-TRACE][SEEDANCE-T2V] prompt length=${cinematicPrompt.length} (no opening frame; cover described in prompt)`);
         result = await seedanceT2V(cinematicPrompt, {
-          duration: seedDuration, aspectRatio: seedAspect, generateAudio: true,
+          duration: seedDuration, aspectRatio: seedAspect, generateAudio: false,
         });
       }
 
