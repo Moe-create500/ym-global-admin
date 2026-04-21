@@ -817,6 +817,46 @@ def main():
     create_index(cursor, "idx_employee_uploads_store",
         'CREATE INDEX "idx_employee_uploads_store" ON "employee_uploads"("store_id", "created_at")')
 
+    # --- Performance indexes for large stores ---
+    create_index(cursor, "idx_orders_store_source",
+        'CREATE INDEX IF NOT EXISTS "idx_orders_store_source" ON "orders"("store_id", "source")')
+    create_index(cursor, "idx_orders_store_financial",
+        'CREATE INDEX IF NOT EXISTS "idx_orders_store_financial" ON "orders"("store_id", "financial_status")')
+
+    # --- Printed flag on orders ---
+    add_column(cursor, "orders", "printed",
+        'ALTER TABLE "orders" ADD COLUMN "printed" INTEGER DEFAULT 0')
+
+    # --- UK channel pricing ---
+    add_column(cursor, "products", "uk_cost_cents",
+        'ALTER TABLE "products" ADD COLUMN "uk_cost_cents" INTEGER DEFAULT 0')
+    add_column(cursor, "daily_pnl", "uk_cogs_cents",
+        'ALTER TABLE "daily_pnl" ADD COLUMN "uk_cogs_cents" INTEGER DEFAULT 0')
+
+    # --- Channel on sku_pricing ---
+    add_column(cursor, "sku_pricing", "channel",
+        'ALTER TABLE "sku_pricing" ADD COLUMN "channel" TEXT DEFAULT \'us\'')
+
+    # --- Rent expenses ---
+    print("\n--- Rent Expenses ---")
+    create_table(cursor, "rent_expenses", '''
+        CREATE TABLE "rent_expenses" (
+            "id" TEXT PRIMARY KEY,
+            "store_id" TEXT NOT NULL REFERENCES "stores"("id"),
+            "description" TEXT NOT NULL,
+            "amount_cents" INTEGER NOT NULL,
+            "due_date" TEXT NOT NULL,
+            "paid" INTEGER NOT NULL DEFAULT 0,
+            "paid_date" TEXT,
+            "recurring" INTEGER NOT NULL DEFAULT 0,
+            "notes" TEXT,
+            "created_at" TEXT NOT NULL DEFAULT (datetime('now')),
+            "updated_at" TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    ''')
+    create_index(cursor, "idx_rent_expenses_store",
+        'CREATE INDEX "idx_rent_expenses_store" ON "rent_expenses"("store_id")')
+
     conn.commit()
     conn.close()
     print("\n=== Migration complete! ===\n")

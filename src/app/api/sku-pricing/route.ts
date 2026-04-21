@@ -74,7 +74,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { storeId, id, sku, label, baseChargeCents, extraUnitChargeCents, extraUnitAfter, effectiveFrom, effectiveTo } = body;
+  const { storeId, id, sku, label, baseChargeCents, extraUnitChargeCents, extraUnitAfter, effectiveFrom, effectiveTo, channel } = body;
 
   if (!storeId || !sku || !effectiveFrom) {
     return NextResponse.json({ error: 'storeId, sku, effectiveFrom required' }, { status: 400 });
@@ -85,20 +85,20 @@ export async function POST(req: NextRequest) {
   if (id) {
     db.prepare(`
       UPDATE sku_pricing SET sku = ?, label = ?, base_charge_cents = ?, extra_unit_charge_cents = ?,
-        extra_unit_after = ?, effective_from = ?, effective_to = ?, updated_at = datetime('now')
+        extra_unit_after = ?, effective_from = ?, effective_to = ?, channel = ?, updated_at = datetime('now')
       WHERE id = ? AND store_id = ?
     `).run(sku, label || '', baseChargeCents || 0, extraUnitChargeCents || 0,
-      extraUnitAfter || 1, effectiveFrom, effectiveTo || null, id, storeId);
+      extraUnitAfter || 1, effectiveFrom, effectiveTo || null, channel || 'us', id, storeId);
     return NextResponse.json({ success: true, id });
   }
 
   const newId = crypto.randomUUID();
   db.prepare(`
     INSERT INTO sku_pricing (id, store_id, sku, label, base_charge_cents, extra_unit_charge_cents,
-      extra_unit_after, effective_from, effective_to)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      extra_unit_after, effective_from, effective_to, channel)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(newId, storeId, sku, label || '', baseChargeCents || 0, extraUnitChargeCents || 0,
-    extraUnitAfter || 1, effectiveFrom, effectiveTo || null);
+    extraUnitAfter || 1, effectiveFrom, effectiveTo || null, channel || 'us');
 
   return NextResponse.json({ success: true, id: newId });
 }

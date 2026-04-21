@@ -49,6 +49,8 @@ export async function POST(req: NextRequest) {
       // Parse variants to get the first SKU if product-level SKU is empty
       const sku = p.sku || null;
       const priceCents = Math.round((p.price || 0) * 100);
+      // Convert weight from oz (ShipSourced) to grams (YM Global DB)
+      const weightGrams = p.weightOz ? Math.round(p.weightOz * 28.3495) : 0;
 
       // Check if product already exists by shopify_product_id or by store_id + sku
       let existing: any = db.prepare(
@@ -65,16 +67,16 @@ export async function POST(req: NextRequest) {
         db.prepare(`
           UPDATE products SET
             title = ?, sku = ?, shopify_product_id = COALESCE(shopify_product_id, ?),
-            image_url = ?, images = ?, price_cents = ?,
+            image_url = ?, images = ?, price_cents = ?, weight_grams = ?,
             status = 'active', synced_at = datetime('now'), updated_at = datetime('now')
           WHERE id = ?
-        `).run(p.name, sku, p.externalProductId, primaryImage, imagesJson, priceCents, existing.id);
+        `).run(p.name, sku, p.externalProductId, primaryImage, imagesJson, priceCents, weightGrams, existing.id);
         updated++;
       } else {
         db.prepare(`
-          INSERT INTO products (id, store_id, shopify_product_id, title, sku, image_url, images, price_cents, status, synced_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', datetime('now'))
-        `).run(crypto.randomUUID(), store.id, p.externalProductId, p.name, sku, primaryImage, imagesJson, priceCents);
+          INSERT INTO products (id, store_id, shopify_product_id, title, sku, image_url, images, price_cents, weight_grams, status, synced_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', datetime('now'))
+        `).run(crypto.randomUUID(), store.id, p.externalProductId, p.name, sku, primaryImage, imagesJson, priceCents, weightGrams);
         created++;
       }
     }

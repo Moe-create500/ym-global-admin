@@ -94,6 +94,7 @@ interface Order {
   customer_email: string | null;
   ss_charge_cents: number;
   ss_charge_is_estimate: number;
+  printed: number;
 }
 
 function cents(amount: number): string {
@@ -122,7 +123,7 @@ export default function StoreDetailPage() {
 
   const [store, setStore] = useState<Store | null>(null);
   const [ssCharges, setSsCharges] = useState({ billed_cents: 0, balance_cents: 0, charged_cents: 0, estimated_cents: 0, estimated_order_count: 0, total_cents: 0 });
-  const [activeTab, setActiveTab] = useState<'pnl' | 'orders' | 'fulfillment' | 'chargebacks' | 'inventory'>('pnl');
+  const [activeTab, setActiveTab] = useState<'pnl' | 'orders' | 'fulfillment' | 'chargebacks' | 'inventory' | 'shipments' | 'rent'>('pnl');
 
   // Chargebacks state
   const [chargebacks, setChargebacks] = useState<Chargeback[]>([]);
@@ -153,7 +154,12 @@ export default function StoreDetailPage() {
   const [ordersSearch, setOrdersSearch] = useState('');
   const [ordersSource, setOrdersSource] = useState('');
   const [ordersStatus, setOrdersStatus] = useState('');
-  const [ordersDateRange, setOrdersDateRange] = useState({ from: '', to: '' });
+  const [ordersDateRange, setOrdersDateRange] = useState(() => {
+    // Default to last 30 days for performance with large stores
+    const to = new Date().toISOString().slice(0, 10);
+    const from = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    return { from, to };
+  });
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
 
   // Import state
@@ -174,6 +180,7 @@ export default function StoreDetailPage() {
     extra_unit_after: number;
     effective_from: string;
     effective_to: string | null;
+    channel: string;
   }
   const [pricingRules, setPricingRules] = useState<SkuPricingRule[]>([]);
   const [pricingLoading, setPricingLoading] = useState(false);
@@ -184,7 +191,7 @@ export default function StoreDetailPage() {
   const [missingLoading, setMissingLoading] = useState(false);
   const [applyingPricing, setApplyingPricing] = useState(false);
   const [applyResult, setApplyResult] = useState<{ updated: number; skipped: number; total: number } | null>(null);
-  const [newRule, setNewRule] = useState({ sku: '', label: '', baseCharge: '', extraCharge: '', extraAfter: '1', from: '', to: '' });
+  const [newRule, setNewRule] = useState({ sku: '', label: '', baseCharge: '', extraCharge: '', extraAfter: '1', from: '', to: '', channel: 'us' });
   const [savingRule, setSavingRule] = useState(false);
   interface SkuGap { sku: string; product_name: string; min_date: string; max_date: string; order_count: number; }
   const [skuGaps, setSkuGaps] = useState<SkuGap[]>([]);
@@ -206,6 +213,29 @@ export default function StoreDetailPage() {
   const [invForm, setInvForm] = useState({ sku: '', productName: '', qty: '', costPerUnit: '', purchaseDate: '', supplier: '', note: '' });
   const [invAdding, setInvAdding] = useState(false);
   const [invShowForm, setInvShowForm] = useState(false);
+
+  // Shipments state (date-filtered orders view)
+  const [shipOrders, setShipOrders] = useState<Order[]>([]);
+  const [shipTotal, setShipTotal] = useState(0);
+  const [shipPage, setShipPage] = useState(1);
+  const [shipTotalPages, setShipTotalPages] = useState(0);
+  const [shipLoading, setShipLoading] = useState(false);
+  const [shipDateRange, setShipDateRange] = useState(() => {
+    const to = new Date().toISOString().slice(0, 10);
+    const from = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    return { from, to };
+  });
+  const [shipPreset, setShipPreset] = useState<'7d' | '14d' | '30d' | 'custom'>('7d');
+
+  // Rent expenses state
+  interface RentExpense { id: string; description: string; amount_cents: number; due_date: string; paid: number; paid_date: string | null; recurring: number; notes: string | null; }
+  interface RentSummary { total_cents: number; paid_cents: number; unpaid_cents: number; total_count: number; unpaid_count: number; }
+  const [rentExpenses, setRentExpenses] = useState<RentExpense[]>([]);
+  const [rentSummary, setRentSummary] = useState<RentSummary | null>(null);
+  const [rentLoading, setRentLoading] = useState(false);
+  const [rentForm, setRentForm] = useState({ description: '', amount: '', dueDate: '', recurring: false, notes: '' });
+  const [rentAdding, setRentAdding] = useState(false);
+  const [rentShowForm, setRentShowForm] = useState(false);
 
   // Edit state
   const [editing, setEditing] = useState(false);
@@ -240,6 +270,11 @@ export default function StoreDetailPage() {
   // Load chargebacks when tab switches
   useEffect(() => {
     if (activeTab === 'chargebacks') loadChargebacks();
+  }, [activeTab]);
+
+  // Load rent when tab switches
+  useEffect(() => {
+    if (activeTab === 'rent') loadRent();
   }, [activeTab]);
 
   async function loadStore() {
@@ -291,6 +326,76 @@ export default function StoreDetailPage() {
     setInvProducts(data.products || []);
     setInvSummary(data.summary || null);
     setInvLoading(false);
+  }
+
+  // Shipments loader
+  const loadShipments = useCallback(async () => {
+    setShipLoading(true);
+    const p = new URLSearchParams({ storeId, page: String(shipPage), limit: '50' });
+    if (shipDateRange.from) p.set('from', shipDateRange.from);
+    if (shipDateRange.to) p.set('to', shipDateRange.to);
+    const res = await fetch(`/api/orders?${p}`);
+    const data = await res.json();
+    setShipOrders(data.orders || []);
+    setShipTotal(data.total || 0);
+    setShipTotalPages(data.totalPages || 0);
+    setShipLoading(false);
+  }, [storeId, shipPage, shipDateRange]);
+
+  // Load shipments when tab switches or filters change
+  useEffect(() => {
+    if (activeTab === 'shipments') loadShipments();
+  }, [activeTab, shipPage, shipDateRange, loadShipments]);
+
+  // Rent loader
+  async function loadRent() {
+    setRentLoading(true);
+    const res = await fetch(`/api/rent-expenses?storeId=${storeId}`);
+    const data = await res.json();
+    setRentExpenses(data.expenses || []);
+    setRentSummary(data.summary || null);
+    setRentLoading(false);
+  }
+
+  async function addRent(e: React.FormEvent) {
+    e.preventDefault();
+    setRentAdding(true);
+    await fetch('/api/rent-expenses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeId, ...rentForm }),
+    });
+    setRentForm({ description: '', amount: '', dueDate: '', recurring: false, notes: '' });
+    setRentShowForm(false);
+    setRentAdding(false);
+    loadRent();
+  }
+
+  async function toggleRentPaid(id: string, paid: boolean) {
+    await fetch('/api/rent-expenses', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, paid }),
+    });
+    loadRent();
+  }
+
+  async function deleteRent(id: string) {
+    if (!confirm('Delete this expense?')) return;
+    await fetch(`/api/rent-expenses?id=${id}`, { method: 'DELETE' });
+    loadRent();
+  }
+
+  async function togglePrinted(orderId: string, currentVal: number) {
+    const newVal = currentVal ? 0 : 1;
+    await fetch('/api/orders', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderId, printed: newVal }),
+    });
+    // Update local state immediately
+    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, printed: newVal } : o));
+    setShipOrders(prev => prev.map(o => o.id === orderId ? { ...o, printed: newVal } : o));
   }
 
   async function addInventory(e: React.FormEvent) {
@@ -444,10 +549,11 @@ export default function StoreDetailPage() {
         extraUnitAfter: parseInt(newRule.extraAfter || '1') || 1,
         effectiveFrom: newRule.from,
         effectiveTo: newRule.to || null,
+        channel: newRule.channel || 'us',
       }),
     });
     setSavingRule(false);
-    setNewRule({ sku: '', label: '', baseCharge: '', extraCharge: '', extraAfter: '1', from: '', to: '' });
+    setNewRule({ sku: '', label: '', baseCharge: '', extraCharge: '', extraAfter: '1', from: '', to: '', channel: 'us' });
     loadPricingRules();
   }
 
@@ -772,9 +878,11 @@ export default function StoreDetailPage() {
         {([
           { key: 'pnl' as const, label: 'P&L' },
           { key: 'orders' as const, label: 'Orders' },
+          { key: 'shipments' as const, label: 'Shipments' },
           { key: 'fulfillment' as const, label: 'Fulfillment' },
           { key: 'chargebacks' as const, label: 'Chargebacks' },
           { key: 'inventory' as const, label: 'Inventory' },
+          { key: 'rent' as const, label: 'Rent' },
         ]).map((tab) => (
           <button
             key={tab.key}
@@ -1046,6 +1154,7 @@ export default function StoreDetailPage() {
                       <th className="text-right px-4 py-3">Total</th>
                       <th className="text-right px-4 py-3">SS Charge</th>
                       <th className="text-right px-4 py-3">Refund</th>
+                      <th className="text-center px-4 py-3">Printed</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1083,10 +1192,22 @@ export default function StoreDetailPage() {
                             ) : <span className="text-slate-600">-</span>}
                           </td>
                           <td className="px-4 py-3 text-right text-red-400">{order.refunded_cents > 0 ? cents(order.refunded_cents) : '-'}</td>
+                          <td className="px-4 py-3 text-center">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); togglePrinted(order.id, order.printed); }}
+                              className={`px-2 py-0.5 text-[10px] font-medium rounded border transition-colors ${
+                                order.printed
+                                  ? 'bg-emerald-900/40 text-emerald-400 border-emerald-800'
+                                  : 'bg-slate-800 text-slate-500 border-slate-700 hover:text-slate-300'
+                              }`}
+                            >
+                              {order.printed ? 'Printed' : 'Print'}
+                            </button>
+                          </td>
                         </tr>
                         {isExpanded && lineItems.length > 0 && (
                           <tr key={`${order.id}-items`} className="bg-slate-800/20">
-                            <td colSpan={7} className="px-6 py-3">
+                            <td colSpan={8} className="px-6 py-3">
                               <table className="w-full text-xs">
                                 <thead>
                                   <tr className="text-slate-500">
@@ -1172,6 +1293,7 @@ export default function StoreDetailPage() {
                   <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
                     <th className="text-left px-4 py-2">SKU / Product Name</th>
                     <th className="text-left px-4 py-2">Label</th>
+                    <th className="text-left px-4 py-2">Channel</th>
                     <th className="text-right px-4 py-2">Base Charge</th>
                     <th className="text-right px-4 py-2">Extra Unit</th>
                     <th className="text-right px-4 py-2">Extra After</th>
@@ -1185,6 +1307,13 @@ export default function StoreDetailPage() {
                     <tr key={rule.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                       <td className="px-4 py-2 font-mono text-xs text-blue-400">{rule.sku}</td>
                       <td className="px-4 py-2 text-slate-300 text-xs">{rule.label || '-'}</td>
+                      <td className="px-4 py-2">
+                        <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${
+                          rule.channel === 'uk' ? 'bg-purple-900/40 text-purple-400' :
+                          rule.channel === 'china' ? 'bg-red-900/40 text-red-400' :
+                          'bg-blue-900/40 text-blue-400'
+                        }`}>{(rule.channel || 'us').toUpperCase()}</span>
+                      </td>
                       <td className="px-4 py-2 text-right text-white">{cents(rule.base_charge_cents)}</td>
                       <td className="px-4 py-2 text-right text-slate-400">{cents(rule.extra_unit_charge_cents)}</td>
                       <td className="px-4 py-2 text-right text-slate-400">{rule.extra_unit_after}</td>
@@ -1204,6 +1333,14 @@ export default function StoreDetailPage() {
                     <td className="px-4 py-2">
                       <input type="text" placeholder="Label" value={newRule.label} onChange={(e) => setNewRule({ ...newRule, label: e.target.value })}
                         className="w-full px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500" />
+                    </td>
+                    <td className="px-4 py-2">
+                      <select value={newRule.channel} onChange={(e) => setNewRule({ ...newRule, channel: e.target.value })}
+                        className="w-full px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500">
+                        <option value="us">US</option>
+                        <option value="china">China</option>
+                        <option value="uk">UK</option>
+                      </select>
                     </td>
                     <td className="px-4 py-2">
                       <input type="number" step="0.01" placeholder="$0.00" value={newRule.baseCharge} onChange={(e) => setNewRule({ ...newRule, baseCharge: e.target.value })}
@@ -1614,6 +1751,284 @@ export default function StoreDetailPage() {
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
               <p className="text-slate-400 mb-2">No inventory purchases recorded</p>
               <p className="text-xs text-slate-500">Click "+ Add Purchase" to start tracking inventory</p>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Shipments Tab */}
+      {activeTab === 'shipments' && (
+        <>
+          {/* Date Presets */}
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <div className="flex bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              {([
+                { key: '7d' as const, label: '7 Days' },
+                { key: '14d' as const, label: '14 Days' },
+                { key: '30d' as const, label: '30 Days' },
+                { key: 'custom' as const, label: 'Custom' },
+              ]).map((p) => (
+                <button
+                  key={p.key}
+                  onClick={() => {
+                    setShipPreset(p.key);
+                    if (p.key !== 'custom') {
+                      const days = p.key === '7d' ? 7 : p.key === '14d' ? 14 : 30;
+                      const to = new Date().toISOString().slice(0, 10);
+                      const from = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+                      setShipDateRange({ from, to });
+                      setShipPage(1);
+                    }
+                  }}
+                  className={`px-3 py-1.5 text-xs font-medium ${
+                    shipPreset === p.key ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            {shipPreset === 'custom' && (
+              <>
+                <input
+                  type="date"
+                  value={shipDateRange.from}
+                  onChange={(e) => { setShipDateRange({ ...shipDateRange, from: e.target.value }); setShipPage(1); }}
+                  className="px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-300 focus:outline-none focus:border-blue-500"
+                />
+                <span className="text-slate-500 text-xs">to</span>
+                <input
+                  type="date"
+                  value={shipDateRange.to}
+                  onChange={(e) => { setShipDateRange({ ...shipDateRange, to: e.target.value }); setShipPage(1); }}
+                  className="px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-300 focus:outline-none focus:border-blue-500"
+                />
+              </>
+            )}
+            <span className="text-xs text-slate-500">{shipTotal.toLocaleString()} orders</span>
+          </div>
+
+          {/* Shipments Table */}
+          {shipLoading ? (
+            <div className="flex items-center justify-center h-32">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400" />
+            </div>
+          ) : shipOrders.length === 0 ? (
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
+              <p className="text-slate-400">No orders in this date range</p>
+            </div>
+          ) : (
+            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
+                      <th className="text-left px-4 py-3">Order</th>
+                      <th className="text-left px-4 py-3">Date</th>
+                      <th className="text-left px-4 py-3">Fulfillment</th>
+                      <th className="text-right px-4 py-3">Items</th>
+                      <th className="text-right px-4 py-3">Total</th>
+                      <th className="text-right px-4 py-3">SS Charge</th>
+                      <th className="text-center px-4 py-3">Printed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shipOrders.map((order) => {
+                      const fulfillBadge = order.fulfillment_status === 'fulfilled'
+                        ? { text: 'Fulfilled', cls: 'bg-emerald-900/40 text-emerald-400 border-emerald-800' }
+                        : order.fulfillment_status === 'unfulfilled'
+                        ? { text: 'Unfulfilled', cls: 'bg-yellow-900/40 text-yellow-400 border-yellow-800' }
+                        : { text: order.fulfillment_status || 'Unknown', cls: 'bg-slate-800 text-slate-400 border-slate-700' };
+                      return (
+                        <tr key={order.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                          <td className="px-4 py-3 text-blue-400 font-medium">{order.order_name}</td>
+                          <td className="px-4 py-3 text-slate-400">{order.order_date}</td>
+                          <td className="px-4 py-3">
+                            <span className={`px-2 py-0.5 text-[10px] font-medium rounded border ${fulfillBadge.cls}`}>
+                              {fulfillBadge.text}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right text-slate-400">{order.line_item_count}</td>
+                          <td className="px-4 py-3 text-right text-white font-medium">{cents(order.total_cents)}</td>
+                          <td className="px-4 py-3 text-right">
+                            {order.ss_charge_cents > 0 ? (
+                              <span className={order.ss_charge_is_estimate ? 'text-yellow-400' : 'text-orange-400'}>
+                                {cents(order.ss_charge_cents)}
+                                {order.ss_charge_is_estimate ? <span className="text-[9px] ml-0.5">est</span> : ''}
+                              </span>
+                            ) : <span className="text-slate-600">-</span>}
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <button
+                              onClick={() => togglePrinted(order.id, order.printed)}
+                              className={`px-2 py-0.5 text-[10px] font-medium rounded border transition-colors ${
+                                order.printed
+                                  ? 'bg-emerald-900/40 text-emerald-400 border-emerald-800'
+                                  : 'bg-slate-800 text-slate-500 border-slate-700 hover:text-slate-300'
+                              }`}
+                            >
+                              {order.printed ? 'Printed' : 'Print'}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {shipTotalPages > 1 && (
+                <div className="flex items-center justify-between px-4 py-3 border-t border-slate-800">
+                  <p className="text-xs text-slate-500">
+                    Showing {((shipPage - 1) * 50) + 1}-{Math.min(shipPage * 50, shipTotal)} of {shipTotal.toLocaleString()}
+                  </p>
+                  <div className="flex gap-1">
+                    <button disabled={shipPage <= 1} onClick={() => setShipPage(p => p - 1)}
+                      className="px-3 py-1 text-xs text-slate-400 hover:text-white border border-slate-700 rounded disabled:opacity-30">Previous</button>
+                    <button disabled={shipPage >= shipTotalPages} onClick={() => setShipPage(p => p + 1)}
+                      className="px-3 py-1 text-xs text-slate-400 hover:text-white border border-slate-700 rounded disabled:opacity-30">Next</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Rent Tab */}
+      {activeTab === 'rent' && (
+        <>
+          {/* Rent Summary */}
+          {rentSummary && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+              {[
+                { label: 'Total Expenses', value: cents(rentSummary.total_cents || 0), color: 'text-white' },
+                { label: 'Paid', value: cents(rentSummary.paid_cents || 0), color: 'text-emerald-400' },
+                { label: 'Unpaid', value: cents(rentSummary.unpaid_cents || 0), color: 'text-red-400' },
+                { label: 'Pending Items', value: rentSummary.unpaid_count || 0, color: 'text-yellow-400' },
+              ].map((kpi) => (
+                <div key={kpi.label} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{kpi.label}</p>
+                  <p className={`text-xl font-bold ${kpi.color}`}>{kpi.value}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Add Expense Button */}
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-white">Rent & Recurring Expenses</h2>
+            <button
+              onClick={() => setRentShowForm(!rentShowForm)}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              {rentShowForm ? 'Cancel' : '+ Add Expense'}
+            </button>
+          </div>
+
+          {/* Add Expense Form */}
+          {rentShowForm && (
+            <form onSubmit={addRent} className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-[10px] text-slate-500 mb-1">Description *</label>
+                  <input type="text" required value={rentForm.description}
+                    onChange={e => setRentForm({ ...rentForm, description: e.target.value })}
+                    className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                    placeholder="e.g. Warehouse Rent" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-500 mb-1">Amount ($) *</label>
+                  <input type="number" step="0.01" required value={rentForm.amount}
+                    onChange={e => setRentForm({ ...rentForm, amount: e.target.value })}
+                    className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                    placeholder="1500.00" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-500 mb-1">Due Date *</label>
+                  <input type="date" required value={rentForm.dueDate}
+                    onChange={e => setRentForm({ ...rentForm, dueDate: e.target.value })}
+                    className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-500 mb-1">Notes</label>
+                  <input type="text" value={rentForm.notes}
+                    onChange={e => setRentForm({ ...rentForm, notes: e.target.value })}
+                    className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                    placeholder="Optional" />
+                </div>
+                <div className="flex items-end gap-3">
+                  <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+                    <input type="checkbox" checked={rentForm.recurring}
+                      onChange={e => setRentForm({ ...rentForm, recurring: e.target.checked })}
+                      className="rounded border-slate-700" />
+                    Recurring
+                  </label>
+                  <button type="submit" disabled={rentAdding}
+                    className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg">
+                    {rentAdding ? 'Adding...' : 'Add'}
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
+
+          {/* Rent Expenses Table */}
+          {rentLoading ? (
+            <div className="flex items-center justify-center h-24">
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-400" />
+            </div>
+          ) : rentExpenses.length > 0 ? (
+            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
+                      <th className="text-left px-4 py-3">Description</th>
+                      <th className="text-right px-4 py-3">Amount</th>
+                      <th className="text-left px-4 py-3">Due Date</th>
+                      <th className="text-left px-4 py-3">Status</th>
+                      <th className="text-left px-4 py-3">Type</th>
+                      <th className="text-left px-4 py-3">Notes</th>
+                      <th className="px-4 py-3"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rentExpenses.map((exp) => (
+                      <tr key={exp.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                        <td className="px-4 py-3 text-white font-medium">{exp.description}</td>
+                        <td className="px-4 py-3 text-right text-white font-medium">{cents(exp.amount_cents)}</td>
+                        <td className="px-4 py-3 text-slate-400">{exp.due_date}</td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => toggleRentPaid(exp.id, !exp.paid)}
+                            className={`px-2 py-0.5 text-[10px] font-medium rounded border transition-colors ${
+                              exp.paid
+                                ? 'bg-emerald-900/40 text-emerald-400 border-emerald-800'
+                                : 'bg-red-900/40 text-red-400 border-red-800'
+                            }`}
+                          >
+                            {exp.paid ? 'Paid' : 'Unpaid'}
+                          </button>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${exp.recurring ? 'bg-blue-900/30 text-blue-400' : 'bg-slate-800 text-slate-400'}`}>
+                            {exp.recurring ? 'Recurring' : 'One-time'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-slate-500 text-xs max-w-[150px] truncate">{exp.notes || '-'}</td>
+                        <td className="px-4 py-3 text-right">
+                          <button onClick={() => deleteRent(exp.id)} className="text-red-400 hover:text-red-300 text-xs">Delete</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
+              <p className="text-slate-400 mb-2">No rent expenses recorded</p>
+              <p className="text-xs text-slate-500">Click "+ Add Expense" to start tracking rent & recurring expenses</p>
             </div>
           )}
         </>

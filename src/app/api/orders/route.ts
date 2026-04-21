@@ -3,6 +3,14 @@ import { getDb } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
+export async function PATCH(req: NextRequest) {
+  const { orderId, printed } = await req.json();
+  if (!orderId) return NextResponse.json({ error: 'orderId required' }, { status: 400 });
+  const db = getDb();
+  db.prepare('UPDATE orders SET printed = ? WHERE id = ?').run(printed ? 1 : 0, orderId);
+  return NextResponse.json({ success: true });
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const storeId = searchParams.get('storeId');

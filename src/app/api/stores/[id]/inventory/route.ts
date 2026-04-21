@@ -31,19 +31,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
     } catch {}
   }
 
-  // Roll up variant SKUs: "SKU-N" means N units of base "SKU"
-  // e.g. "12345-2" orders count as 2 units sold of "12345"
-  const variantSoldMap: Record<string, number> = {};
-  for (const [sku, qty] of Object.entries(soldMap)) {
-    const match = sku.match(/^(.+)-(\d+)$/);
-    if (match) {
-      const baseSku = match[1];
-      const multiplier = parseInt(match[2]);
-      if (multiplier > 0 && multiplier <= 100) {
-        variantSoldMap[baseSku] = (variantSoldMap[baseSku] || 0) + qty * multiplier;
-      }
-    }
-  }
+  // No variant rollup — only count exact SKU matches for accurate inventory
 
   // Build per-product summary
   const productMap: Record<string, {
@@ -75,10 +63,8 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
   for (const [key, product] of Object.entries(productMap)) {
     product.avg_cost_cents = product.total_purchased > 0
       ? Math.round(product.total_cost_cents / product.total_purchased) : 0;
-    // Count direct sales + variant sales (e.g. "12345" gets direct sales + "12345-2" × 2 + "12345-3" × 3)
-    const directSold = product.sku ? (soldMap[product.sku] || 0) : 0;
-    const variantSold = product.sku ? (variantSoldMap[product.sku] || 0) : 0;
-    product.total_sold = directSold + variantSold;
+    // Count direct SKU sales only
+    product.total_sold = product.sku ? (soldMap[product.sku] || 0) : 0;
     product.remaining = Math.max(0, product.total_purchased - product.total_sold);
     product.asset_value_cents = product.remaining * product.avg_cost_cents;
     totalAssetValue += product.asset_value_cents;
