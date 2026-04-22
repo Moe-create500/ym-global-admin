@@ -318,8 +318,8 @@ export async function POST(req: NextRequest) {
       return jsonSuccess({ id, engine: 'higgsfield', requestId: result.requestId });
 
     } else if (useEngine === 'seedance') {
-      // Seedance 2.0 — ByteDance via fal.ai. Supports 4-15s, 720p
-      const seedDuration = Math.max(4, Math.min(15, parseInt(duration) || 8));
+      // Seedance 2.0 — ByteDance via fal.ai. Supports 4-15s, 720p, native audio
+      const seedDuration = Math.max(4, Math.min(15, parseInt(duration) || 15));
       const seedAspect = dimension === '16:9' ? '16:9' : dimension === '1:1' ? '1:1' : '9:16';
 
       // Collect all valid product image URLs for reference-to-video
@@ -332,29 +332,39 @@ export async function POST(req: NextRequest) {
       }
 
       let result;
+      let seedanceTier: string;
       if (refImages.length > 0) {
         // Reference-to-video: submit actual product photos so the model
-        // renders the REAL product — no text description workaround needed.
+        // renders the REAL product with native audio (generate_audio: true).
         const refLabels = refImages.map((_, i) => `@Image${i + 1}`).join(', ');
         const cinematicPrompt = `${originalPrompt}\n\nProduct reference images: ${refLabels} — show this EXACT product naturally in the scene, match packaging, colors, and branding precisely.\n\nTECHNICAL: ${seedDuration}-second video. Aspect ratio ${seedAspect}. Photorealistic, natural lighting. Normal conversational pacing — NOT slow motion. UGC authentic feel.`;
         console.log(`[SEEDANCE-R2V] Reference-to-video: ${refImages.length} product images, prompt=${cinematicPrompt.length} chars`);
         result = await seedanceR2V(cinematicPrompt, refImages, {
-          duration: seedDuration, aspectRatio: seedAspect, resolution: '720p', generateAudio: false,
+          duration: seedDuration, aspectRatio: seedAspect, resolution: '720p',
         });
+        seedanceTier = 'reference-to-video';
       } else {
-        // No product images — fall back to text-to-video
+        // No product images — fall back to text-to-video with native audio
         const cinematicPrompt = `${prompt}\n\nTECHNICAL: ${seedDuration}-second video. Aspect ratio ${seedAspect}. Photorealistic, natural lighting. Normal conversational pacing — NOT slow motion. UGC authentic feel.`;
         console.log(`[SEEDANCE-T2V] Text-to-video (no product images): prompt=${cinematicPrompt.length} chars`);
         result = await seedanceT2V(cinematicPrompt, {
-          duration: seedDuration, aspectRatio: seedAspect, generateAudio: false,
+          duration: seedDuration, aspectRatio: seedAspect,
         });
+        seedanceTier = 'text-to-video';
       }
+
+      // Store voiceover script and tier in template_data (matches partner's pipeline format)
+      const templateData = JSON.stringify({
+        voiceoverScript: prompt,
+        voiceoverPending: false,
+        seedanceTier,
+      });
 
       db.prepare(`
         INSERT INTO creatives (id, store_id, type, title, description,
-          angle, nb_video_id, nb_status, status, template_id, package_id, package_index)
-        VALUES (?, ?, 'video', ?, ?, ?, ?, 'processing', 'draft', 'seedance', ?, ?)
-      `).run(id, storeId, title, prompt, angle || null, result.requestId, packageId || null, packageIndex ?? null);
+          angle, nb_video_id, nb_status, status, template_id, template_data, package_id, package_index)
+        VALUES (?, ?, 'video', ?, ?, ?, ?, 'processing', 'draft', 'seedance', ?, ?, ?)
+      `).run(id, storeId, title, prompt, angle || null, result.requestId, templateData, packageId || null, packageIndex ?? null);
       try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
 
       return jsonSuccess({ id, engine: 'seedance', requestId: result.requestId, model: result.model });
