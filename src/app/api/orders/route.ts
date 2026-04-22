@@ -4,21 +4,10 @@ import { getDb } from '@/lib/db';
 export const dynamic = 'force-dynamic';
 
 export async function PATCH(req: NextRequest) {
-  const body = await req.json();
-  const { orderId } = body;
+  const { orderId, printed } = await req.json();
   if (!orderId) return NextResponse.json({ error: 'orderId required' }, { status: 400 });
   const db = getDb();
-
-  if ('printed' in body) {
-    db.prepare('UPDATE orders SET printed = ? WHERE id = ?').run(body.printed ? 1 : 0, orderId);
-  }
-  if ('tracking_number' in body) {
-    db.prepare('UPDATE orders SET tracking_number = ? WHERE id = ?').run(body.tracking_number || null, orderId);
-  }
-  if ('carrier' in body) {
-    db.prepare('UPDATE orders SET carrier = ? WHERE id = ?').run(body.carrier || null, orderId);
-  }
-
+  db.prepare('UPDATE orders SET printed = ? WHERE id = ?').run(printed ? 1 : 0, orderId);
   return NextResponse.json({ success: true });
 }
 

@@ -837,12 +837,6 @@ def main():
     add_column(cursor, "sku_pricing", "channel",
         'ALTER TABLE "sku_pricing" ADD COLUMN "channel" TEXT DEFAULT \'us\'')
 
-    # --- Tracking number for China warehouse orders ---
-    add_column(cursor, "orders", "tracking_number",
-        'ALTER TABLE "orders" ADD COLUMN "tracking_number" TEXT')
-    add_column(cursor, "orders", "carrier",
-        'ALTER TABLE "orders" ADD COLUMN "carrier" TEXT')
-
     # --- Rent expenses ---
     print("\n--- Rent Expenses ---")
     create_table(cursor, "rent_expenses", '''

@@ -126,8 +126,8 @@ export async function POST(req: NextRequest) {
       order_date, financial_status, fulfillment_status, total_cents, subtotal_cents,
       shipping_cents, taxes_cents, discount_cents, refunded_cents, net_revenue_cents,
       line_items, line_item_count, customer_email, currency, source,
-      ss_charge_cents, ss_charge_is_estimate, tracking_number, carrier)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', 'shipsourced', ?, ?, ?, ?)
+      ss_charge_cents, ss_charge_is_estimate)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', 'shipsourced', ?, ?)
   `);
 
   const updateStmt = db.prepare(`
@@ -137,9 +137,7 @@ export async function POST(req: NextRequest) {
       total_cents = CASE WHEN total_cents = 0 THEN ? ELSE total_cents END,
       line_items = COALESCE(?, line_items),
       line_item_count = CASE WHEN line_item_count = 0 THEN ? ELSE line_item_count END,
-      ss_charge_cents = ?, ss_charge_is_estimate = ?,
-      tracking_number = COALESCE(?, tracking_number),
-      carrier = COALESCE(?, carrier)
+      ss_charge_cents = ?, ss_charge_is_estimate = ?
     WHERE store_id = ? AND order_number = ?
   `);
 
@@ -183,19 +181,6 @@ export async function POST(req: NextRequest) {
 
     const lineItemsJson = lineItems.length > 0 ? JSON.stringify(lineItems) : null;
 
-    // Extract tracking from shipments array (first shipment with tracking wins)
-    let trackingNumber: string | null = null;
-    let carrier: string | null = null;
-    if (Array.isArray(order.shipments) && order.shipments.length > 0) {
-      for (const s of order.shipments) {
-        if (s?.trackingNumber) {
-          trackingNumber = String(s.trackingNumber);
-          carrier = s.carrier ? String(s.carrier) : null;
-          break;
-        }
-      }
-    }
-
     // Map ShipSourced status to fulfillment status
     const fulfillmentStatus = order.status === 'SHIPPED' ? 'fulfilled'
       : order.status === 'NEW' ? 'unfulfilled'
@@ -230,7 +215,6 @@ export async function POST(req: NextRequest) {
         fulfillmentStatus, orderName, totalCents,
         lineItemsJson, lineItems.length,
         chargeCents, isEstimate,
-        trackingNumber, carrier,
         storeId, orderNumber
       );
       updated++;
@@ -240,7 +224,7 @@ export async function POST(req: NextRequest) {
         orderDate, 'paid', fulfillmentStatus, totalCents, totalCents,
         0, 0, 0, 0, totalCents,
         lineItemsJson, lineItems.length, null,
-        chargeCents, isEstimate, trackingNumber, carrier
+        chargeCents, isEstimate
       );
       imported++;
     }
