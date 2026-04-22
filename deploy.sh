@@ -58,10 +58,10 @@ rsync -avz \
   -e "ssh -i $KEY" \
   "$LOCAL_DIR/" "$SERVER:$REMOTE_DIR/"
 
-# Step 3: Build on server
+# Step 3: Install deps + Build on server
 echo ""
-echo "[3/4] Building on server..."
-ssh -i "$KEY" "$SERVER" "cd $REMOTE_DIR && npm run build"
+echo "[3/4] Installing deps + Building on server..."
+ssh -i "$KEY" "$SERVER" "cd $REMOTE_DIR && npm install --production=false && npm run build"
 
 # Step 4: Restart PM2
 echo ""
