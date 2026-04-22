@@ -95,6 +95,8 @@ interface Order {
   ss_charge_cents: number;
   ss_charge_is_estimate: number;
   printed: number;
+  tracking_number: string | null;
+  carrier: string | null;
 }
 
 function cents(amount: number): string {
@@ -226,6 +228,16 @@ export default function StoreDetailPage() {
     return { from, to };
   });
   const [shipPreset, setShipPreset] = useState<'7d' | '14d' | '30d' | 'custom'>('7d');
+
+  // Tracking inline edit state
+  const [editingTrackingId, setEditingTrackingId] = useState<string | null>(null);
+  const [editTrackingValue, setEditTrackingValue] = useState('');
+  const [editCarrierValue, setEditCarrierValue] = useState('');
+
+  // Tracking bulk upload state
+  const [trackingUploading, setTrackingUploading] = useState(false);
+  const [trackingUploadResult, setTrackingUploadResult] = useState<{ updated: number; skipped: number; total: number; errors?: string[] } | null>(null);
+  const trackingFileRef = useRef<HTMLInputElement>(null);
 
   // Rent expenses state
   interface RentExpense { id: string; description: string; amount_cents: number; due_date: string; paid: number; paid_date: string | null; recurring: number; notes: string | null; }
@@ -396,6 +408,80 @@ export default function StoreDetailPage() {
     // Update local state immediately
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, printed: newVal } : o));
     setShipOrders(prev => prev.map(o => o.id === orderId ? { ...o, printed: newVal } : o));
+  }
+
+  async function saveTracking(orderId: string) {
+    await fetch('/api/orders', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderId, tracking_number: editTrackingValue || null, carrier: editCarrierValue || null }),
+    });
+    setShipOrders(prev => prev.map(o =>
+      o.id === orderId ? { ...o, tracking_number: editTrackingValue || null, carrier: editCarrierValue || null } : o
+    ));
+    setOrders(prev => prev.map(o =>
+      o.id === orderId ? { ...o, tracking_number: editTrackingValue || null, carrier: editCarrierValue || null } : o
+    ));
+    setEditingTrackingId(null);
+  }
+
+  async function handleTrackingUpload(file: File) {
+    setTrackingUploading(true);
+    setTrackingUploadResult(null);
+    try {
+      let rows: { order_number: string; tracking_number: string; carrier: string }[] = [];
+      if (file.name.endsWith('.csv') || file.name.endsWith('.tsv')) {
+        const text = await file.text();
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        if (lines.length < 2) { setTrackingUploading(false); return; }
+        const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/['"]/g, ''));
+        for (let i = 1; i < lines.length; i++) {
+          const vals = lines[i].split(',').map(v => v.trim().replace(/['"]/g, ''));
+          const row: Record<string, string> = {};
+          headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
+          rows.push({
+            order_number: row['order_number'] || row['order'] || row['order_name'] || row['order #'] || vals[0] || '',
+            tracking_number: row['tracking_number'] || row['tracking'] || row['tracking #'] || vals[2] || vals[1] || '',
+            carrier: row['carrier'] || row['shipping_carrier'] || vals[1] || '',
+          });
+        }
+      } else {
+        // XLSX — dynamic import
+        const XLSX = await import('xlsx');
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const data: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
+        if (data.length < 2) { setTrackingUploading(false); return; }
+        const headers = (data[0] || []).map((h: any) => String(h || '').toLowerCase().trim());
+        // Map Chinese headers
+        const orderCol = headers.findIndex(h => h.includes('order') || h.includes('包裹') || h.includes('订单'));
+        const carrierCol = headers.findIndex(h => h.includes('carrier') || h.includes('承运'));
+        const trackingCol = headers.findIndex(h => h.includes('tracking') || h.includes('跟踪') || h.includes('追踪'));
+        for (let i = 1; i < data.length; i++) {
+          const r = data[i];
+          if (!r || !r.length) continue;
+          rows.push({
+            order_number: String(r[orderCol >= 0 ? orderCol : 0] || ''),
+            tracking_number: String(r[trackingCol >= 0 ? trackingCol : 2] || ''),
+            carrier: String(r[carrierCol >= 0 ? carrierCol : 1] || ''),
+          });
+        }
+      }
+      rows = rows.filter(r => r.order_number && r.tracking_number);
+      if (rows.length === 0) { setTrackingUploading(false); return; }
+      const res = await fetch('/api/orders/update-tracking', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId, rows }),
+      });
+      const data = await res.json();
+      setTrackingUploadResult(data);
+      if (data.updated > 0) loadShipments();
+    } catch (err) {
+      console.error('Tracking upload error:', err);
+    }
+    setTrackingUploading(false);
   }
 
   async function addInventory(e: React.FormEvent) {
@@ -1759,6 +1845,34 @@ export default function StoreDetailPage() {
       {/* Shipments Tab */}
       {activeTab === 'shipments' && (
         <>
+          {/* Tracking Upload */}
+          <div className="flex items-center gap-3 mb-4">
+            <button
+              onClick={() => trackingFileRef.current?.click()}
+              disabled={trackingUploading}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-sm font-medium text-slate-300 border border-slate-700 rounded-lg transition-colors"
+            >
+              {trackingUploading ? 'Uploading...' : 'Upload Tracking (CSV/XLSX)'}
+            </button>
+            <input
+              ref={trackingFileRef}
+              type="file"
+              accept=".csv,.xlsx,.xls"
+              className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleTrackingUpload(f); e.target.value = ''; }}
+            />
+            <span className="text-[10px] text-slate-600">Columns: order_number, tracking_number, carrier</span>
+          </div>
+          {trackingUploadResult && (
+            <div className={`border rounded-lg px-4 py-2 mb-4 text-sm ${trackingUploadResult.updated > 0 ? 'bg-emerald-900/20 border-emerald-800 text-emerald-400' : 'bg-yellow-900/20 border-yellow-800 text-yellow-400'}`}>
+              Updated {trackingUploadResult.updated}, skipped {trackingUploadResult.skipped} of {trackingUploadResult.total}
+              {trackingUploadResult.errors && trackingUploadResult.errors.length > 0 && (
+                <span className="text-yellow-500 ml-2">({trackingUploadResult.errors.slice(0, 3).join(', ')})</span>
+              )}
+              <button onClick={() => setTrackingUploadResult(null)} className="ml-3 text-slate-500 hover:text-slate-300 text-xs">Dismiss</button>
+            </div>
+          )}
+
           {/* Date Presets */}
           <div className="flex flex-wrap items-center gap-3 mb-4">
             <div className="flex bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
@@ -1825,6 +1939,8 @@ export default function StoreDetailPage() {
                     <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
                       <th className="text-left px-4 py-3">Order</th>
                       <th className="text-left px-4 py-3">Date</th>
+                      <th className="text-left px-4 py-3">Tracking</th>
+                      <th className="text-left px-4 py-3">Carrier</th>
                       <th className="text-left px-4 py-3">Fulfillment</th>
                       <th className="text-right px-4 py-3">Items</th>
                       <th className="text-right px-4 py-3">Total</th>
@@ -1843,6 +1959,36 @@ export default function StoreDetailPage() {
                         <tr key={order.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                           <td className="px-4 py-3 text-blue-400 font-medium">{order.order_name}</td>
                           <td className="px-4 py-3 text-slate-400">{order.order_date}</td>
+                          <td className="px-4 py-3">
+                            {editingTrackingId === order.id ? (
+                              <div className="flex items-center gap-1">
+                                <input type="text" value={editTrackingValue}
+                                  onChange={(e) => setEditTrackingValue(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') saveTracking(order.id); if (e.key === 'Escape') setEditingTrackingId(null); }}
+                                  className="w-28 px-2 py-1 bg-slate-800 border border-blue-500 rounded text-xs text-white focus:outline-none"
+                                  autoFocus placeholder="Tracking #" />
+                                <button onClick={() => saveTracking(order.id)} className="text-emerald-400 text-[10px] hover:underline">Save</button>
+                                <button onClick={() => setEditingTrackingId(null)} className="text-slate-500 text-[10px] hover:underline">X</button>
+                              </div>
+                            ) : (
+                              <span
+                                onClick={() => { setEditingTrackingId(order.id); setEditTrackingValue(order.tracking_number || ''); setEditCarrierValue(order.carrier || ''); }}
+                                className={`cursor-pointer text-xs ${order.tracking_number ? 'text-blue-400 hover:underline' : 'text-slate-600 hover:text-slate-400'}`}
+                                title="Click to edit"
+                              >{order.tracking_number || '+ add'}</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            {editingTrackingId === order.id ? (
+                              <input type="text" value={editCarrierValue}
+                                onChange={(e) => setEditCarrierValue(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') saveTracking(order.id); if (e.key === 'Escape') setEditingTrackingId(null); }}
+                                className="w-20 px-2 py-1 bg-slate-800 border border-blue-500 rounded text-xs text-white focus:outline-none"
+                                placeholder="Carrier" />
+                            ) : (
+                              <span className="text-xs text-slate-400">{order.carrier || '-'}</span>
+                            )}
+                          </td>
                           <td className="px-4 py-3">
                             <span className={`px-2 py-0.5 text-[10px] font-medium rounded border ${fulfillBadge.cls}`}>
                               {fulfillBadge.text}
