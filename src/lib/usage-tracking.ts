@@ -174,8 +174,133 @@ export function logUsage(opts: {
     );
 
     console.log(`[USAGE] ${provider}/${operationType}: ${units} units, raw=$${rawCost.toFixed(6)}, margin=${effectiveMargin}%, billed=$${markedUpCost.toFixed(6)}, ${isInternal ? 'INTERNAL' : 'CLIENT'}, store=${storeId.slice(0, 8)}`);
+
+    // ═══ AUTO-INVOICE: charge client when uninvoiced balance exceeds $20 ═══
+    if (!isInternal && tenantId) {
+      try {
+        checkAndAutoInvoice(db, tenantId);
+      } catch (invoiceErr: any) {
+        console.error(`[BILLING] Auto-invoice check failed: ${invoiceErr.message}`);
+      }
+    }
   } catch (e: any) {
     // Usage logging must never block generation
     console.error(`[USAGE] Failed to log: ${e.message}`);
   }
+}
+
+const AUTO_INVOICE_THRESHOLD = 20.00; // $20
+
+/**
+ * Check if a tenant's uninvoiced balance exceeds the threshold.
+ * If so, create and send a Stripe invoice automatically.
+ */
+function checkAndAutoInvoice(db: any, tenantId: string): void {
+  // Get uninvoiced total for this tenant
+  const result: any = db.prepare(`
+    SELECT SUM(marked_up_cost_usd) as total
+    FROM usage_logs
+    WHERE tenant_id = ? AND (billing_status IS NULL OR billing_status = '')
+  `).get(tenantId);
+
+  const uninvoicedTotal = result?.total || 0;
+  if (uninvoicedTotal < AUTO_INVOICE_THRESHOLD) return;
+
+  // Get tenant's Stripe customer ID
+  const tenant: any = db.prepare('SELECT stripe_customer_id, name FROM tenants WHERE id = ?').get(tenantId);
+  if (!tenant?.stripe_customer_id) {
+    console.log(`[BILLING] Tenant ${tenantId} has $${uninvoicedTotal.toFixed(2)} uninvoiced but no Stripe customer — skipping`);
+    return;
+  }
+
+  // Prevent double-invoicing: check if we already invoiced recently (last 1 hour)
+  const recentInvoice: any = db.prepare(`
+    SELECT 1 FROM usage_logs
+    WHERE tenant_id = ? AND billing_status = 'invoiced'
+      AND created_at >= datetime('now', '-1 hour')
+    LIMIT 1
+  `).get(tenantId);
+  if (recentInvoice) return; // Already invoiced recently, skip
+
+  console.log(`[BILLING] Auto-invoice triggered for ${tenant.name}: $${uninvoicedTotal.toFixed(2)} exceeds $${AUTO_INVOICE_THRESHOLD} threshold`);
+
+  // Fire invoice creation asynchronously (don't block the generation response)
+  createAutoInvoice(tenant.stripe_customer_id, tenantId, uninvoicedTotal, db).catch(err => {
+    console.error(`[BILLING] Auto-invoice failed for ${tenant.name}: ${err.message}`);
+  });
+}
+
+/**
+ * Create a Stripe invoice for uninvoiced usage.
+ */
+async function createAutoInvoice(customerId: string, tenantId: string, total: number, db: any): Promise<void> {
+  const STRIPE_SECRET = process.env.STRIPE_SECRET_KEY;
+  if (!STRIPE_SECRET) {
+    console.error('[BILLING] STRIPE_SECRET_KEY not set — cannot auto-invoice');
+    return;
+  }
+
+  // Aggregate uninvoiced usage by provider
+  const usage: any[] = db.prepare(`
+    SELECT provider, operation_type,
+      SUM(units) as total_units,
+      SUM(marked_up_cost_usd) as total_billed,
+      COUNT(*) as count
+    FROM usage_logs
+    WHERE tenant_id = ? AND (billing_status IS NULL OR billing_status = '')
+    GROUP BY provider, operation_type
+  `).all(tenantId);
+
+  if (usage.length === 0) return;
+
+  const headers: Record<string, string> = {
+    'Authorization': `Bearer ${STRIPE_SECRET}`,
+    'Content-Type': 'application/x-www-form-urlencoded',
+  };
+
+  // Create invoice items
+  let totalCents = 0;
+  for (const row of usage) {
+    const amountCents = Math.round(row.total_billed * 100);
+    if (amountCents <= 0) continue;
+    totalCents += amountCents;
+
+    const body = new URLSearchParams({
+      'customer': customerId,
+      'amount': String(amountCents),
+      'currency': 'usd',
+      'description': `${row.provider} — ${row.operation_type} (${row.count} calls, ${row.total_units.toFixed(1)} units)`,
+    });
+
+    const res = await fetch('https://api.stripe.com/v1/invoiceitems', {
+      method: 'POST', headers, body: body.toString(),
+    });
+    if (!res.ok) {
+      const err = await res.text().catch(() => '');
+      throw new Error(`Stripe invoice item failed: ${err.substring(0, 200)}`);
+    }
+  }
+
+  // Create and auto-finalize invoice
+  const invoiceBody = new URLSearchParams({
+    'customer': customerId,
+    'auto_advance': 'true',
+    'collection_method': 'charge_automatically',
+  });
+  const invoiceRes = await fetch('https://api.stripe.com/v1/invoices', {
+    method: 'POST', headers, body: invoiceBody.toString(),
+  });
+  if (!invoiceRes.ok) {
+    const err = await invoiceRes.text().catch(() => '');
+    throw new Error(`Stripe invoice creation failed: ${err.substring(0, 200)}`);
+  }
+  const invoice = await invoiceRes.json();
+
+  // Mark all uninvoiced logs as invoiced
+  db.prepare(`
+    UPDATE usage_logs SET billing_status = 'invoiced'
+    WHERE tenant_id = ? AND (billing_status IS NULL OR billing_status = '')
+  `).run(tenantId);
+
+  console.log(`[BILLING] Auto-invoice created: ${invoice.id} for $${(totalCents / 100).toFixed(2)} (${usage.length} line items) — ${tenantId}`);
 }

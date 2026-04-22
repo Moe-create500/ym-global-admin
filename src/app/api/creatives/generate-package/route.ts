@@ -1,7 +1,9 @@
+import { requireStoreAccess, assertBillingReady } from '@/lib/auth-tenant';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { chatCompletion } from '@/lib/openai-chat';
-import { buildCreativeIntent, buildFastContract, buildGenerationContract, validateGeneratorInputs, CREATIVE_TYPES, FUNNEL_STAGES, HOOK_STYLES, AVATAR_STYLES } from '@/lib/creative-taxonomy';
+import { chatCompletionWithFailover } from '@/lib/openai-chat';
+import { buildCreativeIntent, buildFastContract, buildGenerationContract, validateGeneratorInputs, CREATIVE_TYPES, FUNNEL_STAGES, HOOK_STYLES, AVATAR_STYLES, validateScriptDuration, compressScriptToFit, getDurationBudget, estimateSpokenDuration } from '@/lib/creative-taxonomy';
+import { findBestReference, buildWinnerPromptBlock, buildMoreLikeThisPrompt } from '@/lib/winner-matching';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -152,6 +154,16 @@ function buildStrategy(intel: any, config: any, db: any, storeId: string) {
 // ═══ POST: Generate Creative Package ═══
 
 export async function POST(req: NextRequest) {
+  // ═══ TOP-LEVEL SAFETY: Every code path MUST return JSON, never crash ═══
+  try {
+    return await handleGeneratePackage(req);
+  } catch (fatalErr: any) {
+    console.error('[GENERATE] FATAL unhandled error:', fatalErr.message, fatalErr.stack?.substring(0, 500));
+    return jsonError('INTERNAL_ERROR', `Generation failed: ${(fatalErr.message || 'Unknown error').substring(0, 300)}`, null, 500);
+  }
+}
+
+async function handleGeneratePackage(req: NextRequest) {
   // ── Parse body safely ──
   let body: any;
   try {
@@ -160,7 +172,15 @@ export async function POST(req: NextRequest) {
     return jsonError('INVALID_BODY', 'Request body is not valid JSON', e.message, 400);
   }
 
-  const { storeId, productId, offer, baseAdId, parentId, parentPackageIndex } = body;
+  const { storeId, productId, offer, baseAdId, parentId, parentPackageIndex, winnerReferenceId, moreLikeThis, conceptAngle } = body;
+  // ═══ TENANT ACCESS CHECK ═══
+  const _auth = requireStoreAccess(req, storeId);
+  if (!_auth.authorized) return _auth.response;
+  if (storeId && _auth.authorized) {
+    const billing = assertBillingReady(storeId, _auth.role);
+    if (!billing.allowed) return jsonError('BILLING_REQUIRED', billing.reason, null, 402);
+  }
+
 
   const contentType = normalize(body.contentType || 'video');
   const creativeType = normalize(body.creativeType || 'testimonial');
@@ -170,11 +190,26 @@ export async function POST(req: NextRequest) {
   const generationGoal = normalize(body.generationGoal || 'new_concept');
   const platformTarget = body.platformTarget || 'meta';
   const quantity = body.quantity || 3;
-  const hooksPerConcept = body.hooksPerConcept || 1;
-  const variationsPerHook = body.variationsPerHook || 1;
-  const conceptAngle = (body.conceptAngle || '').trim();
-  const totalPackages = Math.min(quantity * hooksPerConcept * variationsPerHook, 5);
+  // creativesPerConcept is the primary control — always wins over legacy videosPerConcept/imagesPerConcept
+  const perConcept = Math.max(1, parseInt(body.creativesPerConcept) || parseInt(body.videosPerConcept) || 3);
+  const videosPerConcept = perConcept;
+  const imagesPerConcept = perConcept;
+  console.log(`[GENERATE] Volume: ${quantity} concepts × ${perConcept} per concept (total expected: ${quantity * perConcept})`);
   const fastMode = body.fast !== false; // fast mode ON by default
+  // Video duration (seconds) — drives word budget and CTA reservation
+  const videoDuration: number = (() => {
+    const raw = parseInt(body.videoDuration || body.duration || '20', 10);
+    if ([8, 10, 15, 20].includes(raw)) return raw;
+    if (raw <= 8) return 8;
+    if (raw <= 10) return 10;
+    if (raw <= 15) return 15;
+    return 20;
+  })();
+  // Output dimension preset (4:5, 1:1, 9:16, 16:9, auto)
+  const dimension: string = body.dimension || (platformTarget === 'tiktok' ? '9:16' : '4:5');
+  const funnelStructure: string = body.funnelStructure || 'tof';
+  const contentMix: string = body.contentMix || 'video';
+  const isFullFunnel = funnelStructure === 'full';
 
   if (!storeId) {
     return jsonError('MISSING_STORE', 'storeId is required', null, 400);
@@ -195,29 +230,12 @@ export async function POST(req: NextRequest) {
     return jsonError('INVALID_INPUTS', `Input validation failed: ${validation.errors.join(', ')}`, { errors: validation.errors }, 400);
   }
 
-  // ── Duplicate detection: check if identical config was generated in last 10 minutes ──
-  if (!parentId) { // Skip for variations — they're intentionally same config
-    try {
-      const recent: any = db.prepare(`
-        SELECT id, packages, strategy FROM creative_packages
-        WHERE store_id = ? AND content_type = ? AND creative_type = ? AND funnel_stage = ?
-          AND hook_style = ? AND avatar_style = ? AND generation_goal = ? AND quantity = ?
-          AND COALESCE(product_id,'') = ? AND status = 'completed'
-          AND created_at > datetime('now', '-10 minutes')
-        ORDER BY created_at DESC LIMIT 1
-      `).get(storeId, contentType, creativeType, funnelStage, hookStyle, avatarStyle, generationGoal, quantity, productId || '');
-      if (recent?.packages) {
-        return jsonSuccess({
-          id: recent.id,
-          packages: JSON.parse(recent.packages),
-          strategy: recent.strategy ? JSON.parse(recent.strategy) : null,
-          config: { contentType, creativeType, funnelStage, hookStyle, avatarStyle, generationGoal, quantity },
-          cached: true,
-          cacheReason: 'Identical generation found from last 10 minutes. Returning cached result to save API costs.',
-        });
-      }
-    } catch {} // If check fails, proceed with fresh generation
-  }
+  // ── Duplicate detection DISABLED ──
+  // Previously cached by a subset of config fields, which caused stale results
+  // when the user changed the cover image, dimension, content mix, or concept angle.
+  // Cache is now OFF — every generation is fresh. Re-enable only if ALL config
+  // fields (including coverImageUrl) are part of the cache key.
+  // if (!parentId) { /* cache disabled */ }
 
   // ── Stage 1: Parallel data loading (intelligence + product + base ad + parent) ──
   let intel: any = null;
@@ -256,13 +274,13 @@ export async function POST(req: NextRequest) {
 
   if (productResult.status === 'fulfilled' && productResult.value) {
     productObj = productResult.value;
-    productInfo = `\nProduct: ${productObj.title}\nDescription: ${productObj.description || 'N/A'}\nPrice: $${(productObj.price_cents / 100).toFixed(2)}\nCategory: ${productObj.category || 'Health & Beauty'}`;
+    productInfo = `\nProduct: ${productObj.title}\nDescription: ${productObj.description || 'N/A'}\nPrice: $${((productObj.price_cents || 0) / 100).toFixed(2)}\nCategory: ${productObj.category || 'Health & Beauty'}`;
     if (offer) productInfo += `\nOffer: ${offer}`;
   }
 
   if (baseAdResult.status === 'fulfilled' && baseAdResult.value) {
     const adRow = baseAdResult.value as any;
-    baseAdContext = `\n\n=== WINNING AD DNA (PRESERVE THIS STRATEGY) ===\nAd: ${adRow.ad_name || "N/A"}\nHeadline: ${adRow.ad_headline || "N/A"}\nCTA: ${adRow.ad_cta || "N/A"}\nCopy:\n${adRow.ad_body || "N/A"}\n\nWINNER DNA RULES (MANDATORY when goal is use_winner_as_base):\n1. PRESERVE the exact marketing angle of this winning ad\n2. PRESERVE the hook pattern — use the same type of opener\n3. PRESERVE the ad structure — same flow (hook > context > proof > CTA)\n4. PRESERVE the CTA style — same urgency level and phrasing approach\n5. PRESERVE the proof/trust strategy — same type of evidence used\n6. PRESERVE the emotional arc — same feelings triggered in same order\n7. CHANGE only: specific wording, visual setting, presenter, minor phrasing\n8. The output MUST feel like a close strategic descendant of this winner\n9. Do NOT create a completely different concept\n10. If the winner uses urgency, your output uses urgency. If it uses social proof, yours uses social proof.`;
+    baseAdContext = `\n\n═══ BASE AD ═══\nAd: ${adRow.ad_name || 'N/A'}\nHeadline: ${adRow.ad_headline || 'N/A'}\nCTA: ${adRow.ad_cta || 'N/A'}\nCopy:\n${adRow.ad_body || 'N/A'}`;
     if (adRow.video_analysis) baseAdContext += `\n\nDNA:\n${adRow.video_analysis}`;
   }
 
@@ -273,7 +291,33 @@ export async function POST(req: NextRequest) {
     const parentPackages = parentRow.packages ? JSON.parse(parentRow.packages) : [];
     const sourcePackage = parentPackages[parentPackageIndex ?? 0];
     if (sourcePackage) {
-      parentPackageContext = `\n\n═══ SOURCE TO VARY ═══\nTitle: ${sourcePackage.title || 'N/A'}\nAngle: ${sourcePackage.angle || sourcePackage.conceptAngle || 'N/A'}\nHook: ${sourcePackage.hook || sourcePackage.headline || 'N/A'}\n${sourcePackage.script ? `Script:\n${sourcePackage.script}` : ''}\nCTA: ${sourcePackage.cta || sourcePackage.ctaDirection || 'N/A'}\nVARIATION: Keep core angle, change hook/emotion/structure/CTA. Label what changed.`;
+      // Build variation context — include image-specific fields if present
+      const isImagePkg = sourcePackage.imageFormat || sourcePackage.hookText || sourcePackage.proofElement;
+      if (isImagePkg) {
+        parentPackageContext = `\n\n═══ SOURCE IMAGE PACKAGE TO VARY ═══
+Title: ${sourcePackage.title || 'N/A'}
+Angle: ${sourcePackage.angle || sourcePackage.conceptAngle || 'N/A'}
+Format: ${sourcePackage.imageFormat || 'N/A'}
+Hook Text: ${sourcePackage.hookText || sourcePackage.headline || 'N/A'}
+Proof Element: ${sourcePackage.proofElement || 'N/A'}
+Product Placement: ${sourcePackage.productPlacement || 'N/A'}
+CTA: ${sourcePackage.ctaText || sourcePackage.ctaDirection || 'N/A'}
+CTA Placement: ${sourcePackage.ctaPlacement || 'N/A'}
+Layout: ${sourcePackage.visualComposition || 'N/A'}
+
+VARIATION RULES (STRICT):
+- Keep the SAME imageFormat and core layout
+- Keep the SAME product placement
+- Each variation must change exactly ONE element:
+  - Variation 1: Change HOOK TEXT only (different emotional trigger or angle)
+  - Variation 2: Change PROOF ELEMENT only (different proof type: review→stat, stat→before/after)
+  - Variation 3: Change CTA only (different urgency level or action verb)
+  - Variation 4+: Change EMOTIONAL TONE (same layout, different feeling)
+- Label what changed in each variant
+- Do NOT change the layout structure or product placement`;
+      } else {
+        parentPackageContext = `\n\n═══ SOURCE TO VARY ═══\nTitle: ${sourcePackage.title || 'N/A'}\nAngle: ${sourcePackage.angle || sourcePackage.conceptAngle || 'N/A'}\nHook: ${sourcePackage.hook || sourcePackage.headline || 'N/A'}\n${sourcePackage.script ? `Script:\n${sourcePackage.script}` : ''}\nCTA: ${sourcePackage.cta || sourcePackage.ctaDirection || 'N/A'}\nVARIATION RULES: Keep core angle. Each variation changes ONE thing: hook, emotion, CTA, or structure. Label what changed.`;
+      }
     }
   }
 
@@ -286,20 +330,28 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Build prompt context from intelligence ──
+  const fatiguedNames = intel?._forPrompt?.fatiguedNames || [];
+  const learnedWins = (intel?._forPrompt?.learnedWins || []).slice(0, fastMode ? 2 : 5);
+  const learnedLosses = (intel?._forPrompt?.learnedLosses || []).slice(0, fastMode ? 2 : 5);
+  const conceptsToScale = intel?._forPrompt?.conceptsToScale || [];
+  const conceptsToRefresh = intel?._forPrompt?.conceptsToRefresh || [];
+
   let winningAdsContext = '';
-  // ── Build context (compact in fast mode) ──
   const topAdsForPrompt = intel?._forPrompt?.topAds || [];
-  const adsLimit = fastMode ? 3 : 10; // Fewer ads context in fast mode
+  const adsLimit = fastMode ? 3 : 10;
   if (topAdsForPrompt.length > 0) {
-    winningAdsContext = '\n\nTOP ADS:\n';
+    winningAdsContext = '\n\nTOP ADS (use these patterns — they convert):\n';
     topAdsForPrompt.slice(0, adsLimit).forEach((ad: any, i: number) => {
       winningAdsContext += `#${i + 1} ${ad.roas}x ROAS, ${ad.purchases}p, ${ad.ctr}% CTR | "${ad.headline || ad.name}"\n`;
       if (!fastMode && ad.body) winningAdsContext += `Copy: ${ad.body}\n`;
     });
   }
-  const fatiguedNames = intel?._forPrompt?.fatiguedNames || [];
-  const learnedWins = (intel?._forPrompt?.learnedWins || []).slice(0, fastMode ? 2 : 5);
-  const learnedLosses = (intel?._forPrompt?.learnedLosses || []).slice(0, fastMode ? 2 : 5);
+  if (conceptsToScale.length > 0) {
+    winningAdsContext += `\nCONCEPTS WINNING (scale these angles): ${conceptsToScale.slice(0, 3).join(', ')}\n`;
+  }
+  if (conceptsToRefresh.length > 0) {
+    winningAdsContext += `CONCEPTS FATIGUING (create fresh variations): ${conceptsToRefresh.slice(0, 3).join(', ')}\n`;
+  }
 
   // ── Stage 3: Build contract (fast or full) + generate via ChatGPT ──
   let systemPrompt: string;
@@ -311,7 +363,9 @@ export async function POST(req: NextRequest) {
       accountInsights: intel ? { avgRoas: intel.metrics?.avgRoas, avgCtr: intel.metrics?.avgCtr, avgCpa: intel.metrics?.avgCpa, learnedWins, learnedLosses, fatiguedNames } : null,
     });
     // Fast mode: compact contract (~1200 tokens). Full mode: complete contract (~2800 tokens).
-    const contract = fastMode ? buildFastContract(creativeIntent, contentType, totalPackages, funnelStage) : buildGenerationContract(creativeIntent, contentType, totalPackages);
+    const contract = fastMode
+      ? buildFastContract(creativeIntent, contentType, quantity, funnelStage, contentType === 'video' ? videoDuration : undefined)
+      : buildGenerationContract(creativeIntent, contentType, quantity, contentType === 'video' ? videoDuration : undefined);
     const addendum = [
       strategy.evidence?.length > 0 ? `\nEvidence: ${strategy.evidence.slice(0, 3).map((e: any) => `${e.metric}: ${e.value}`).join(', ')}` : '',
       strategy.overrides?.length > 0 ? `\nOverrides: ${strategy.overrides.map((o: any) => `${o.field}: ${o.current}→${o.suggested}`).join(', ')}` : '',
@@ -321,75 +375,371 @@ export async function POST(req: NextRequest) {
     return jsonError('CONTRACT_ERROR', 'Failed to build generation contract', e.message, 500);
   }
 
-  const angleContext = conceptAngle ? `\n\nCUSTOM ANGLE (use this as the primary creative direction — all packages must revolve around this angle): ${conceptAngle}` : '';
+  // ── Winner Reference DNA Injection ──
+  // If "More Like This" is requested with a specific winner, use strict matching.
+  // Otherwise, auto-detect a saved winner that matches the current setup.
+  let matchedWinner: any = null;
+  let winnerSource: 'explicit' | 'auto' | null = null;
+
+  try {
+    if (moreLikeThis && winnerReferenceId) {
+      // Explicit "Generate More Like This" — strongest DNA injection
+      const explicitWinner = db.prepare('SELECT * FROM winner_references WHERE id = ?').get(winnerReferenceId);
+      if (explicitWinner) {
+        matchedWinner = { ...explicitWinner, _matchScore: 100 };
+        winnerSource = 'explicit';
+        systemPrompt += buildMoreLikeThisPrompt(explicitWinner);
+        console.log(`[GENERATE] Using explicit winner reference: "${explicitWinner.title}" for "More Like This"`);
+      }
+    } else if (!isVariation) {
+      // Auto-detect: find best matching winner for this setup
+      const autoMatch = findBestReference(db, storeId, {
+        contentType, creativeType, funnelStage, hookStyle, avatarStyle,
+        platform: platformTarget,
+        duration: contentType === 'video' ? videoDuration : undefined,
+        aspectRatio: dimension,
+      });
+      if (autoMatch) {
+        matchedWinner = autoMatch;
+        winnerSource = 'auto';
+        systemPrompt += buildWinnerPromptBlock(autoMatch);
+        console.log(`[GENERATE] Auto-matched winner reference: "${autoMatch.title}" (${autoMatch._matchScore}% match)`);
+      }
+    }
+  } catch (e: any) {
+    // Winner matching is best-effort — never block generation
+    console.error('[GENERATE] Winner matching error (non-fatal):', e.message);
+  }
+
+  // Concept action (from AI Brain scorecards): scale, refresh, add_tof, add_bof, generate_more
+  const conceptAction = body.conceptAction || '';
+
+  let conceptDirective = '';
+  if (conceptAngle) {
+    conceptDirective = `\n\n═══ CONCEPT/ANGLE (USER-SPECIFIED — HIGHEST PRIORITY) ═══\nBuild ALL packages around this specific angle:\n"${conceptAngle}"\nEvery hook, script, proof element, and CTA must serve this angle. Do NOT deviate into unrelated concepts.\n`;
+  }
+
+  // Add action-specific instructions
+  if (conceptAction === 'scale') {
+    conceptDirective += `\n═══ ACTION: SCALE THIS CONCEPT ═══\nThis concept is a PROVEN WINNER. Generate tight variations:\n- Keep the SAME angle and structure\n- Vary hook wording (same pattern, different words)\n- Vary presenter/avatar\n- Slight script changes (same flow, different examples)\n- Do NOT create a new unrelated concept\n`;
+  } else if (conceptAction === 'refresh') {
+    conceptDirective += `\n═══ ACTION: REFRESH THIS CONCEPT ═══\nThis concept is FATIGUING. Create fresh takes:\n- Keep the same core concept/product angle\n- CHANGE the hook style (new emotional trigger)\n- CHANGE the framing (new perspective)\n- CHANGE the tone (different energy)\n- Do NOT reuse existing scripts — write completely new ones\n- Make it feel like a different ad, same product truth\n`;
+  } else if (conceptAction === 'add_tof') {
+    conceptDirective += `\n═══ ACTION: ADD TOF CREATIVES ═══\nGenerate ONLY Top-of-Funnel (awareness) content for this concept:\n- Scroll-stopping hooks\n- Curiosity-driven openings\n- Pattern interrupts\n- "Did you know" / "Stop scrolling" style\n- Cold audience — they don\'t know the product yet\n`;
+  } else if (conceptAction === 'add_bof') {
+    conceptDirective += `\n═══ ACTION: ADD BOF CREATIVES ═══\nGenerate ONLY Bottom-of-Funnel (conversion) content for this concept:\n- Testimonials and social proof\n- Before/after transformations\n- Offer-driven (discount, bundle, limited time)\n- Urgency and scarcity\n- Direct CTA to purchase\n- Warm audience — they already know the product\n`;
+  } else if (conceptAction === 'generate_more') {
+    conceptDirective += `\n═══ ACTION: GENERATE MORE ═══\nGenerate more content for this existing concept. Be more exploratory:\n- Try different hook styles\n- Try different proof elements\n- Try different emotional angles\n- Keep the core concept but expand creatively\n`;
+  }
+
+  // Load product foundation (beliefs, unique mechanism) if available
+  let foundationDirective = '';
+  if (productId) {
+    try {
+      const foundRow: any = db.prepare('SELECT * FROM product_foundations WHERE product_id = ?').get(productId);
+      if (foundRow) {
+        const beliefs: string[] = JSON.parse(foundRow.beliefs || '[]').filter((b: string) => b.trim());
+        const parts: string[] = [];
+        if (beliefs.length > 0) {
+          parts.push(`\n═══ NECESSARY BELIEFS (from product foundation) ═══`);
+          parts.push(`The customer must believe these things before purchasing. Each concept should attack at least one belief:`);
+          beliefs.forEach((b, i) => parts.push(`${i + 1}. "${b}"`));
+          parts.push(`Structure each creative as an ARGUMENT that leads the viewer to one of these beliefs — not just pretty words.`);
+        }
+        if (foundRow.unique_mechanism) {
+          parts.push(`\nUNIQUE MECHANISM: ${foundRow.unique_mechanism}`);
+          parts.push(`Every creative must position this as a new, different, and superior solution. All roads lead to this product.`);
+        }
+        if (foundRow.offer_brief) {
+          parts.push(`\nOFFER: ${foundRow.offer_brief}`);
+        }
+        if (parts.length > 0) foundationDirective = parts.join('\n');
+      }
+    } catch {}
+  }
+
+  // ═══ Quantity math — concepts × per-concept × stages, split by content mix ═══
+  const stageCount = isFullFunnel ? 3 : 1;
+  const stageList: Array<'tof' | 'mof' | 'bof'> = isFullFunnel
+    ? ['tof', 'mof', 'bof']
+    : [funnelStage as 'tof' | 'mof' | 'bof'];
+  const wantsVideos = contentMix !== 'image';
+  const wantsImages = contentMix === 'image' || contentMix === 'mixed';
+  const videosTotal = wantsVideos ? quantity * videosPerConcept * stageCount : 0;
+  const imagesTotal = wantsImages ? quantity * imagesPerConcept * stageCount : 0;
+  const totalPackages = videosTotal + imagesTotal;
+  // Per-stage counts (what the AI must produce for EACH stage, EACH concept)
+  const videosPerStagePerConcept = wantsVideos ? videosPerConcept : 0;
+  const imagesPerStagePerConcept = wantsImages ? imagesPerConcept : 0;
+
+  // Build structure directive — explicit counts per stage/concept + labeling rules
+  let structureDirective = '';
+  if (isFullFunnel) {
+    const perStageParts: string[] = [];
+    if (videosPerStagePerConcept > 0) perStageParts.push(`${videosPerStagePerConcept} VIDEO script${videosPerStagePerConcept > 1 ? 's' : ''}`);
+    if (imagesPerStagePerConcept > 0) perStageParts.push(`${imagesPerStagePerConcept} IMAGE static${imagesPerStagePerConcept > 1 ? 's' : ''}`);
+    const perStageLabel = perStageParts.join(' + ');
+    structureDirective = `\n\n═══ FULL FUNNEL PACK ═══
+Generate EXACTLY ${totalPackages} packages total.
+Structure: ${quantity} concept(s) × 3 stages (TOF, MOF, BOF) × [${perStageLabel}] per stage per concept.
+
+STAGE DEFINITIONS:
+- TOF (Top of Funnel): scroll-stopping hooks, awareness, curiosity, pattern interrupts. Cold audience.
+- MOF (Middle of Funnel): proof, education, trust-building, social proof, comparisons. Warming up.
+- BOF (Bottom of Funnel): urgency, offers, conversion, direct CTA, scarcity. Ready to buy.
+
+LABELING RULES (STRICT):
+- Every title MUST begin with the stage code in brackets: "[TOF] ...", "[MOF] ...", or "[BOF] ..."
+- Every package MUST include a "stage" field with value "tof", "mof", or "bof" (lowercase)
+- Every package MUST include a "contentType" field with value "video" or "image"
+- For each concept, group packages so TOF come first, then MOF, then BOF
+${contentMix === 'mixed' ? '- For each stage, produce the video script(s) first, then the image static(s)\n' : ''}`;
+  } else if (videosPerStagePerConcept > 1 || imagesPerStagePerConcept > 1 || contentMix === 'mixed') {
+    const perConceptParts: string[] = [];
+    if (videosPerStagePerConcept > 0) perConceptParts.push(`${videosPerStagePerConcept} VIDEO script${videosPerStagePerConcept > 1 ? 's' : ''}`);
+    if (imagesPerStagePerConcept > 0) perConceptParts.push(`${imagesPerStagePerConcept} IMAGE static${imagesPerStagePerConcept > 1 ? 's' : ''}`);
+    const perConceptLabel = perConceptParts.join(' + ');
+    structureDirective = `\n\n═══ STRUCTURE ═══
+Generate EXACTLY ${totalPackages} packages total.
+${quantity} concept(s) × [${perConceptLabel}] per concept.
+All packages target stage: ${funnelStage.toUpperCase()}.
+
+LABELING RULES (STRICT):
+- Every package MUST include a "contentType" field with value "video" or "image"
+- Every package MUST include a "stage" field with value "${funnelStage}"
+- Label video variations "Concept 1 — V1", "Concept 1 — V2"; label image concepts "Concept 1 — I1", "Concept 1 — I2"
+${contentMix === 'mixed' ? '- For each concept, produce the video script(s) first, then the image static(s)\n' : ''}`;
+  } else {
+    // Single stage, single content type, single per-concept — still require labeling
+    structureDirective = `\n\nLABELING: Each package MUST include "contentType" field ("${contentMix === 'image' ? 'image' : 'video'}") and "stage" field ("${funnelStage}").\n`;
+  }
+
+  // Content type for prompt
+  const contentLabel = contentMix === 'mixed' ? 'video and image' : contentMix === 'image' ? 'image' : 'video';
+
   const userPrompt = isVariation
-    ? `Generate ${totalPackages} VARIATIONS.${parentPackageContext}${productInfo}${winningAdsContext}`
-    : `Generate ${totalPackages} ${contentType} creative packages.${angleContext}${productInfo}${baseAdContext}${winningAdsContext}`;
+    ? `Generate ${totalPackages} VARIATIONS.${parentPackageContext}${conceptDirective}${foundationDirective}${productInfo}${winningAdsContext}`
+    : `Generate ${totalPackages} ${contentLabel} creative packages.${structureDirective}${conceptDirective}${foundationDirective}${productInfo}${baseAdContext}${winningAdsContext}`;
 
   let packages: any[] = [];
   let usage: any = null;
+  let usedProvider = 'openai';
+  let failoverFrom: string | undefined;
 
   try {
-    const result = await chatCompletion([
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ], { temperature: 0.9, maxTokens: Math.min(4096, 800 * totalPackages + 200) });
+    // Size token budget by actual totals — mixed mode needs both video (~500) + image (~600) tokens per pkg
+    const videoTokBudget = videosTotal * 500;
+    const imageTokBudget = imagesTotal * 600;
+    const maxTokens = Math.min(12000, videoTokBudget + imageTokBudget + 600);
+    const messages = [
+      { role: 'system' as const, content: systemPrompt },
+      { role: 'user' as const, content: userPrompt },
+    ];
 
-    usage = result.usage;
+    // Try up to 2 times — retry once on parse failure (truncated JSON)
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const aiPromise = chatCompletionWithFailover(messages, { temperature: 0.9, maxTokens });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(Object.assign(new Error('AI generation timed out after 60s'), { code: 'TIMEOUT', isQuota: false })), 60000)
+      );
+      const result = await Promise.race([aiPromise, timeoutPromise]);
 
-    try {
-      const cleaned = result.content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-      packages = JSON.parse(cleaned).packages || [];
-    } catch (parseErr: any) {
-      return jsonError('PARSE_ERROR', 'ChatGPT returned unparseable response', { parseError: parseErr.message, rawLength: result.content?.length }, 500);
+      usage = result.usage;
+      usedProvider = result.provider;
+      failoverFrom = result.failoverFrom;
+
+      if (failoverFrom) {
+        console.log(`[GENERATE] Failover: ${failoverFrom} → ${usedProvider} for store ${storeId}`);
+      }
+
+      try {
+        let cleaned = result.content
+          .replace(/^```(?:json)?\s*/i, '')
+          .replace(/\s*```$/i, '')
+          .trim();
+        const jsonStart = cleaned.indexOf('{');
+        const jsonEnd = cleaned.lastIndexOf('}');
+        if (jsonStart >= 0 && jsonEnd > jsonStart) {
+          cleaned = cleaned.substring(jsonStart, jsonEnd + 1);
+        }
+        const parsed = JSON.parse(cleaned);
+        if (Array.isArray(parsed)) {
+          packages = parsed;
+        } else if (Array.isArray(parsed.packages)) {
+          packages = parsed.packages;
+        } else if (Array.isArray(parsed.creatives)) {
+          packages = parsed.creatives;
+        } else {
+          const arrays = Object.values(parsed).filter(v => Array.isArray(v));
+          if (arrays.length > 0) {
+            packages = arrays[0] as any[];
+          } else {
+            packages = [parsed];
+          }
+        }
+        break; // Parse succeeded — exit retry loop
+      } catch (parseErr: any) {
+        console.error(`[GENERATE] ${usedProvider} parse error (attempt ${attempt}): ${parseErr.message}. Raw (first 300): ${result.content?.substring(0, 300)}`);
+        if (attempt === 2) {
+          return jsonError('PARSE_ERROR', `AI returned truncated response after 2 attempts. Try again or reduce quantity.`, { parseError: parseErr.message, rawLength: result.content?.length, provider: usedProvider }, 500);
+        }
+        console.log(`[GENERATE] Retrying generation (attempt 2)...`);
+      }
+    }
+
+    // ═══ Tag each package with contentType + stage (best-effort inference) ═══
+    // Every package should already have these from the prompt contract, but
+    // add fallback inference so downstream UI always has something to route on.
+    if (packages.length > 0) {
+      for (const pkg of packages) {
+        // Stage inference
+        if (!pkg.stage) {
+          const titleStr = String(pkg.title || '').toLowerCase();
+          if (/\[tof\]|\btof\b/.test(titleStr)) pkg.stage = 'tof';
+          else if (/\[mof\]|\bmof\b/.test(titleStr)) pkg.stage = 'mof';
+          else if (/\[bof\]|\bbof\b/.test(titleStr)) pkg.stage = 'bof';
+          else pkg.stage = funnelStage;
+        }
+        pkg.stage = String(pkg.stage).toLowerCase();
+        if (!['tof', 'mof', 'bof'].includes(pkg.stage)) pkg.stage = funnelStage;
+
+        // contentType inference — explicit field wins; else infer from shape
+        if (!pkg.contentType) {
+          if (pkg.script || pkg.sceneStructure || pkg.brollDirection) pkg.contentType = 'video';
+          else if (pkg.imageFormat || pkg.hookText || pkg.visualComposition || pkg.textOverlays) pkg.contentType = 'image';
+          else pkg.contentType = contentMix === 'image' ? 'image' : 'video';
+        }
+      }
+    }
+
+    // ═══ COUNT ENFORCEMENT — pad if AI returned fewer than requested ═══
+    const expectedTotal = totalPackages;
+    console.log(`[GENERATE] AI returned ${packages.length} packages, expected ${expectedTotal}`);
+    if (packages.length < expectedTotal && packages.length > 0) {
+      console.warn(`[GENERATE] AI under-delivered: ${packages.length}/${expectedTotal}. Padding with variations.`);
+      const original = [...packages];
+      while (packages.length < expectedTotal) {
+        // Clone a package from the originals, cycling through them
+        const source = original[packages.length % original.length];
+        const clone = { ...source };
+        const vi = packages.length + 1;
+        clone.title = `${(source.title || 'Creative').replace(/\s*[—-]\s*V\d+.*$/i, '')} — V${vi}`;
+        if (clone.script) {
+          clone._isVariation = true;
+        }
+        packages.push(clone);
+      }
+      console.log(`[GENERATE] Padded to ${packages.length} packages (${packages.length - original.length} cloned variations)`);
+    }
+
+    // ═══ Duration validation + auto-compression — per-package, only videos ═══
+    // Every VIDEO script must fit within the selected runtime budget.
+    // Images are skipped. Mixed mode validates only the video packages.
+    if (packages.length > 0) {
+      const budget = getDurationBudget(videoDuration);
+      let compressedCount = 0;
+      let stillTooLongCount = 0;
+      for (const pkg of packages) {
+        if (pkg.contentType !== 'video') continue;
+        if (!pkg.script) continue;
+        const initial = validateScriptDuration(pkg.script, videoDuration);
+        // Always attach metadata so we can debug later
+        pkg._duration = videoDuration;
+        pkg._wordBudget = budget.targetWords;
+        pkg._initialWordCount = initial.wordCount;
+        pkg._initialEstimatedSeconds = initial.estimatedSeconds;
+
+        if (!initial.ok && initial.wordCount > budget.maxWords) {
+          // Compress
+          const compressed = compressScriptToFit(pkg.script, videoDuration);
+          pkg.script = compressed.script;
+          pkg._compressed = true;
+          pkg._compressionIterations = compressed.iterations;
+          pkg._finalWordCount = compressed.finalWordCount;
+          pkg._finalEstimatedSeconds = estimateSpokenDuration(compressed.script);
+          compressedCount++;
+
+          // Re-validate
+          const reval = validateScriptDuration(pkg.script, videoDuration);
+          pkg._validationPass = reval.ok;
+          if (!reval.ok && compressed.finalWordCount > budget.maxWords) {
+            stillTooLongCount++;
+            console.warn(`[GENERATE] Script for "${pkg.title}" still too long after compression: ${compressed.finalWordCount} words for ${videoDuration}s (max ${budget.maxWords})`);
+          }
+        } else {
+          pkg._compressed = false;
+          pkg._finalWordCount = initial.wordCount;
+          pkg._finalEstimatedSeconds = initial.estimatedSeconds;
+          pkg._validationPass = initial.ok;
+        }
+      }
+      if (compressedCount > 0) {
+        console.log(`[GENERATE] Compressed ${compressedCount}/${packages.length} video scripts to fit ${videoDuration}s budget (${stillTooLongCount} still over)`);
+      }
     }
   } catch (err: any) {
-    // ── Quota / rate-limit detection ──
-    if (err.isQuota || err.code === 'insufficient_quota' || err.status === 429) {
-      console.error(`[QUOTA] OpenAI quota exceeded for store ${storeId} at ${new Date().toISOString()}`);
+    // ALL providers failed — use rule-based fallback as last resort
+    if (err.code === 'all_providers_failed') {
+      console.error(`[FAILOVER] All providers failed for store ${storeId}: ${err.message}`);
 
-      // Fallback: generate rule-based packages from strategy + taxonomy (no AI needed)
-      const fallbackPackages = Array.from({ length: totalPackages }, (_, i) => {
-        const productTitle = productObj?.title || 'your product';
-        const hookExamples = HOOK_STYLES[hookStyle]?.exampleFormats || ['"Did you know..."'];
-        const hookExample = hookExamples[i % hookExamples.length] || hookExamples[0];
-        const funnelCta = FUNNEL_STAGES[funnelStage]?.ctaStyle || 'Check it out';
-        const avatarDesc = AVATAR_STYLES[avatarStyle]?.castingNotes || 'Relatable presenter';
+      const productTitle = productObj?.title || 'your product';
+      const hookExamples = HOOK_STYLES[hookStyle]?.exampleFormats || ['"Did you know..."'];
+      const avatarDesc = AVATAR_STYLES[avatarStyle]?.castingNotes || 'Relatable presenter';
+      const stageCtaMap: Record<string, string> = {
+        tof: 'Soft CTA — "Tap to learn more"',
+        mof: 'Medium CTA — "See how it works"',
+        bof: 'Hard CTA with urgency — "Shop now"',
+      };
 
-        if (contentType === 'video') {
-          return {
-            title: `${CREATIVE_TYPES[creativeType]?.label || 'Creative'} — ${productTitle} v${i + 1}`,
-            angle: `${CREATIVE_TYPES[creativeType]?.label || 'testimonial'} approach for ${productTitle}`,
-            hook: hookExample.replace(/\[.*?\]/g, productTitle),
-            script: `[Draft — AI unavailable] ${hookExample}. ${productTitle} ${CREATIVE_TYPES[creativeType]?.definition?.split('.')[0] || 'helps solve a real problem'}. ${funnelCta.split(':')[0]}.`,
-            sceneStructure: strategy?.recommendedStructure || 'Hook 0-3s → Context 3-8s → Product 8-15s → CTA 15-20s',
-            visualDirection: 'Handheld camera, natural lighting, real environment. Show the actual product.',
-            brollDirection: `Close-up of ${productTitle} packaging, product in hand, product in use`,
-            presenterBehavior: avatarDesc,
-            pacingNotes: 'Natural UGC pacing, not over-edited',
-            cta: funnelCta.split(':')[0],
-            adCopy: `[Draft] ${CREATIVE_TYPES[creativeType]?.useCase || ''} ${offer ? `Offer: ${offer}` : ''}`,
-            headline: `${productTitle.substring(0, 35)}`,
-            variants: ['Change hook style', 'Change CTA approach', 'Change presenter'],
-            _fallback: true,
-          };
+      // Build fallback packages respecting the exact totals
+      const fallbackPackages: any[] = [];
+      for (let c = 0; c < quantity; c++) {
+        for (const stage of stageList) {
+          const funnelCta = stageCtaMap[stage] || 'Check it out';
+          // Videos for this concept/stage
+          for (let v = 0; v < videosPerStagePerConcept; v++) {
+            const i = fallbackPackages.length;
+            const hookExample = hookExamples[i % hookExamples.length] || hookExamples[0];
+            fallbackPackages.push({
+              title: `[${stage.toUpperCase()}] ${CREATIVE_TYPES[creativeType]?.label || 'Creative'} — ${productTitle} C${c + 1}V${v + 1}`,
+              angle: `${CREATIVE_TYPES[creativeType]?.label || 'testimonial'} approach for ${productTitle}`,
+              hook: hookExample.replace(/\[.*?\]/g, productTitle),
+              script: `[Draft — AI unavailable] ${hookExample}. ${productTitle} ${CREATIVE_TYPES[creativeType]?.definition?.split('.')[0] || 'helps solve a real problem'}. ${funnelCta.split('—')[0]}.`,
+              sceneStructure: strategy?.recommendedStructure || 'Hook 0-3s → Context 3-8s → Product 8-15s → CTA 15-20s',
+              visualDirection: 'Handheld camera, natural lighting, real environment. Show the actual product.',
+              brollDirection: `Close-up of ${productTitle} packaging, product in hand, product in use`,
+              presenterBehavior: avatarDesc,
+              pacingNotes: 'Natural UGC pacing, not over-edited',
+              cta: funnelCta,
+              adCopy: `[Draft] ${CREATIVE_TYPES[creativeType]?.useCase || ''} ${offer ? `Offer: ${offer}` : ''}`,
+              headline: `${productTitle.substring(0, 35)}`,
+              variants: ['Change hook style', 'Change CTA approach', 'Change presenter'],
+              stage,
+              contentType: 'video',
+              _fallback: true,
+            });
+          }
+          // Images for this concept/stage
+          for (let im = 0; im < imagesPerStagePerConcept; im++) {
+            fallbackPackages.push({
+              title: `[${stage.toUpperCase()}] ${CREATIVE_TYPES[creativeType]?.label || 'Creative'} — ${productTitle} C${c + 1}I${im + 1}`,
+              angle: `${CREATIVE_TYPES[creativeType]?.label || 'image'} concept for ${productTitle}`,
+              headline: productTitle.substring(0, 30),
+              subheadline: CREATIVE_TYPES[creativeType]?.useCase?.substring(0, 60) || '',
+              conceptAngle: CREATIVE_TYPES[creativeType]?.definition || '',
+              visualComposition: 'Product hero shot, clean background, bold headline overlay',
+              offerPlacement: offer ? `Offer "${offer}" prominently displayed` : 'No offer specified',
+              ctaDirection: funnelCta.split('—')[0],
+              adCopy: `[Draft] ${CREATIVE_TYPES[creativeType]?.useCase || ''}`,
+              variants: ['Change headline', 'Change layout', 'Change CTA'],
+              stage,
+              contentType: 'image',
+              _fallback: true,
+            });
+          }
         }
-        return {
-          title: `${CREATIVE_TYPES[creativeType]?.label || 'Creative'} — ${productTitle} v${i + 1}`,
-          angle: `${CREATIVE_TYPES[creativeType]?.label || 'image'} concept for ${productTitle}`,
-          headline: productTitle.substring(0, 30),
-          subheadline: CREATIVE_TYPES[creativeType]?.useCase?.substring(0, 60) || '',
-          conceptAngle: conceptAngle || CREATIVE_TYPES[creativeType]?.definition || '',
-          visualComposition: 'Product hero shot, clean background, bold headline overlay',
-          offerPlacement: offer ? `Offer "${offer}" prominently displayed` : 'No offer specified',
-          ctaDirection: funnelCta.split(':')[0],
-          adCopy: `[Draft] ${CREATIVE_TYPES[creativeType]?.useCase || ''}`,
-          variants: ['Change headline', 'Change layout', 'Change CTA'],
-          _fallback: true,
-        };
-      });
+      }
 
-      // Save fallback as completed (it's still useful as a starting point)
       try {
         db.prepare(`INSERT INTO creative_packages (id, store_id, content_type, creative_type, funnel_stage, hook_style, avatar_style, generation_goal, quantity, product_id, offer, base_ad_id, strategy, account_snapshot, packages, status, parent_id, parent_package_index, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`).run(
           packageId, storeId, contentType, creativeType, funnelStage, hookStyle, avatarStyle,
@@ -400,17 +750,18 @@ export async function POST(req: NextRequest) {
         );
       } catch {}
 
+      const providerErrors = err.providerErrors?.map((e: any) => `${e.provider}: ${e.error}`).join('; ') || err.message;
       return jsonSuccess({
         id: packageId, packages: fallbackPackages, strategy,
         snapshot: intel?.metrics || {},
-        config: { contentType, creativeType, funnelStage, hookStyle, avatarStyle, generationGoal, quantity },
+        config: { contentType, contentMix, creativeType, funnelStage, funnelStructure, hookStyle, avatarStyle, generationGoal, quantity, videosPerConcept, imagesPerConcept, videoDuration, dimension, totals: { videos: videosTotal, images: imagesTotal, total: totalPackages, stages: stageList } },
         parentId: parentId || null, version: isVariation ? parentVersion + 1 : 1,
         fallback: true,
-        fallbackReason: 'AI generation temporarily unavailable due to billing limits. Rule-based draft packages generated instead.',
+        fallbackReason: `All AI providers failed (${providerErrors}). Rule-based draft packages generated instead.`,
       });
     }
 
-    // Other errors — save failed and return
+    // Single provider error (non-quota) — save failed and return
     try {
       db.prepare(`INSERT INTO creative_packages (id, store_id, content_type, creative_type, funnel_stage, hook_style, avatar_style, generation_goal, quantity, product_id, offer, base_ad_id, strategy, account_snapshot, status, parent_id, parent_package_index, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?)`).run(
         packageId, storeId, contentType, creativeType, funnelStage, hookStyle, avatarStyle, generationGoal, quantity,
@@ -436,7 +787,7 @@ export async function POST(req: NextRequest) {
     return jsonSuccess({
       id: packageId, packages, strategy,
       snapshot: intel?.metrics || {},
-      config: { contentType, creativeType, funnelStage, hookStyle, avatarStyle, generationGoal, quantity },
+      config: { contentType, contentMix, creativeType, funnelStage, funnelStructure, hookStyle, avatarStyle, generationGoal, quantity, videosPerConcept, imagesPerConcept, videoDuration, dimension, totals: { videos: videosTotal, images: imagesTotal, total: totalPackages, stages: stageList } },
       usage, parentId: parentId || null, version,
       warning: `Packages generated but failed to save: ${dbErr.message}`,
     });
@@ -445,8 +796,18 @@ export async function POST(req: NextRequest) {
   return jsonSuccess({
     id: packageId, packages, strategy,
     snapshot: intel?.metrics || {},
-    config: { contentType, creativeType, funnelStage, hookStyle, avatarStyle, generationGoal, quantity },
+    config: { contentType, contentMix, creativeType, funnelStage, funnelStructure, hookStyle, avatarStyle, generationGoal, quantity, videosPerConcept, imagesPerConcept, videoDuration, dimension, totals: { videos: videosTotal, images: imagesTotal, total: totalPackages, stages: stageList } },
     usage, parentId: parentId || null, version,
+    provider: usedProvider,
+    ...(failoverFrom ? { failoverFrom, failoverNote: `OpenAI unavailable — generated with ${usedProvider === 'gemini' ? 'Gemini' : usedProvider}` } : {}),
+    ...(matchedWinner ? {
+      winnerReference: {
+        id: matchedWinner.id,
+        title: matchedWinner.title,
+        matchScore: matchedWinner._matchScore,
+        source: winnerSource,
+      },
+    } : {}),
   });
 }
 

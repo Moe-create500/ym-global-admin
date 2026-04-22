@@ -563,10 +563,15 @@ export const META_PERFORMANCE_KB = {
   image: {
     bestPractices: [
       'Less than 20% text coverage — Meta deprioritizes text-heavy images.',
-      'Bold, high-contrast headline readable in thumbnail size.',
-      'Product must be clearly visible and identifiable.',
-      'Simple composition — one focal point, not cluttered.',
+      'Bold, high-contrast headline readable at mobile thumbnail size (48px+ equivalent).',
+      'Product must be clearly visible and identifiable within 1 second of viewing.',
+      'Simple composition — one focal point, not cluttered. Maximum 3 text elements (hook + proof + CTA).',
       'Lifestyle > studio for TOF. Product hero > lifestyle for BOF.',
+      'Every static ad must follow HOOK → PROOF → PRODUCT → CTA hierarchy top-to-bottom.',
+      'Proof element must be visually distinct (star rating, stat number, quote marks, comparison checkmarks).',
+      'CTA must be the most actionable element — clear verb, accent color, bottom placement.',
+      'For supplements/beauty: show the actual bottle/packaging, not abstract ingredient graphics.',
+      'Avoid: vague headlines, abstract concepts, pretty-but-non-selling layouts, weak CTAs, cluttered compositions.',
     ],
   },
   hooks: {
@@ -720,6 +725,181 @@ export const META_PERFORMANCE_KB = {
       copyPrompts: ['"Ends tonight"', '"Tap to claim free shipping"', '"90-day results or it\'s on us"', 'Bundle price math'],
       kpiTargets: 'CPA target met, ROAS target met, On-site CVR optimized',
     },
+  },
+  // ── Image Ad Engine — strict format types + layout rules ──
+  imageAdFormats: {
+    testimonial_image: {
+      id: 'testimonial_image', label: 'Testimonial Image',
+      structure: 'HOOK (top) → PROOF (middle) → PRODUCT (center/bottom) → CTA (bottom)',
+      layout: 'Review quote at top in large bold text with quotation marks. 5-star rating directly below quote. Product image center-right at 30-40% of frame. Customer first name + "Verified Buyer" bottom-left. CTA button bottom-right.',
+      textDensity: 'Medium — headline + quote + CTA. Under 20% coverage.',
+      visualRules: 'Real product photo. Quote marks around testimonial. Warm, trustworthy color palette (cream/white bg, dark text). Star rating must be gold/yellow.',
+      useCase: 'MOF/BOF retargeting with social proof.',
+      whyItConverts: 'Third-party voice is more believable than brand claims. Star rating creates instant credibility. Specific detail in the quote ("after 2 weeks") outperforms vague praise.',
+      bestHookPatterns: ['"I didn\'t expect results this fast"', '"I\'ve tried everything — this actually worked"', '"My [skin/energy/sleep] changed in [X] days"', '"4.8 stars and I see why"'],
+      bestProofPatterns: ['specific-timeframe quote ("After just 2 weeks...")', 'before/after detail in quote', 'reorder mention ("Already on my 3rd bottle")', 'skeptic-to-believer arc'],
+      bestCtaByFunnel: { tof: 'See Why People Love It', mof: 'Read More Reviews', bof: 'Try It Risk-Free' },
+      avoid: ['Generic praise ("Great product!"). Fake-sounding quotes. No star rating. Quote longer than 2 lines. Stock photo customer.'],
+      supplementBeautyBias: 'Use real condition the product addresses. Quote should mention specific improvement. Include reorder signal if possible.',
+    },
+    review_stack: {
+      id: 'review_stack', label: 'Review Stack',
+      structure: 'HOOK (header stat) → PROOF (stacked reviews) → PRODUCT (sidebar) → CTA (bottom)',
+      layout: 'Top: "4.8 stars from 12,000+ reviews" in bold. 3 review cards stacked vertically, each with star rating + 1-line quote + first name. Product image 25% width on right side. CTA bar full width at bottom.',
+      textDensity: 'High — multiple review quotes. Keep each to 1 line max. Under 20% total.',
+      visualRules: 'Clean grid layout. Screenshot-style review cards with slight shadow. Gold star graphics. Alternating subtle card backgrounds.',
+      useCase: 'MOF/BOF trust building with volume proof.',
+      whyItConverts: 'Volume of reviews creates consensus effect. Multiple voices feel more authentic than one. The aggregate stat anchors credibility.',
+      bestHookPatterns: ['"15,000+ verified reviews — here\'s what they say"', '"Why this has a 4.8-star average"', '"3 reviews that changed my mind"', '"What 10,000 customers discovered"'],
+      bestProofPatterns: ['3 diverse quotes (different benefits: energy, skin, sleep)', 'each review mentions a specific timeframe', 'one review mentions switching from a competitor', 'aggregate stat header (total reviews + avg rating)'],
+      bestCtaByFunnel: { tof: 'See All Reviews', mof: 'Join 15,000+ Happy Customers', bof: 'Get Yours Today' },
+      avoid: ['All reviews saying the same thing. Reviews longer than 1 line each. No aggregate stat. Fake-looking perfect reviews. No star ratings.'],
+      supplementBeautyBias: 'Each review should mention a different benefit. Include a skeptic-to-believer review. One review should mention reordering.',
+    },
+    offer_stack: {
+      id: 'offer_stack', label: 'Offer Stack',
+      structure: 'HOOK (urgency headline) → PRODUCT (hero) → OFFER (price/bundle) → CTA (action)',
+      layout: 'Urgency headline at top in bold ("Buy 2 Get 1 FREE" or "40% OFF Today Only"). Hero product image center at 40% of frame. Price comparison: strikethrough old price → new price. Bundle visual if applicable. High-contrast CTA button at bottom.',
+      textDensity: 'Medium-high — price, offer, CTA. Bold typography with price emphasis.',
+      visualRules: 'High-contrast colors. Price must be largest number on the image. Red strikethrough on old price. Green/bold on new price. Urgency badge (LIMITED TIME, TODAY ONLY). Product must be exact from source images.',
+      useCase: 'BOF conversion and retargeting.',
+      whyItConverts: 'Price anchoring (strikethrough) creates perceived value. Urgency creates FOMO. Bundle math makes the deal feel logical. Clear savings number reduces purchase friction.',
+      bestHookPatterns: ['"Buy 2 Get 1 FREE — Today Only"', '"40% OFF — Limited Stock"', '"$29/bottle (was $49) — Bundle & Save"', '"Free Shipping + 20% OFF This Week"'],
+      bestProofPatterns: ['price comparison (was/now)', 'savings math ("Save $47")', 'bundle breakdown showing per-unit cost', 'urgency countdown or stock indicator'],
+      bestCtaByFunnel: { tof: 'See the Deal', mof: 'Claim Your Bundle', bof: 'Shop Now — 40% OFF' },
+      avoid: ['Hiding the price. Vague discounts without numbers. No urgency signal. Burying the offer below the fold. Making it look like spam.'],
+      supplementBeautyBias: 'Show bundle (3-bottle or 6-bottle) prominently. Per-unit math helps. Free shipping badge. Subscription savings if applicable.',
+    },
+    before_after: {
+      id: 'before_after', label: 'Before / After',
+      structure: 'BEFORE (left/top) → AFTER (right/bottom) → PRODUCT (center) → CTA (bottom)',
+      layout: 'Clean split view: left=before state with "BEFORE" label, right=after state with "AFTER" label. Clear divider line. Product overlapping center at the divider. Timeline text ("After 4 weeks") below product. CTA at bottom.',
+      textDensity: 'Low-medium — labels + timeline + CTA only. Let the visual contrast do the selling.',
+      visualRules: 'SAME lighting, SAME angle, SAME person in both halves. Before side slightly desaturated. After side warm/vibrant. Product at center divider creates the visual bridge.',
+      useCase: 'MOF/BOF proof-driven conversion.',
+      whyItConverts: 'Visual transformation is instantly understandable. The contrast creates desire. Timeframe makes results feel achievable. The product at center positions it as the bridge between states.',
+      bestHookPatterns: ['"4 weeks. Same person."', '"What 30 days looks like"', '"The difference is real"', '"Before I found this vs. After"'],
+      bestProofPatterns: ['specific timeframe (weeks/days)', 'same-person same-angle comparison', 'zoom detail on the improvement area', 'product as the visual bridge between states'],
+      bestCtaByFunnel: { tof: 'See the Transformation', mof: 'Start Your Transformation', bof: 'Get Started Today' },
+      avoid: ['Different lighting/angles between halves. Unrealistic transformations. No timeframe. Missing the product. Before/after that looks the same.'],
+      supplementBeautyBias: 'Show realistic, believable transformation. Skin clarity, energy level, or physique — not dramatic overnight changes. Include "results may vary" small.',
+    },
+    product_highlight: {
+      id: 'product_highlight', label: 'Product Highlight',
+      structure: 'PRODUCT (hero center) → KEY BENEFIT (overlay) → INGREDIENT CALLOUTS (around product) → CTA (bottom)',
+      layout: 'Product image large and centered at 50% of frame. 2-3 ingredient/benefit callout badges around product connected by thin lines. Clean white or brand-color background. Single bold benefit headline above product. CTA at bottom.',
+      textDensity: 'Low — callout badges + headline + CTA. Visual-first.',
+      visualRules: 'Product from exact source images, clean background. Ingredient callout badges are small rounded pills. Professional but not clinical. Brand colors in accents.',
+      useCase: 'TOF/MOF product awareness and education.',
+      whyItConverts: 'Clean product visibility builds recognition. Ingredient callouts educate without overwhelming. Works for cold audiences who need to understand what they are looking at.',
+      bestHookPatterns: ['"3 ingredients your [routine] is missing"', '"What\'s actually inside"', '"The formula behind the results"', '"Clean. Tested. Effective."'],
+      bestProofPatterns: ['ingredient badges with benefit labels', 'dosage amounts on callouts', '"clinically studied" or "third-party tested" badge', 'key differentiator callout'],
+      bestCtaByFunnel: { tof: 'Learn More', mof: 'See Full Ingredients', bof: 'Add to Cart' },
+      avoid: ['Too many callouts (max 3). Cluttered layout. Generic "premium quality" claims. Hiding the product behind text. Ingredient names without benefit context.'],
+      supplementBeautyBias: 'Show dosage per capsule on callouts. Highlight hero ingredient with a brief benefit. Show capsule count on bottle.',
+    },
+    problem_solution: {
+      id: 'problem_solution', label: 'Problem → Solution',
+      structure: 'PROBLEM (top, bold) → AGITATION (subtext) → SOLUTION/PRODUCT (center) → CTA (bottom)',
+      layout: 'Bold problem statement at top in high-contrast text. 1-line agitation subtext below in smaller font. Divider or arrow pointing down. Product image as the solution in center with "The Solution:" label. Benefit statement beside product. CTA at bottom.',
+      textDensity: 'Medium — problem + agitation + solution label + CTA.',
+      visualRules: 'Problem zone uses warning colors (red/dark amber text or desaturated bg). Solution zone uses positive colors (green/bright, product glows). Clear visual contrast between the two halves.',
+      useCase: 'TOF/MOF awareness for problem-aware audiences.',
+      whyItConverts: 'Identifies the pain first, creating recognition. Agitation deepens the urgency. Product as solution creates a logical resolution. Works because people buy solutions, not products.',
+      bestHookPatterns: ['"Still struggling with [problem]?"', '"Tired of [frustration]?"', '"If [common problem], read this"', '"The real reason your [routine] isn\'t working"'],
+      bestProofPatterns: ['problem stated as question the viewer identifies with', 'brief agitation making the problem feel urgent', 'product positioned as the resolution with benefit', 'optional: small social proof badge near CTA'],
+      bestCtaByFunnel: { tof: 'Discover the Fix', mof: 'See How It Works', bof: 'Solve It Now' },
+      avoid: ['Vague problems nobody identifies with. No clear solution shown. Problem and solution looking visually similar. Preachy or medical-claim tone.'],
+      supplementBeautyBias: 'Name the specific condition: fatigue, breakouts, bloating, dull skin — not "feel better". Show the product next to the solution benefit.',
+    },
+    comparison: {
+      id: 'comparison', label: 'Comparison',
+      structure: 'THEIRS (left) → OURS (right) → PRODUCT (right hero) → CTA (bottom)',
+      layout: 'Two-column split: left="Typical [category]" in muted/gray tones with X marks, right="[Product Name]" in vibrant brand tones with checkmarks. 3-4 comparison points stacked. Our product image on right column. CTA spanning bottom.',
+      textDensity: 'Medium — 3-4 comparison bullet points. Short, scannable.',
+      visualRules: 'Left column desaturated/gray. Right column vibrant/branded. Checkmarks green, X marks red. Our product image vivid, competitors represented generically. Clear visual winner on the right.',
+      useCase: 'MOF/BOF competitive differentiation.',
+      whyItConverts: 'Side-by-side contrast makes the choice obvious. Checkmarks create subconscious scoring. The visual weight is biased toward our product. Works for audiences comparing options.',
+      bestHookPatterns: ['"Not all [products] are created equal"', '"What you\'re really getting"', '"The difference matters"', '"Why people are switching"'],
+      bestProofPatterns: ['3-4 specific comparison points (dosage, purity, testing, price)', 'checkmark vs X visual scoring', 'competitor represented as generic category not specific brand', 'our product shown as vivid hero image'],
+      bestCtaByFunnel: { tof: 'See the Difference', mof: 'Compare Now', bof: 'Make the Switch' },
+      avoid: ['Naming specific competitor brands (legal risk). Too many comparison points (max 4). Both columns looking equal. Unfair or misleading comparisons.'],
+      supplementBeautyBias: 'Compare on: dosage, third-party testing, filler-free, capsule count, bioavailability. These are real differentiators supplement buyers care about.',
+    },
+    social_proof_stats: {
+      id: 'social_proof_stats', label: 'Social Proof Stats',
+      structure: 'STAT (hero number) → CONTEXT (supporting text) → PRODUCT (bottom) → CTA (bottom)',
+      layout: 'Massive stat number top-center at 72px+ ("15,000+"). Descriptor text directly below ("Happy Customers" or "5-Star Reviews"). Product image bottom-center at 30% of frame. CTA button below product.',
+      textDensity: 'Low — one big number, one line of context, CTA. Maximum impact, minimum clutter.',
+      visualRules: 'Stat number is the visual hero — largest element on the image. Bold sans-serif. Clean background. Product recognizable but not dominant.',
+      useCase: 'MOF/BOF trust building.',
+      whyItConverts: 'Large numbers trigger bandwagon effect. Simple composition is scannable in 1 second. The stat does the selling — the product just needs to be identifiable.',
+      bestHookPatterns: ['"15,000+ happy customers can\'t be wrong"', '"4.8 stars from real buyers"', '"Reordered 3x on average"', '"#1 rated in [category]"'],
+      bestProofPatterns: ['customer count', 'average star rating', 'reorder rate', 'units sold', 'years trusted'],
+      bestCtaByFunnel: { tof: 'Join Thousands of Fans', mof: 'See Why They Love It', bof: 'Get Yours Now' },
+      avoid: ['Fake or inflated numbers. No supporting context for the stat. Stat buried in text. Multiple competing numbers. Product taking visual priority over the stat.'],
+      supplementBeautyBias: 'Use reorder rate or review count — these are uniquely credible for supplements. "3rd bottle on average" is stronger than "thousands sold".',
+    },
+    ugc_style_still: {
+      id: 'ugc_style_still', label: 'UGC-Style Still',
+      structure: 'HOOK (text overlay) → PRODUCT IN CONTEXT (lifestyle photo) → CTA (small overlay)',
+      layout: 'Lifestyle photo: person holding/using product in real environment (kitchen counter, bathroom mirror, gym bag). Bold text overlay at top in social-media-native font (white with black shadow). Tiny CTA text at bottom. Looks like a screenshot of a TikTok or Instagram post.',
+      textDensity: 'Low — 1 hook line + tiny CTA. Mostly visual context.',
+      visualRules: 'Must look like a real social media post, NOT a designed ad. Phone-quality lighting. Slightly imperfect composition. Product visible but held naturally. No logo overlays. No branded frames.',
+      useCase: 'TOF awareness, native feed content.',
+      whyItConverts: 'Bypasses ad blindness — looks like organic content. The authenticity triggers trust. Platform-native feel increases engagement. Best for cold audiences who ignore polished ads.',
+      bestHookPatterns: ['"this changed my routine"', '"I didn\'t think this would work but..."', '"why is nobody talking about this"', '"3 weeks in and wow"', '"the one thing I actually reorder"'],
+      bestProofPatterns: ['implied personal use (product in hand, in real setting)', 'casual tone implies genuine experience', 'lifestyle context shows integration into daily life', 'raw aesthetic signals authenticity'],
+      bestCtaByFunnel: { tof: 'link in bio', mof: 'check the reviews', bof: 'tap to try' },
+      avoid: ['Polished studio look. Brand logos on the photo. Professional lighting. Model-quality person. Designed CTA buttons. Any element that screams "ad".'],
+      supplementBeautyBias: 'Show the bottle in a real kitchen/bathroom. Person should be relatable, not aspirational. Hand-holding-product or product-on-counter works best.',
+    },
+    authority_claim: {
+      id: 'authority_claim', label: 'Authority Claim',
+      structure: 'CREDENTIAL (top) → CLAIM (center) → PRODUCT (bottom) → CTA (bottom)',
+      layout: 'Credential badge or title at top ("Recommended by Nutritionists" or "Backed by 12 Clinical Studies"). Bold benefit claim in center in large text. Product image bottom-center with ingredient highlight. CTA button at bottom.',
+      textDensity: 'Medium — credential + claim + CTA.',
+      visualRules: 'Professional, clean, medical-grade aesthetic. Trust badges (third-party tested, GMP certified). White or light blue background. No flashy colors — credibility over excitement.',
+      useCase: 'MOF trust building for supplements and clinical skincare.',
+      whyItConverts: 'Authority bypasses personal skepticism. Credentials create implied endorsement. Works for audiences who research before buying. The clinical feel justifies the price.',
+      bestHookPatterns: ['"Recommended by nutritionists"', '"Backed by science, loved by customers"', '"The #1 doctor-recommended [type]"', '"Clinically studied ingredients inside"'],
+      bestProofPatterns: ['professional credential or title', 'number of studies or clinical trials', 'certification badges (GMP, third-party tested, NSF)', 'expert quote or recommendation'],
+      bestCtaByFunnel: { tof: 'Learn the Science', mof: 'See the Research', bof: 'Doctor-Recommended — Try Now' },
+      avoid: ['Fake credentials. Medical claims that violate FTC/FDA. "Doctor" without actual doctor endorsement. Overly clinical look that feels pharmaceutical. Claims without backing.'],
+      supplementBeautyBias: 'GMP certified, third-party tested, and "formulated by" are the strongest trust signals for supplements. For beauty: dermatologist-tested, clinical trial results.',
+    },
+  },
+  // ── Image Platform Rules ──
+  imagePlatformRules: {
+    meta: {
+      ratio: '1:1 (feed) or 4:5 (feed tall) or 9:16 (stories)',
+      textRule: 'Under 20% text coverage — Meta deprioritizes text-heavy images.',
+      layout: 'Clear visual hierarchy. One focal point. Bold headline readable at mobile thumbnail size. Product identifiable within 1 second. Structure follows HOOK→PROOF→PRODUCT→CTA top-to-bottom.',
+      style: 'Polished but authentic. Clean composition. Conversion-ready. Professional sans-serif typography (Montserrat/Inter weight). Strong contrast ratios.',
+      cta: 'CTA button style at bottom — rounded rectangle, accent color, white text. Clear action verb matching funnel stage.',
+      visualMood: 'Clean, bright, professional. Light backgrounds (white, cream, light gray). Bold accent colors for CTA and key elements. Product photography should feel premium but real.',
+      drRules: 'Every image must pass the 1-second test: viewer knows WHAT the product is, WHY they should care, and WHAT to do next. No ambiguity. No abstract concepts.',
+    },
+    tiktok: {
+      ratio: '9:16 (full screen) or 1:1',
+      textRule: 'TikTok-native text overlays. Bold, centered, short phrases. White text with black drop shadow. Not polished brand graphics.',
+      layout: 'Looser composition. Text overlays feel hand-placed, not grid-aligned. Product shown in real context (hand, counter, bag). Hook text dominates the top third.',
+      style: 'Raw, native, phone-screenshot aesthetic. Like a creator post, not a brand ad. Slightly warm/saturated color grade. Imperfect framing is intentional.',
+      cta: 'Soft: "link in bio", "check this out", "tap for details". Text-only, no formal button graphic. Placed casually at bottom.',
+      visualMood: 'Warm, saturated, casual. Real environments (kitchen, bathroom, desk). Phone-camera quality lighting (not studio). Product held or placed naturally.',
+      drRules: 'Must look like something a real person posted, not something a brand designed. The hook text is the ad — everything else supports it. Proof should feel organic (screenshot of review, casual mention).',
+    },
+  },
+  // ── CapCut Layout Spec (for image-to-layout pipeline) ──
+  capcutLayoutSpec: {
+    zones: {
+      top: 'Hook zone — headline text. Font: bold sans-serif, 48-72px. Color: white on dark or black on light. Position: 10-25% from top.',
+      center: 'Product/proof zone — hero image or proof element. Position: 25-70% vertical.',
+      bottom: 'CTA zone — action text + offer. Font: bold, 36-48px. Color: accent color. Position: 75-90% from top.',
+    },
+    fontRules: 'Sans-serif only (Montserrat, Inter, or Poppins style). Bold for headlines, regular for body. Maximum 3 font sizes per image.',
+    colorRules: 'Maximum 3 colors: background, text, accent. Accent for CTA and key numbers. High contrast between text and background.',
+    spacingRules: 'Minimum 5% padding from all edges. Minimum 3% spacing between text blocks. No overlapping text elements.',
   },
   // ── Modular UGC Script Structure (45-60s) ──
   ugcScriptStructure: {
@@ -1131,16 +1311,18 @@ export function buildCreativeIntent(config: {
  * Drops: performance principles, variation testing theory, full placement specs, hook timing theory.
  * Keeps: creative definition, funnel rules, hook behavior, presenter style, policy, output schema.
  */
-export function buildFastContract(intent: CreativeIntent, contentType: string, quantity: number, funnelStage?: string): string {
+export function buildFastContract(intent: CreativeIntent, contentType: string, quantity: number, funnelStage?: string, videoDuration?: number): string {
   const playbook = META_PERFORMANCE_KB.funnelPlaybook[(funnelStage || 'tof') as keyof typeof META_PERFORMANCE_KB.funnelPlaybook];
-  const videoOutputSpec = `Each video package JSON: { "title": "max 60 chars", "angle": "5-10 words", "hook": "exact opening 1-3s word-for-word", "script": "15-30s with [directions]", "sceneStructure": "second-by-second", "visualDirection": "camera, lighting, setting", "brollDirection": "3-5 shots", "presenterBehavior": "delivery style", "pacingNotes": "edit rhythm", "cta": "exact CTA", "adCopy": "Facebook text 3-8 sentences", "headline": "max 40 chars", "variants": ["3 one-line variations"] }`;
-  const imageOutputSpec = `Each image package JSON: { "title": "max 60 chars", "angle": "5-10 words", "headline": "max 8 words", "subheadline": "max 15 words", "conceptAngle": "why it works", "visualComposition": "layout spec", "offerPlacement": "where offer goes", "ctaDirection": "CTA style", "adCopy": "Facebook text 3-8 sentences", "variants": ["3 one-line variations"] }`;
+  const dur = videoDuration || 20;
+  const budget = getDurationBudget(dur);
+  const videoOutputSpec = `Each video package JSON: { "title": "max 60 chars", "angle": "5-10 words", "hook": "exact opening words (max ${budget.beats[0].maxWords} words)", "script": "EXACT spoken script for ${dur}s, ${budget.minWords}-${budget.maxWords} words total. CTA at end must fit ${budget.ctaMaxWords} words. Stage directions in [brackets] don't count.", "sceneStructure": "second-by-second", "visualDirection": "camera, lighting, setting", "brollDirection": "3-5 shots", "presenterBehavior": "delivery style", "pacingNotes": "edit rhythm", "cta": "exact CTA, max ${budget.ctaMaxWords} words", "adCopy": "Facebook text 3-8 sentences", "headline": "max 40 chars", "variants": ["3 one-line variations"] }`;
+  const imageOutputSpec = `Each image package JSON: { "title": "max 60 chars", "angle": "5-10 words — the specific selling angle, not generic", "imageFormat": "one of: testimonial_image, review_stack, offer_stack, before_after, product_highlight, problem_solution, comparison, social_proof_stats, ugc_style_still, authority_claim", "headline": "max 8 words, bold, specific, scroll-stopping — NOT generic ('Discover the hype'). Must name the benefit or create urgency", "subheadline": "max 15 words, supports headline with proof or specificity", "hookText": "the scroll-stopping text overlay max 10 words — this is the MOST important element. Must be specific, believable, and create curiosity or recognition. Strong examples: 'I didn't think this would work', '4.8 stars from 15,000 buyers', 'Why so many people keep reordering this'. Weak examples to AVOID: 'Discover the hype', 'Learn more', 'Why it works'", "proofElement": "SPECIFIC proof: exact review quote with customer name, exact stat with number, exact before/after timeframe, exact ingredient with dosage, exact certification. NOT vague ('social proof' or 'customer reviews')", "productPlacement": "where product appears (center, right-side, bottom, top-right overlay, split-view)", "ctaText": "exact CTA text matching funnel: TOF='See Why People Love It', MOF='Read the Reviews', BOF='Shop Now — 40% OFF'", "ctaPlacement": "bottom-center, bottom-right, or text-overlay", "visualComposition": "layout: top=hook zone, center=proof+product zone, bottom=CTA zone. Specify ratio (1:1 for Meta feed, 9:16 for TikTok). Colors and background.", "colorScheme": {"background": "#hex", "textPrimary": "#hex", "accent": "#hex for CTA"}, "offerPlacement": "where price/discount appears if applicable — must include actual numbers", "textOverlays": [{"text": "exact text", "position": "top/center/bottom", "fontSize": "48px/36px/24px", "fontWeight": "bold/regular", "color": "#hex"}], "adCopy": "platform primary text 3-8 sentences — specific benefits not generic claims", "variants": ["3-5 variations — each MUST change a DIFFERENT element: hook angle, proof type, format type, CTA urgency, or emotional framing. Not just wording tweaks."] }`;
 
   // Compact creative + funnel definition (strip useCase/antiPatterns to save tokens)
   const cr = CREATIVE_TYPES[Object.keys(CREATIVE_TYPES).find(k => intent.creativeDefinition.includes(CREATIVE_TYPES[k].label)) || 'testimonial'];
   const compactCreative = `TYPE: ${cr.label}. ${cr.definition} Requirements: ${cr.outputRequirements}`;
 
-  return `Elite creative director for supplements & beauty on Meta. ${contentType === 'video' ? '9:16 vertical video, 15-30s.' : 'Static image 1080x1080 or 4:5.'}
+  return `Elite creative director for supplements & beauty on Meta. ${contentType === 'video' ? `9:16 vertical video, ${dur}s.` : 'Static image 1080x1080 or 4:5.'}
 
 ${compactCreative}
 
@@ -1154,8 +1336,8 @@ ${intent.formatRealismDirectives}
 
 PLATFORM: ${intent.platformDirectives.split('\n').slice(0, 3).join('. ')}
 
-RULES: NO music/soundtrack — voice + room tone only. Show ONLY the exact product specified — no generics.
-${contentType === 'video' ? `SCRIPT BEATS: Hook (0-3s) scroll-stop → Problem+Product (3-10s) → Proof (10-18s) → CTA (18-20s).` : ''}
+RULES: Show ONLY the exact product specified — no generics.
+${contentType === 'video' ? `NO music/soundtrack — voice + room tone only.\n\n${buildDurationDirective(dur)}` : `IMAGE DR FRAMEWORK: Every static ad MUST follow HOOK → PROOF → PRODUCT → CTA hierarchy. Hook must be specific and scroll-stopping (not generic). Proof must be concrete (exact quote, exact stat, exact timeframe). CTA must match funnel stage. AVOID: vague headlines, abstract concepts, pretty-but-non-selling layouts, generic hooks like "Discover the hype" or "Learn more". For supplements/beauty: show the actual bottle, name the specific benefit, use believable proof.`}
 
 POLICY: No "cure/treat/prevent". Use "supports/helps/promotes". No fake reviews.
 
@@ -1165,13 +1347,15 @@ OUTPUT: ${contentType === 'video' ? videoOutputSpec : imageOutputSpec}
 Return: { "packages": [${quantity} objects] }. Each unique angle.`;
 }
 
-export function buildGenerationContract(intent: CreativeIntent, contentType: string, quantity: number): string {
+export function buildGenerationContract(intent: CreativeIntent, contentType: string, quantity: number, videoDuration?: number): string {
+  const dur = videoDuration || 20;
+  const budget = getDurationBudget(dur);
   const videoOutputSpec = `For EACH video package, return exactly this JSON structure:
 {
   "title": "max 60 chars — descriptive creative title",
   "angle": "core marketing angle in 5-10 words",
-  "hook": "EXACT opening line/moment word-for-word (first 1-3 seconds). This is the most important element.",
-  "script": "Full 15-30s script with [speaker directions]. Include exact dialogue. Must reflect the presenter style and hook style defined above.",
+  "hook": "EXACT opening line/moment word-for-word (first 1-3 seconds). MAX ${budget.beats[0].maxWords} spoken words. This is the most important element.",
+  "script": "Full ${dur}s script with [speaker directions]. EXACT dialogue, ${budget.minWords}-${budget.maxWords} spoken words total (target ${budget.targetWords}). Stage directions in [brackets] are not counted. CTA must fit in last ${budget.ctaReserveSeconds}s using max ${budget.ctaMaxWords} words.",
   "sceneStructure": "Second-by-second breakdown showing what happens in each time block. Must align with the funnel stage timing rules.",
   "visualDirection": "Camera angles, lighting, setting, wardrobe, props — detailed enough to shoot from this brief alone.",
   "brollDirection": "3-5 specific B-roll shots with exact descriptions of what is shown.",
@@ -1185,17 +1369,25 @@ export function buildGenerationContract(intent: CreativeIntent, contentType: str
 
   const imageOutputSpec = `For EACH image package, return exactly this JSON structure:
 {
-  "title": "max 60 chars — descriptive creative title",
-  "angle": "core marketing angle in 5-10 words",
-  "headline": "Bold headline for the image, max 8 words. Must stop the scroll at thumbnail size.",
-  "subheadline": "Supporting line, max 15 words.",
-  "conceptAngle": "Why this concept works for this funnel stage and audience.",
-  "visualComposition": "Exact layout: what goes where, colors, typography, imagery placement. Specify 1:1 or 4:5 ratio. Must comply with <20% text rule.",
-  "placementNotes": "How this image works in Feed vs Stories. Any placement-specific considerations.",
-  "offerPlacement": "Where and how the offer/price/discount appears. Font size, position, treatment.",
-  "ctaDirection": "CTA button text and visual style. Must match funnel stage CTA rules.",
-  "adCopy": "Facebook primary text (3-8 sentences). Must match copy density rules.",
-  "variants": ["3-5 one-line descriptions of variations, each specifying WHAT changes."]
+  "title": "max 60 chars — specific creative title, not generic",
+  "angle": "core marketing angle in 5-10 words — the specific selling proposition",
+  "imageFormat": "MUST be one of: testimonial_image, review_stack, offer_stack, before_after, product_highlight, problem_solution, comparison, social_proof_stats, ugc_style_still, authority_claim",
+  "headline": "Bold headline, max 8 words. Must stop scroll at thumbnail size. MUST be specific and benefit-driven. Strong: 'I Stopped Waking Up Exhausted'. Weak: 'Discover the Difference'. Name the benefit or the problem solved.",
+  "subheadline": "Supporting line, max 15 words. Adds proof or specificity to the headline.",
+  "hookText": "The scroll-stopping text overlay, max 10 words. This is the FIRST thing the viewer reads and the MOST important element of the ad. Must create instant recognition, curiosity, or credibility. Strong examples: 'I didn't expect results this fast', '4.8 stars from 15,000 buyers', 'Why so many people keep reordering this', 'My skin changed in 2 weeks'. AVOID generic hooks: 'Discover the hype', 'Learn more', 'Why it works', 'Check this out'.",
+  "proofElement": "SPECIFIC proof element — not a category, but the actual content. Examples: '\"After 2 weeks my energy completely changed\" — Sarah M., Verified Buyer', '4.8 stars from 12,847 verified reviews', 'Visible improvement after 14 days in clinical trial', '3rd-party tested for purity and potency'. Do NOT write vague proof like 'customer reviews' or 'social proof'.",
+  "productPlacement": "Where the product image appears: center, right-side, bottom, top-right overlay, or split-view.",
+  "conceptAngle": "Why this specific image format and angle works for this funnel stage. What makes it convert.",
+  "visualComposition": "Exact layout blueprint: top zone (10-25%) = hook text, center zone (25-70%) = proof + product, bottom zone (75-90%) = CTA + offer. Specify ratio (1:1 for Meta feed, 4:5 for Meta tall, 9:16 for TikTok/Stories). Colors, background treatment. Under 20% text coverage.",
+  "textOverlays": [
+    {"text": "exact text string", "position": "top|center|bottom", "fontSize": "48px|36px|24px", "fontWeight": "bold|regular", "color": "#hex color code"}
+  ],
+  "offerPlacement": "Where price/discount/bundle info appears with actual numbers. Example: 'Top-right badge: SAVE $47 — strikethrough $79, bold $32/bottle'. Not just 'discount shown'.",
+  "ctaText": "Exact CTA button text. TOF: 'See Why People Love It', 'Learn More'. MOF: 'Read the Reviews', 'See How It Works'. BOF: 'Shop Now — 40% OFF', 'Claim Your Bundle', 'Get Started Today'.",
+  "ctaPlacement": "bottom-center (Meta button style), bottom-right, or text-overlay (TikTok casual). Style: button for Meta, text for TikTok.",
+  "colorScheme": {"background": "#hex", "textPrimary": "#hex", "accent": "#hex for CTA and key numbers"},
+  "adCopy": "Facebook/TikTok primary text (3-8 sentences). Must be specific — name the product, name the benefit, include proof. Not generic category copy.",
+  "variants": ["3-5 variations — each MUST change a DIFFERENT testable element: hook angle (different emotional trigger), proof type (review vs stat vs before/after), format type (switch to a different imageFormat), CTA urgency level, or emotional framing. Not minor wording tweaks — genuinely testable creative variations."]
 }`;
 
   return `═══ GENERATION CONTRACT ═══
@@ -1221,6 +1413,8 @@ ${intent.realismDirectives}
 ${intent.productIdentityDirectives}
 
 ${intent.formatDirectives}
+
+${contentType === 'video' ? buildDurationDirective(dur) : ''}
 
 ${intent.messagingDirectives}
 
@@ -1385,130 +1579,560 @@ Do NOT ignore available images. Do NOT use only the first image for every scene.
 }
 
 /**
- * Build a platform-aware, funnel-aware image render prompt from a creative package.
+ * Build a format-specific, platform-aware DALL-E render directive for a static ad image.
+ * This replaces the generic "create a professional ad" prompt with a structured DR prompt.
  */
-export function buildImageRenderDirective(
-  pkg: {
-    title?: string;
-    angle?: string;
-    imageFormat?: string;
-    headline?: string;
-    subheadline?: string;
-    hookText?: string;
-    proofElement?: string;
-    productPlacement?: string;
-    conceptAngle?: string;
-    visualComposition?: string;
-    textOverlays?: { text: string; position: string; fontSize: string; fontWeight: string; color: string }[];
-    offerPlacement?: string;
-  },
-  opts: {
-    productName?: string;
-    platform?: string;
-    funnelStage?: string;
-    hasReferenceImage?: boolean;
+/**
+ * Build a natural-language image generation prompt optimized for Nano Banana 2,
+ * Stability, and Ideogram. Follows the Alex Cooper / fal.ai prompting framework:
+ *
+ *   Subject → Composition → Action → Environment → Lighting → Style
+ *
+ * Key rules (from Nano Banana 2 docs + Alex Cooper):
+ * - Write natural language sentences, NOT comma-separated keywords
+ * - No quality boosters ("masterpiece", "best quality", "trending on ArtStation")
+ * - Wrap ALL visible text in "double quotes" with individual style specs
+ * - Keep general images to 1-3 sentences; text-heavy ads can be longer
+ * - Use camera terminology ("85mm lens", "shallow depth of field")
+ */
+export function buildImageRenderDirective(pkg: {
+  imageFormat?: string;
+  headline?: string;
+  hookText?: string;
+  proofElement?: string;
+  productPlacement?: string;
+  ctaText?: string;
+  ctaPlacement?: string;
+  visualComposition?: string;
+  offerPlacement?: string;
+  colorScheme?: { background?: string; textPrimary?: string; accent?: string };
+  textOverlays?: { text: string; position: string; fontSize: string; fontWeight: string; color: string }[];
+  angle?: string;
+  conceptAngle?: string;
+}, options: {
+  productName?: string;
+  platform?: string;
+  funnelStage?: string;
+  hasReferenceImage?: boolean;
+  engine?: string;
+} = {}): string {
+  const format = pkg.imageFormat || 'product_highlight';
+  const platform = options.platform || 'meta';
+  const funnel = options.funnelStage || 'mof';
+  const product = options.productName || 'the product';
+  const isTikTok = platform === 'tiktok';
+  const isIdeogram = options.engine === 'ideogram';
+
+  // ═══════════════════════════════════════════════════════════
+  // IDEOGRAM PATH — concept-led visuals, NO product bottle/jar
+  // ═══════════════════════════════════════════════════════════
+  if (isIdeogram) {
+    return buildIdeogramConceptPrompt(pkg, { productName: product, platform, funnelStage: funnel, isTikTok });
   }
-): string {
+
+  // ═══════════════════════════════════════════════════════════
+  // HIGH-PERFORMANCE DIRECT-RESPONSE STATIC
+  //
+  // TWO MODES:
+  //   NANO BANANA (engine=nano-banana): Model-driven composition.
+  //     Pass product image as reference. Model decides layout, placement,
+  //     hierarchy, spacing. We only give concept + copy + style guidance.
+  //
+  //   STABILITY / DALLE / OTHER: Background-only generation.
+  //     Product composited afterward via the composite pipeline.
+  // ═══════════════════════════════════════════════════════════
+
+  const hookText = pkg.hookText || pkg.headline || '';
+  const ctaText = pkg.ctaText || (isTikTok ? 'link in bio' : 'Shop Now');
+  const accent = pkg.colorScheme?.accent || '#4F46E5';
+  const isNanoBanana = options.engine === 'nano-banana';
+
   const parts: string[] = [];
 
-  // Platform-specific aspect ratio / format guidance
-  const platform = opts.platform || 'meta';
-  const funnelStage = opts.funnelStage || 'mof';
-  const format = pkg.imageFormat || 'product_highlight';
-
-  if (platform === 'tiktok') {
-    parts.push('Create a vertical (9:16) social media ad image optimized for TikTok.');
-  } else if (platform === 'google') {
-    parts.push('Create a display ad image suitable for Google Ads.');
+  if (isNanoBanana) {
+    // ═══ NANO BANANA: MODEL-DRIVEN COMPOSITION ═══
+    // The model handles layout, placement, hierarchy. We provide:
+    // product reference image, concept, copy, style guidance. That's it.
+    parts.push(`Create a high-converting Facebook static ad.`);
+    parts.push(`Use the provided product image naturally within the design.`);
+    parts.push('');
+    parts.push('The product must:');
+    parts.push('- be clearly visible and recognizable');
+    parts.push('- be integrated into the layout naturally (not pasted or floating)');
+    parts.push('- match the lighting and perspective of the scene');
+    parts.push('- feel like part of a professionally designed ad');
+    parts.push('');
+    parts.push('Ad style:');
+    parts.push('- modern DTC brand aesthetic');
+    parts.push('- clean composition with strong visual hierarchy');
+    parts.push('- optimized for mobile feed (thumb-stopping)');
+    parts.push('- high contrast, conversion-focused');
+    parts.push('');
+    if (hookText) {
+      parts.push(`Hook: "${hookText}" — large bold text, dominant, readable at thumbnail size`);
+    }
+    if (pkg.proofElement) {
+      parts.push(`Proof: "${pkg.proofElement}" — supporting text near the product`);
+    }
+    parts.push(`CTA: "${ctaText}" — ${isTikTok ? 'casual text at bottom' : `bold button in ${accent} at bottom`}`);
+    if (pkg.offerPlacement && pkg.offerPlacement !== 'No offer specified') {
+      parts.push(`Offer: "${pkg.offerPlacement}"`);
+    }
+    parts.push('');
+    parts.push('Avoid:');
+    parts.push('- floating product cutouts with white box backgrounds');
+    parts.push('- awkward or unnatural product placement');
+    parts.push('- product covering important text');
+    parts.push('- dead center symmetrical composition');
+    parts.push('- abstract or artistic compositions that don\'t convert');
   } else {
-    parts.push('Create a high-converting social media ad image optimized for Meta (Facebook/Instagram).');
+    // ═══ STABILITY / DALLE / OTHER: BACKGROUND-ONLY GENERATION ═══
+    // Product gets composited afterward. This prompt generates the layout without product.
+    parts.push(`Create a high-converting ${isTikTok ? 'TikTok' : 'Meta/Facebook'} direct-response ad static.`);
+    parts.push('');
+    parts.push('TOP SECTION:');
+    if (hookText) {
+      parts.push(`- "${hookText}" as the dominant headline in large bold sans-serif`);
+    } else {
+      parts.push('- Large bold hook headline — short, punchy, direct-response');
+    }
+    parts.push('- Largest text element, readable at mobile thumbnail, high contrast');
+    parts.push('');
+    parts.push('CENTER SECTION:');
+    if (options.hasReferenceImage) {
+      parts.push('- Leave clean space for the product photo (will be composited afterward)');
+      parts.push('- Do NOT draw any product bottle, jar, or packaging');
+    } else {
+      parts.push(`- Visual anchor for "${product}"`);
+    }
+    if (pkg.proofElement) {
+      parts.push(`- "${pkg.proofElement}" as supporting proof text`);
+    }
+    parts.push('');
+    parts.push('BOTTOM SECTION:');
+    parts.push(`- "${ctaText}" ${isTikTok ? 'as casual text' : `inside bold ${accent} button`}`);
+    if (pkg.offerPlacement && pkg.offerPlacement !== 'No offer specified') {
+      parts.push(`- "${pkg.offerPlacement}" as urgency badge`);
+    }
   }
 
-  // Product name
-  if (opts.productName) {
-    parts.push(`Product: ${opts.productName}.`);
+  parts.push('');
+
+  // ═══ SHARED STYLE (both modes) ═══
+  parts.push('STYLE:');
+  if (isTikTok) {
+    parts.push('- Raw, organic, warm color grade');
+  } else {
+    if (pkg.colorScheme) {
+      const cs = pkg.colorScheme;
+      parts.push(`- Colors: ${cs.background || 'white/light'} bg, ${cs.textPrimary || 'dark'} text, ${cs.accent || 'indigo'} accents`);
+    } else {
+      parts.push('- Clean premium background with bold accent CTA');
+    }
+    parts.push('- High contrast, mobile-first readability');
+  }
+  parts.push('');
+
+  // ═══ FINAL RULE ═══
+  parts.push('This is a DIRECT-RESPONSE ad — it must convert, not just look good.');
+
+  return parts.join('\n');
+}
+
+// ═══════════════════════════════════════════════════════════
+// IDEOGRAM SYSTEM — High-Scale Meta Statics
+//
+// Core Rule: Ideogram = persuasion + concept + layout, NOT product.
+// If a bottle appears → prompt is wrong.
+//
+// Funnel-stage-aware prompt builder with:
+//   TOF: scroll-stop + curiosity (symbolic, disruptive)
+//   MOF: belief + trust (educational, ingredient, mechanism)
+//   BOF: convert NOW (offer, urgency, guarantee)
+//
+// Hook system dynamically injected from concept angle.
+// Layout rules enforced on every prompt.
+// ═══════════════════════════════════════════════════════════
+
+function buildIdeogramConceptPrompt(pkg: {
+  imageFormat?: string;
+  headline?: string;
+  hookText?: string;
+  proofElement?: string;
+  ctaText?: string;
+  offerPlacement?: string;
+  colorScheme?: { background?: string; textPrimary?: string; accent?: string };
+  visualComposition?: string;
+  angle?: string;
+  conceptAngle?: string;
+}, options: {
+  productName: string;
+  platform: string;
+  funnelStage: string;
+  isTikTok: boolean;
+}): string {
+  const { productName, funnelStage, isTikTok } = options;
+  const angle = pkg.angle || pkg.conceptAngle || '';
+  const hookText = pkg.hookText || pkg.headline || '';
+
+  // ═══ Detect concept angle → symbolic visual direction ═══
+  const angleLower = (angle + ' ' + hookText).toLowerCase();
+  let visualDirection = 'symbolic wellness visuals, clean premium feel, subtle supporting imagery';
+
+  if (/sleep|rest|night|insomnia/i.test(angleLower)) {
+    visualDirection = 'calming nighttime / rest symbolism — deep blue/indigo gradient, soft moonlight glow, floating stars or gentle clouds. The feeling of deep, restorative sleep';
+  } else if (/energy|metabol|boost|active|vitality|stamina/i.test(angleLower)) {
+    visualDirection = 'energetic wellness / clean natural support symbolism — warm golden/amber tones, radiating light, dynamic flowing shapes. Leafy or citrus accents';
+  } else if (/stress|anxiety|calm|relax|peace|relief/i.test(angleLower)) {
+    visualDirection = 'calm relief / grounded lifestyle imagery — soft earth tones, flowing water or smooth stone textures. Botanical elements like lavender or chamomile';
+  } else if (/muscle|cramp|recovery|sore|pain|joint/i.test(angleLower)) {
+    visualDirection = 'soothing recovery / physical relief — cool teal/mint tones, smooth flowing lines, subtle botanical elements. Clean and clinical but warm';
+  } else if (/brain|focus|cognitive|mental|clarity|memory/i.test(angleLower)) {
+    visualDirection = 'sharp focus / clarity symbolism — clean geometric patterns, neural-inspired subtle lines, cool blue tones with bright accent points';
+  } else if (/heart|cardio|blood|pressure|circulation/i.test(angleLower)) {
+    visualDirection = 'vital warmth / circulation symbolism — rich red/burgundy accents with clean white space, flowing organic shapes';
+  } else if (/ingredien|natural|organic|herbal|plant|vitamin|mineral|magnesium/i.test(angleLower)) {
+    visualDirection = 'natural wellness symbolism — soft botanical textures, green leafy backgrounds, warm earth-tone gradients, clean nature-inspired surfaces. NO capsules, NO pills, NO supplement forms, NO ingredient renders';
+  } else if (/offer|deal|discount|sale|bundle|save|free|limited|price/i.test(angleLower)) {
+    visualDirection = 'strong direct-response typography with supportive symbolic visuals — urgent color accents, clean background, geometric shapes framing the offer';
+  } else if (/review|testimon|proof|star|rating|customer/i.test(angleLower)) {
+    visualDirection = 'social proof layout — star ratings, quote-style typography, trust badges. Clean white/light background with subtle golden accents';
+  } else if (/before.*after|transform|result|change/i.test(angleLower)) {
+    visualDirection = 'transformation symbolism — split showing "before" (muted, heavy, grey) vs "after" (bright, light, energetic). Abstract, not literal';
+  } else if (/compare|vs|versus|other|typical|regular/i.test(angleLower)) {
+    visualDirection = 'comparison layout — two columns with clear visual hierarchy. Left (competitor) in muted tones, right (ours) in vibrant/premium tones';
   }
 
-  // Creative angle
-  if (pkg.angle) {
-    parts.push(`Creative angle: ${pkg.angle}.`);
-  }
-  if (pkg.conceptAngle && pkg.conceptAngle !== pkg.angle) {
-    parts.push(`Concept: ${pkg.conceptAngle}.`);
-  }
+  // ═══ Funnel-stage-specific prompt template ═══
+  const parts: string[] = [];
+  parts.push('Create a high-converting Facebook ad static.');
 
-  // Headline and hook
-  if (pkg.headline) {
-    parts.push(`Headline text overlay: "${pkg.headline}".`);
-  }
-  if (pkg.subheadline) {
-    parts.push(`Subheadline: "${pkg.subheadline}".`);
-  }
-  if (pkg.hookText) {
-    parts.push(`Hook text: "${pkg.hookText}".`);
-  }
-
-  // Visual composition
-  if (pkg.visualComposition) {
-    parts.push(`Visual composition: ${pkg.visualComposition}.`);
-  }
-  if (pkg.productPlacement) {
-    parts.push(`Product placement: ${pkg.productPlacement}.`);
-  }
-
-  // Proof element
-  if (pkg.proofElement) {
-    parts.push(`Include proof element: ${pkg.proofElement}.`);
-  }
-
-  // Offer placement
-  if (pkg.offerPlacement) {
-    parts.push(`Offer/CTA placement: ${pkg.offerPlacement}.`);
-  }
-
-  // Text overlays
-  if (pkg.textOverlays && pkg.textOverlays.length > 0) {
-    const overlayDesc = pkg.textOverlays.map(
-      o => `"${o.text}" at ${o.position} (${o.fontSize}, ${o.fontWeight}, ${o.color})`
-    ).join('; ');
-    parts.push(`Text overlays: ${overlayDesc}.`);
-  }
-
-  // Reference image guidance
-  if (opts.hasReferenceImage) {
-    parts.push('Use the provided product reference image as the hero visual. Maintain exact product appearance, colors, and packaging.');
-  }
-
-  // Funnel stage guidance
   if (funnelStage === 'tof') {
-    parts.push('This is a top-of-funnel awareness ad — focus on attention-grabbing visuals and bold messaging.');
-  } else if (funnelStage === 'bof') {
-    parts.push('This is a bottom-of-funnel conversion ad — focus on urgency, social proof, and clear CTA.');
+    // ═══ TOP OF FUNNEL — stop scroll + spark curiosity ═══
+    parts.push('');
+    parts.push('Style: premium direct-response, clean layout, high contrast');
+    parts.push('');
+    parts.push('Visual:');
+    parts.push('- Do NOT show any product bottle or packaging');
+    parts.push(`- Use symbolic visuals representing: ${visualDirection}`);
+    parts.push('- Modern, minimal, scroll-stopping');
+    parts.push('');
+    parts.push('Text overlay:');
+    if (hookText) {
+      parts.push(`- "${hookText}" as large bold hook at top`);
+    } else {
+      parts.push('- Large bold hook at top');
+    }
+    if (pkg.proofElement) {
+      parts.push(`- "${pkg.proofElement}" as supporting curiosity line`);
+    } else {
+      parts.push('- Supporting curiosity line below');
+    }
+    parts.push(`- "${pkg.ctaText || 'Learn More'}" as soft CTA at bottom`);
+    parts.push('');
+    parts.push('Tone: curiosity-driven, slightly disruptive, natural not salesy');
+
+  } else if (funnelStage === 'mof') {
+    // ═══ MIDDLE OF FUNNEL — build belief + trust ═══
+    parts.push('');
+    parts.push('Style: clean, educational direct-response layout');
+    parts.push('');
+    parts.push('Visual:');
+    parts.push('- Do NOT show any product bottle');
+    parts.push(`- Use ingredient-based visuals or mechanism explanation: ${visualDirection}`);
+    parts.push('- Show how the benefit works visually');
+    parts.push('- Clean infographic-style or lifestyle composition');
+    parts.push('');
+    parts.push('Text overlay:');
+    if (hookText) {
+      parts.push(`- "${hookText}" as clear benefit headline`);
+    } else {
+      parts.push('- Clear benefit headline');
+    }
+    if (pkg.proofElement) {
+      parts.push(`- "${pkg.proofElement}" as supporting proof or explanation`);
+    } else {
+      parts.push('- Supporting proof or explanation');
+    }
+    parts.push(`- "${pkg.ctaText || 'Shop Now'}" as CTA`);
+    parts.push('');
+    parts.push('Tone: informative, credible, reassuring');
+
   } else {
-    parts.push('This is a mid-funnel consideration ad — balance product education with persuasive visuals.');
+    // ═══ BOTTOM OF FUNNEL — convert NOW ═══
+    parts.push('');
+    parts.push('Style: strong direct-response, offer-focused');
+    parts.push('');
+    parts.push('Visual:');
+    parts.push('- Do NOT show product bottle');
+    parts.push(`- Use clean background with symbolic wellness visuals: ${visualDirection}`);
+    parts.push('- Emphasize typography and layout');
+    parts.push('');
+    parts.push('Text overlay:');
+    if (hookText) {
+      parts.push(`- "${hookText}" as strong offer headline`);
+    } else {
+      parts.push('- Strong offer headline');
+    }
+    if (pkg.proofElement) {
+      parts.push(`- "${pkg.proofElement}" as clear benefit`);
+    }
+    if (pkg.offerPlacement && pkg.offerPlacement !== 'No offer specified') {
+      parts.push(`- "${pkg.offerPlacement}" as urgency or incentive`);
+    }
+    parts.push(`- "${pkg.ctaText || 'Shop Now'}" as CTA button style element`);
+    parts.push('');
+    parts.push('Tone: confident, direct, conversion-focused');
   }
 
-  // Format-specific guidance
-  const formatGuide: Record<string, string> = {
-    product_highlight: 'Hero product shot — clean background, product is the star. Professional product photography style.',
-    testimonial: 'Testimonial-style image with text overlay suggesting customer endorsement.',
-    social_proof: 'Social proof image — include elements like star ratings, review quotes, or user count.',
-    offer_stack: 'Offer stack — feature the deal/discount prominently with product.',
-    comparison: 'Side-by-side comparison layout — your product vs alternatives.',
-    before_after: 'Before/after transformation layout showing the product benefit.',
-    problem_solution: 'Problem → Solution visual — left side shows pain point, right side shows product as solution.',
-    hook_viral: 'Scroll-stopping viral hook — bold, unexpected visual that demands attention.',
-    pattern_interrupt: 'Pattern interrupt — unusual composition that breaks feed scroll.',
-    authority_claim: 'Authority/expert endorsement style with credibility markers.',
-    myth_busting: 'Myth-busting layout — crossed-out misconception with truth revealed.',
-    review_stack: 'Review stack layout — multiple mini-reviews arranged around the product.',
+  // ═══ Layout rules (ALL stages) ═══
+  parts.push('');
+  parts.push('Layout:');
+  parts.push('- Clear hierarchy (hook → support → CTA)');
+  parts.push('- Mobile-first (thumb-stopping)');
+  parts.push('- Large readable text');
+  parts.push('- Minimal clutter');
+  parts.push('- One clear message per image');
+
+  // ═══ Color ═══
+  if (pkg.colorScheme) {
+    const cs = pkg.colorScheme;
+    parts.push('');
+    parts.push(`Colors: ${cs.background || 'white'} background, ${cs.textPrimary || 'dark'} text, ${cs.accent || 'indigo'} accents.`);
+  }
+
+  // ═══ HARD BLOCK — enforced at the end of every prompt ═══
+  parts.push('');
+  parts.push('IMPORTANT (STRICT — DO NOT VIOLATE):');
+  parts.push('Do NOT include ANY of the following in the image:');
+  parts.push('- No product bottle, jar, tube, box, or packaging of any kind');
+  parts.push('- No capsules, pills, tablets, softgels, or supplement forms');
+  parts.push('- No illustrated/animated/3D renders of ingredients or molecules');
+  parts.push('- No product photography or product mockups');
+  parts.push('- No cartoon or icon versions of the product');
+  parts.push('This ad uses ONLY typography, symbolic background visuals (gradients, textures, nature scenes), and layout design.');
+  parts.push(`Sell the BENEFIT of "${productName}" through words and mood — not through showing the product or its contents.`);
+
+  return parts.join('\n');
+}
+
+// ═══════════════════════════════════════════════
+// DURATION BUDGET SYSTEM (script length validation)
+// ═══════════════════════════════════════════════
+//
+// Speech rate: ~2.5 words per second is comfortable, 3.0 wps is fast.
+// We use 2.2 wps as a SAFE target (gives buffer for pauses and CTA emphasis).
+// The CTA must always fit at the end — protect it first.
+
+export interface DurationBudget {
+  duration: number;        // seconds
+  minWords: number;        // floor for usable script
+  maxWords: number;        // hard ceiling
+  targetWords: number;     // ideal length
+  ctaReserveSeconds: number; // seconds reserved for CTA at the end
+  ctaMaxWords: number;     // max words allowed in CTA
+  beats: { name: string; start: number; end: number; maxWords: number }[];
+}
+
+export function getDurationBudget(durationSeconds: number): DurationBudget {
+  // TIGHT budgets — Sora renders faster than real speech.
+  // Using 1.5 wps (not 2.2) to prevent cutoff. Fewer words = more breathing room.
+  const budgets: Record<number, DurationBudget> = {
+    8: {
+      duration: 8, minWords: 8, maxWords: 12, targetWords: 10, ctaReserveSeconds: 2, ctaMaxWords: 4,
+      beats: [
+        { name: 'Hook', start: 0, end: 2, maxWords: 3 },
+        { name: 'Product', start: 2, end: 6, maxWords: 5 },
+        { name: 'CTA', start: 6, end: 8, maxWords: 4 },
+      ],
+    },
+    10: {
+      duration: 10, minWords: 10, maxWords: 15, targetWords: 12, ctaReserveSeconds: 2.5, ctaMaxWords: 4,
+      beats: [
+        { name: 'Hook', start: 0, end: 3, maxWords: 4 },
+        { name: 'Product/Proof', start: 3, end: 7.5, maxWords: 7 },
+        { name: 'CTA', start: 7.5, end: 10, maxWords: 4 },
+      ],
+    },
+    15: {
+      duration: 15, minWords: 16, maxWords: 22, targetWords: 18, ctaReserveSeconds: 3, ctaMaxWords: 5,
+      beats: [
+        { name: 'Hook', start: 0, end: 3, maxWords: 5 },
+        { name: 'Problem/Product', start: 3, end: 8, maxWords: 7 },
+        { name: 'Proof', start: 8, end: 12, maxWords: 5 },
+        { name: 'CTA', start: 12, end: 15, maxWords: 5 },
+      ],
+    },
+    20: {
+      duration: 20, minWords: 22, maxWords: 30, targetWords: 25, ctaReserveSeconds: 4, ctaMaxWords: 6,
+      beats: [
+        { name: 'Hook', start: 0, end: 4, maxWords: 6 },
+        { name: 'Problem/Product', start: 4, end: 11, maxWords: 10 },
+        { name: 'Proof', start: 11, end: 16, maxWords: 8 },
+        { name: 'CTA', start: 16, end: 20, maxWords: 6 },
+      ],
+    },
   };
 
-  if (formatGuide[format]) {
-    parts.push(formatGuide[format]);
+  // Find closest budget
+  if (budgets[durationSeconds]) return budgets[durationSeconds];
+  if (durationSeconds <= 8) return budgets[8];
+  if (durationSeconds <= 10) return budgets[10];
+  if (durationSeconds <= 15) return budgets[15];
+  return budgets[20];
+}
+
+/**
+ * Strip stage directions in [brackets] before counting spoken words.
+ */
+function countSpokenWords(script: string): number {
+  if (!script) return 0;
+  const stripped = script
+    .replace(/\[[^\]]*\]/g, ' ')        // Remove [stage directions]
+    .replace(/\([^)]*\)/g, ' ')         // Remove (parenthetical asides)
+    .replace(/[^\w\s'-]/g, ' ')         // Strip punctuation except apostrophes/hyphens
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!stripped) return 0;
+  return stripped.split(' ').filter(w => w.length > 0).length;
+}
+
+/**
+ * Estimate spoken duration in seconds at 2.2 words per second (safe pacing).
+ */
+export function estimateSpokenDuration(script: string): number {
+  const words = countSpokenWords(script);
+  return Math.round((words / 2.2) * 10) / 10; // 1 decimal place
+}
+
+export interface ScriptValidation {
+  ok: boolean;
+  wordCount: number;
+  estimatedSeconds: number;
+  budget: DurationBudget;
+  reason?: string;
+}
+
+/**
+ * Validate a script against its target duration.
+ * Returns ok=true if it fits within max budget (under min is acceptable — just leaves buffer).
+ * Only too-long scripts fail since those are the ones that cause Sora to cut off.
+ */
+export function validateScriptDuration(script: string, durationSeconds: number): ScriptValidation {
+  const budget = getDurationBudget(durationSeconds);
+  const wordCount = countSpokenWords(script);
+  const estimatedSeconds = estimateSpokenDuration(script);
+
+  if (wordCount === 0) {
+    return { ok: false, wordCount, estimatedSeconds, budget, reason: 'Empty script' };
+  }
+  if (wordCount > budget.maxWords) {
+    return { ok: false, wordCount, estimatedSeconds, budget, reason: `Too long: ${wordCount} words exceeds max ${budget.maxWords} for ${durationSeconds}s` };
+  }
+  if (estimatedSeconds > durationSeconds - 0.5) {
+    return { ok: false, wordCount, estimatedSeconds, budget, reason: `Estimated speech ${estimatedSeconds}s exceeds runtime ${durationSeconds}s buffer` };
+  }
+  // Under-min is just a warning — script will fit with extra room. Not a failure.
+  if (wordCount < budget.minWords) {
+    return { ok: true, wordCount, estimatedSeconds, budget, reason: `Short: ${wordCount} words (recommended min ${budget.minWords}) — extra buffer time available` };
+  }
+  return { ok: true, wordCount, estimatedSeconds, budget };
+}
+
+/**
+ * Auto-compress an overlong script to fit the target duration.
+ * Strategy: trim filler words, shorten hook, sample middle sentences, always preserve CTA.
+ * Returns the compressed script. If still too long, returns best-effort.
+ */
+export function compressScriptToFit(script: string, durationSeconds: number): { script: string; iterations: number; finalWordCount: number } {
+  const budget = getDurationBudget(durationSeconds);
+  // Compression target: maxWords minus a small safety margin (not targetWords — that's too aggressive)
+  const compressTarget = Math.max(budget.targetWords, budget.maxWords - 3);
+  let current = script;
+  let iterations = 0;
+
+  // Pass 1: strip common filler words
+  const fillers = ['really', 'just', 'literally', 'actually', 'basically', 'honestly', 'kind of', 'sort of', 'you know', 'I mean', 'pretty much', 'so basically', 'like totally'];
+  for (const f of fillers) {
+    current = current.replace(new RegExp(`\\b${f}\\b`, 'gi'), '');
+  }
+  current = current.replace(/\s+/g, ' ').replace(/\s+([.!?,])/g, '$1').trim();
+  iterations++;
+
+  if (countSpokenWords(current) <= compressTarget) {
+    return { script: current, iterations, finalWordCount: countSpokenWords(current) };
   }
 
-  parts.push('Photo-realistic, high quality, professional advertising standard. Clean typography if text is included.');
+  // Pass 2: split into sentences, keep CTA always, fit body into remaining budget
+  const sentences = current.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+  if (sentences.length >= 2) {
+    iterations++;
+    const cta = sentences[sentences.length - 1];
+    const ctaWords = countSpokenWords(cta);
+    const bodyBudget = compressTarget - ctaWords;
 
-  return parts.join('\n\n');
+    // Greedy fit: take sentences from start until budget runs out
+    let bodyWordCount = 0;
+    const keptBody: string[] = [];
+    for (let i = 0; i < sentences.length - 1; i++) {
+      const s = sentences[i];
+      const sw = countSpokenWords(s);
+      if (bodyWordCount + sw <= bodyBudget) {
+        keptBody.push(s);
+        bodyWordCount += sw;
+      } else if (keptBody.length === 0 && i === 0) {
+        // The hook itself is too long — truncate it word-by-word
+        const hookWords = s.replace(/\[[^\]]*\]/g, '').split(/\s+/).filter(w => w.length > 0);
+        const trimmedHook = hookWords.slice(0, bodyBudget).join(' ').replace(/[,]+$/, '') + '.';
+        keptBody.push(trimmedHook);
+        bodyWordCount += bodyBudget;
+        break;
+      }
+    }
+    current = [...keptBody, cta].join(' ');
+  }
+
+  // Pass 3: if STILL too long, hard-truncate (preserve CTA)
+  if (countSpokenWords(current) > budget.maxWords) {
+    iterations++;
+    const sentences2 = current.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+    if (sentences2.length >= 2) {
+      const cta = sentences2[sentences2.length - 1];
+      const ctaWords = countSpokenWords(cta);
+      const remaining = budget.maxWords - ctaWords - 2;
+      const beforeCta = sentences2.slice(0, -1).join(' ');
+      const words = beforeCta.split(/\s+/);
+      const truncated = words.slice(0, remaining).join(' ');
+      const lastPunct = Math.max(truncated.lastIndexOf('.'), truncated.lastIndexOf('!'), truncated.lastIndexOf('?'));
+      const safeBefore = lastPunct > 0 ? truncated.substring(0, lastPunct + 1) : truncated + '.';
+      current = `${safeBefore} ${cta}`.trim();
+    }
+  }
+
+  return { script: current, iterations, finalWordCount: countSpokenWords(current) };
+}
+
+/**
+ * Build a duration directive block to inject into the AI generation contract.
+ * Tells the LLM exactly how many words it can use and how to structure them.
+ */
+export function buildDurationDirective(durationSeconds: number): string {
+  const budget = getDurationBudget(durationSeconds);
+  return `═══ STRICT DURATION RULES (${durationSeconds}s video) ═══
+TOTAL spoken words: ${budget.minWords}-${budget.maxWords} (target: ${budget.targetWords})
+Speech pace: 1.5 words/second (SLOW natural delivery with pauses between sentences)
+
+THIS IS CRITICAL: AI video generators render FASTER than real speech. You must write FEWER words than you think.
+A ${durationSeconds}-second video can only fit ${budget.targetWords} spoken words. Count them carefully.
+
+BEAT STRUCTURE (do NOT exceed per-beat word counts):
+${budget.beats.map(b => `  ${b.name} (${b.start}-${b.end}s): max ${b.maxWords} words`).join('\n')}
+
+CRITICAL: The CTA at the end MUST fit within ${budget.ctaReserveSeconds}s and ${budget.ctaMaxWords} words.
+DO NOT cut off the CTA. The CTA is the LAST thing the viewer sees/hears.
+If in doubt, CUT words from the middle. NEVER sacrifice the CTA.
+
+Stage directions in [brackets] do NOT count toward word budget — only spoken dialogue counts.
+Write SHORT sentences. 3-6 words each. One thought per sentence. Let pauses do the work.
+NO filler words (really, just, literally, actually, basically, so, like).`;
 }

@@ -119,18 +119,15 @@ interface Product {
 
 // ═══ Creative Generator Types ═══
 
-// Strategy source — where concepts come from
-type StrategySource = 'new_concepts' | 'winning_concepts' | 'recently_tested' | 'manual';
-// Hook strategy — how hooks are chosen
-type HookStrategy = 'generate_new' | 'use_winning' | 'mix' | 'manual';
+// Concept source — where concepts come from
+type ConceptSource = 'generate_new' | 'use_existing' | 'recently_tested';
 
 interface GeneratorConfig {
-  // Media buyer controls
-  strategySource: StrategySource;
-  hookStrategy: HookStrategy;
-  hooksPerConcept: number;
-  variationsPerHook: number;
-  // Primary controls
+  // Simple controls
+  conceptSource: ConceptSource;
+  quantity: number;            // number of concepts
+  creativesPerConcept: number; // creatives per concept
+  // Engine + content
   engine: 'sora' | 'runway' | 'higgsfield' | 'veo' | 'seedance' | 'nano-banana' | 'stability' | 'ideogram' | 'auto';
   genMode: 'new' | 'existing' | 'full_funnel' | 'clone_ad';
   contentMix: 'video' | 'image' | 'mixed' | 'full_funnel';
@@ -138,10 +135,9 @@ interface GeneratorConfig {
   productId: string;
   coverImageUrl: string;
   conceptAngle: string;
-  quantity: number;
   videosPerConcept: number;
   imagesPerConcept: number;
-  // Backward compatibility
+  // Backward compat
   contentType: 'video' | 'image';
   creativeType: string;
   funnelStage: 'tof' | 'mof' | 'bof';
@@ -389,7 +385,7 @@ function BillingTab({ storeFilter }: { storeFilter: string }) {
           </div>
           <div className="text-right">
             <p className="text-2xl font-bold text-green-400">${(summary?.currentPeriodBilled || 0).toFixed(2)}</p>
-            <p className="text-[10px] text-slate-500">estimated this month</p>
+            <p className="text-[10px] text-slate-500">your usage this month</p>
           </div>
         </div>
         {isAdmin && summary?.currentPeriodRaw != null && (
@@ -428,8 +424,8 @@ function BillingTab({ storeFilter }: { storeFilter: string }) {
                   <span className="text-xs text-slate-400">{p.count} call{p.count !== 1 ? 's' : ''}</span>
                 </div>
                 <div className="text-right">
-                  <p className="text-sm font-semibold text-white">${(p.billed || p.raw * 1.4).toFixed(2)}</p>
-                  {isAdmin && <p className="text-[9px] text-slate-500">raw: ${(p.raw || 0).toFixed(2)}</p>}
+                  <p className="text-sm font-semibold text-white">${(p.billed || 0).toFixed(2)}</p>
+                  {isAdmin && p.raw != null && <p className="text-[9px] text-slate-500">cost: ${(p.raw).toFixed(2)}</p>}
                 </div>
               </div>
             ))}
@@ -443,7 +439,7 @@ function BillingTab({ storeFilter }: { storeFilter: string }) {
             {summary.byStore.map((s: any, i: number) => (
               <div key={i} className="flex items-center justify-between py-2 border-b border-slate-800 last:border-0">
                 <span className="text-sm text-white">{s.storeName || s.storeId}</span>
-                <p className="text-sm font-semibold text-white">${(s.billed || s.raw * 1.4).toFixed(2)}</p>
+                <p className="text-sm font-semibold text-white">${(s.billed || 0).toFixed(2)}</p>
               </div>
             ))}
           </div>
@@ -571,13 +567,13 @@ function CreativesContent() {
   // Persisted to localStorage so the user's configuration survives page reloads.
   const GEN_CONFIG_KEY = 'ym-gen-config';
   const defaultGenConfig: GeneratorConfig = {
-    strategySource: 'new_concepts', hookStrategy: 'generate_new', hooksPerConcept: 2, variationsPerHook: 2,
-    engine: 'auto', genMode: 'new', contentMix: 'video', funnelStructure: 'tof',
-    productId: '', coverImageUrl: '', conceptAngle: '', quantity: 3, videosPerConcept: 2, imagesPerConcept: 2,
+    conceptSource: 'generate_new', quantity: 3, creativesPerConcept: 3,
+    engine: 'seedance', genMode: 'new', contentMix: 'video', funnelStructure: 'tof',
+    productId: '', coverImageUrl: '', conceptAngle: '', videosPerConcept: 3, imagesPerConcept: 3,
     contentType: 'video', creativeType: 'testimonial', funnelStage: 'tof',
     hookStyle: 'curiosity', avatarStyle: 'female_ugc', generationGoal: 'new_concept',
     platformTarget: 'meta', offer: '', baseAdId: '',
-    dimension: '4:5', videoDuration: 15,
+    dimension: '9:16', videoDuration: 15,
   };
   const [genConfig, setGenConfig] = useState<GeneratorConfig>(() => {
     if (typeof window === 'undefined') return defaultGenConfig;
@@ -1800,8 +1796,7 @@ function CreativesContent() {
       setGeneratingPackage(false);
       return;
     }
-    const totalAds = Math.min(genConfig.quantity * (genConfig.hooksPerConcept || 1) * (genConfig.variationsPerHook || 1), 5);
-    if (!window.confirm(`Generate ${totalAds} creative package(s)? This will call AI APIs.`)) return;
+    if (!window.confirm(`Generate ${genConfig.quantity * genConfig.creativesPerConcept} creatives across ${genConfig.quantity} concept${genConfig.quantity > 1 ? 's' : ''}? This will call AI APIs.`)) return;
     setGeneratingPackage(true);
     setGenPackageError('');
     setGenPackages([]);
@@ -2216,6 +2211,24 @@ function CreativesContent() {
       if (productName) {
         const desc = (selectedProduct?.description || '').toString().substring(0, 400);
         parts.push(`PRODUCT REFERENCE (do not show as a still photo — depict the product naturally within the scene): "${productName}"${desc ? ` — ${desc}` : ''}. Match brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
+      }
+      // Advanced options — creative direction from user selections
+      if (genConfig.creativeType && genConfig.creativeType !== 'testimonial') {
+        parts.push(`Creative style: ${genConfig.creativeType.replace(/_/g, ' ')}`);
+      }
+      if (genConfig.hookStyle && genConfig.hookStyle !== 'curiosity') {
+        parts.push(`Hook approach: ${genConfig.hookStyle.replace(/_/g, ' ')}`);
+      }
+      if (genConfig.avatarStyle && genConfig.avatarStyle !== 'female_ugc') {
+        parts.push(`Presenter: ${genConfig.avatarStyle.replace(/_/g, ' ')}`);
+      }
+      if (genConfig.funnelStage === 'bof') {
+        parts.push(`Funnel stage: Bottom of funnel — urgency, direct CTA, social proof, offer-driven.`);
+      } else if (genConfig.funnelStage === 'mof') {
+        parts.push(`Funnel stage: Middle of funnel — build trust, show proof, educate.`);
+      }
+      if (genConfig.offer) {
+        parts.push(`Offer: ${genConfig.offer}`);
       }
       if (pkg.visualDirection) parts.push(pkg.visualDirection);
       if (pkg.script) parts.push(`Script (MUST fit in ${dur}s — speak slowly and naturally): ${pkg.script}`);
@@ -4154,16 +4167,13 @@ function CreativesContent() {
                     {/* Dynamic Engine selector — shows only engines matching the selected content type */}
                     <div>
                       <label className="text-[10px] text-slate-500 uppercase font-semibold mb-2 block">Engine</label>
-                      <div className="grid grid-cols-4 gap-2">
+                      <div className="grid grid-cols-3 gap-2">
                         {genConfig.contentType === 'video' ? (
                           <>
                             {([
-                              { key: 'auto' as const, label: 'Auto', desc: 'Best for task' },
                               { key: 'seedance' as const, label: 'Seedance', desc: '4-15s + audio' },
                               { key: 'sora' as const, label: 'Sora', desc: '8-20s video' },
                               { key: 'runway' as const, label: 'Runway', desc: '5-10s video' },
-                              { key: 'higgsfield' as const, label: 'Higgs', desc: 'Multi-scene' },
-                              { key: 'veo' as const, label: 'Veo', desc: '4-8s video' },
                             ]).map(e => (
                               <button key={e.key} onClick={() => setGenConfig(c => ({ ...c, engine: e.key }))}
                                 className={`px-2 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
@@ -4404,103 +4414,60 @@ function CreativesContent() {
                     </div>
                   </div>
 
-                  {/* ── STRATEGY SOURCE ── */}
+                  {/* ── CONCEPT SOURCE + VOLUME ── */}
                   <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
                     <label className="text-[10px] text-purple-400 uppercase font-bold block">Concept Source</label>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-3 gap-2">
                       {([
-                        { key: 'new_concepts' as StrategySource, label: 'New Concepts', desc: 'AI generates fresh angles' },
-                        { key: 'winning_concepts' as StrategySource, label: 'Winning Concepts', desc: 'Scale proven winners' },
-                        { key: 'recently_tested' as StrategySource, label: 'Recently Tested', desc: 'Iterate on recent work' },
-                        { key: 'manual' as StrategySource, label: 'Manual', desc: 'You choose the concept' },
+                        { key: 'generate_new' as ConceptSource, label: 'Generate New' },
+                        { key: 'use_existing' as ConceptSource, label: 'Use Existing' },
+                        { key: 'recently_tested' as ConceptSource, label: 'Recently Tested' },
                       ]).map(opt => (
-                        <button key={opt.key} onClick={() => setGenConfig(c => ({ ...c, strategySource: opt.key }))}
-                          className={`px-3 py-2 rounded-lg border text-left transition-all ${
-                            genConfig.strategySource === opt.key
-                              ? 'bg-purple-600/20 border-purple-500 text-white'
-                              : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:text-white hover:border-slate-600'
-                          }`}>
-                          <span className="text-[11px] font-semibold block">{opt.label}</span>
-                          <span className="text-[8px] opacity-60">{opt.desc}</span>
-                        </button>
+                        <button key={opt.key} onClick={() => setGenConfig(c => ({ ...c, conceptSource: opt.key }))}
+                          className={`px-3 py-2 rounded-lg border text-center transition-all text-xs font-semibold ${
+                            genConfig.conceptSource === opt.key
+                              ? 'bg-purple-600 border-purple-500 text-white'
+                              : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                          }`}>{opt.label}</button>
                       ))}
                     </div>
 
-                    {/* Hook Strategy */}
-                    <div>
-                      <label className="text-[9px] text-slate-500 uppercase mb-1.5 block">Hook Strategy</label>
-                      <div className="flex gap-1.5">
-                        {([
-                          { key: 'generate_new' as HookStrategy, label: 'New Hooks' },
-                          { key: 'use_winning' as HookStrategy, label: 'Winning Hooks' },
-                          { key: 'mix' as HookStrategy, label: 'Mix' },
-                          { key: 'manual' as HookStrategy, label: 'Manual' },
-                        ]).map(opt => (
-                          <button key={opt.key} onClick={() => setGenConfig(c => ({ ...c, hookStrategy: opt.key }))}
-                            className={`flex-1 px-2 py-1.5 rounded-lg text-[10px] font-semibold border transition-colors ${
-                              genConfig.hookStrategy === opt.key
-                                ? 'bg-blue-600 border-blue-500 text-white'
-                                : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                            }`}>{opt.label}</button>
-                        ))}
+                    {/* Volume — button selectors */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[9px] text-slate-500 uppercase mb-1.5 block">Concepts</label>
+                        <div className="flex gap-1.5">
+                          {[1, 3, 5, 10].map(n => (
+                            <button key={n} onClick={() => setGenConfig(c => ({ ...c, quantity: n }))}
+                              className={`flex-1 py-2 rounded-lg text-sm font-bold border transition-colors ${
+                                genConfig.quantity === n ? 'bg-purple-600 border-purple-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                              }`}>{n}</button>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-
-                    {/* Creative Volume Builder */}
-                    <div>
-                      <label className="text-[9px] text-slate-500 uppercase mb-1.5 block">Creative Volume</label>
-                      <div className="grid grid-cols-3 gap-2">
-                        <div>
-                          <label className="text-[8px] text-slate-600 block mb-1">Concepts</label>
-                          <input type="number" min={1} max={10} value={genConfig.quantity}
-                            onChange={e => setGenConfig(c => ({ ...c, quantity: Math.max(1, Math.min(10, parseInt(e.target.value) || 1)) }))}
-                            className="w-full px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white text-center font-semibold" />
-                        </div>
-                        <div>
-                          <label className="text-[8px] text-slate-600 block mb-1">Hooks / concept</label>
-                          <input type="number" min={1} max={5} value={genConfig.hooksPerConcept}
-                            onChange={e => setGenConfig(c => ({ ...c, hooksPerConcept: Math.max(1, Math.min(5, parseInt(e.target.value) || 1)) }))}
-                            className="w-full px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white text-center font-semibold" />
-                        </div>
-                        <div>
-                          <label className="text-[8px] text-slate-600 block mb-1">Variations / hook</label>
-                          <input type="number" min={1} max={5} value={genConfig.variationsPerHook}
-                            onChange={e => setGenConfig(c => ({ ...c, variationsPerHook: Math.max(1, Math.min(5, parseInt(e.target.value) || 1)) }))}
-                            className="w-full px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white text-center font-semibold" />
+                      <div>
+                        <label className="text-[9px] text-slate-500 uppercase mb-1.5 block">Variations / concept</label>
+                        <div className="flex gap-1.5">
+                          {[1, 3, 5, 10].map(n => (
+                            <button key={n} onClick={() => setGenConfig(c => ({ ...c, creativesPerConcept: n, videosPerConcept: n, imagesPerConcept: n }))}
+                              className={`flex-1 py-2 rounded-lg text-sm font-bold border transition-colors ${
+                                genConfig.creativesPerConcept === n ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                              }`}>{n}</button>
+                          ))}
                         </div>
                       </div>
                     </div>
 
-                    {/* Output Breakdown */}
+                    {/* Output total */}
                     {(() => {
-                      const concepts = genConfig.quantity;
-                      const hooks = genConfig.hooksPerConcept;
-                      const variations = genConfig.variationsPerHook;
-                      const totalAds = concepts * hooks * variations;
-                      const stages = genConfig.funnelStructure === 'full' ? 3 : 1;
-                      const grandTotal = totalAds * stages;
-                      const capped = Math.min(grandTotal, 5);
-                      const isCapped = grandTotal > 5;
+                      const total = genConfig.quantity * genConfig.creativesPerConcept;
                       return (
-                        <div className={`rounded-lg px-3 py-2.5 ${isCapped ? 'bg-amber-950/20 border border-amber-900/30' : 'bg-purple-950/20 border border-purple-900/30'}`}>
-                          <div className="flex items-center justify-between mb-1.5">
-                            <span className={`text-[10px] font-bold ${isCapped ? 'text-amber-400' : 'text-purple-400'}`}>Output Breakdown</span>
-                            <span className="text-sm text-white font-bold">{capped} ads</span>
+                        <div className="bg-purple-950/20 border border-purple-900/30 rounded-lg px-3 py-2.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] text-purple-400 font-semibold">{genConfig.quantity} concept{genConfig.quantity > 1 ? 's' : ''} × {genConfig.creativesPerConcept} variation{genConfig.creativesPerConcept > 1 ? 's' : ''}</span>
+                            <span className="text-white font-bold text-sm">{total} total</span>
                           </div>
-                          <div className="flex items-center gap-2 text-[10px]">
-                            <span className="text-white font-semibold">{concepts} concept{concepts > 1 ? 's' : ''}</span>
-                            <span className="text-slate-600">×</span>
-                            <span className="text-blue-400">{hooks} hook{hooks > 1 ? 's' : ''}</span>
-                            <span className="text-slate-600">×</span>
-                            <span className="text-emerald-400">{variations} variation{variations > 1 ? 's' : ''}</span>
-                            {stages > 1 && <><span className="text-slate-600">×</span><span className="text-orange-400">{stages} stages</span></>}
-                            <span className="text-slate-600">=</span>
-                            {isCapped ? (
-                              <><span className="text-slate-500 line-through">{grandTotal}</span><span className="text-amber-400 font-bold ml-1">capped at 5</span></>
-                            ) : (
-                              <span className="text-white font-bold">{grandTotal}</span>
-                            )}
-                          </div>
+                          <p className="text-[9px] text-slate-500 mt-1">Each concept will generate {genConfig.creativesPerConcept} variation{genConfig.creativesPerConcept > 1 ? 's' : ''}</p>
                         </div>
                       );
                     })()}
@@ -4828,8 +4795,7 @@ function CreativesContent() {
                     className="w-full px-4 py-4 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-colors shadow-lg shadow-purple-900/30">
                     {generatingPackage ? 'Generating...' : (() => {
                       if (genConfig.genMode === 'clone_ad') return 'Clone Ad from Reference';
-                      if (genConfig.engine === 'higgsfield') return `Generate ${higgsStyle.replace(/_/g, ' ')} Pack`;
-                      const total = Math.min(genConfig.quantity * genConfig.hooksPerConcept * genConfig.variationsPerHook * (genConfig.funnelStructure === 'full' ? 3 : 1), 5);
+                      const total = genConfig.quantity * genConfig.creativesPerConcept;
                       return `Generate ${total} Creative${total > 1 ? 's' : ''}`;
                     })()}
                   </button>
@@ -4839,7 +4805,7 @@ function CreativesContent() {
                 {generatingPackage && !higgsPackJob && (
                   <div className="bg-slate-900 border border-purple-900/30 rounded-xl p-6 text-center">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-400 mx-auto mb-3" />
-                    <p className="text-white font-medium text-sm">Generating {genConfig.quantity} creative package{genConfig.quantity > 1 ? 's' : ''}...</p>
+                    <p className="text-white font-medium text-sm">Generating {genConfig.quantity * genConfig.creativesPerConcept} creatives across {genConfig.quantity} concept{genConfig.quantity > 1 ? 's' : ''}...</p>
                     <div className="flex justify-center gap-6 mt-3 text-[10px]">
                       <span className="text-emerald-400">Account data loaded</span>
                       <span className="text-emerald-400">Strategy built</span>
@@ -5088,7 +5054,9 @@ function CreativesContent() {
                                   {(pkg as VideoPackage).avatarSuggestion && (
                                     <div><p className="text-[10px] text-amber-400 uppercase font-semibold mb-1">Avatar / Presenter</p><p className="text-xs text-slate-300">{(pkg as VideoPackage).avatarSuggestion}</p></div>
                                   )}
-                                  {/* CTA hidden */}
+                                  {(pkg as VideoPackage).cta && (
+                                    <div><p className="text-[10px] text-emerald-400 uppercase font-semibold mb-1">CTA</p><p className="text-sm text-emerald-300 font-medium">{(pkg as VideoPackage).cta}</p></div>
+                                  )}
                                 </>
                               ) : (
                                 <>
@@ -5135,7 +5103,9 @@ function CreativesContent() {
                                   {(pkg as ImagePackage).offerPlacement && (
                                     <div><p className="text-[10px] text-amber-400 uppercase font-semibold mb-1">Offer</p><p className="text-xs text-slate-300">{(pkg as ImagePackage).offerPlacement}</p></div>
                                   )}
-                                  {/* CTA hidden */}
+                                  {(pkg as ImagePackage).ctaText && (
+                                    <div><p className="text-[10px] text-emerald-400 uppercase font-semibold mb-1">CTA</p><p className="text-sm text-emerald-300 font-medium">{(pkg as ImagePackage).ctaText} <span className="text-[9px] text-slate-500">({(pkg as ImagePackage).ctaPlacement})</span></p></div>
+                                  )}
                                 </>
                               )}
                               {/* Ad Copy */}
@@ -5294,7 +5264,7 @@ function CreativesContent() {
                             </div>
                             <div><p className="text-[9px] text-slate-500 uppercase">Angle</p><p className="text-[10px] text-slate-300">{(pkg as any).angle || (pkg as any).conceptAngle}</p></div>
                             <div><p className="text-[9px] text-slate-500 uppercase">Hook</p><p className="text-[10px] text-purple-300">{isVideo ? (pkg as any).hook : (pkg as any).headline}</p></div>
-                            {/* CTA hidden */}
+                            <div><p className="text-[9px] text-slate-500 uppercase">CTA</p><p className="text-[10px] text-emerald-300">{(pkg as any).cta || (pkg as any).ctaDirection}</p></div>
                             {isVideo && <div><p className="text-[9px] text-slate-500 uppercase">Avatar</p><p className="text-[10px] text-slate-300">{(pkg as any).avatarSuggestion}</p></div>}
                             <div><p className="text-[9px] text-slate-500 uppercase">Structure</p><p className="text-[10px] text-slate-400">{isVideo ? (pkg as any).sceneStructure?.substring(0, 120) : (pkg as any).visualComposition?.substring(0, 120)}...</p></div>
                             <button onClick={() => handleGenerateVariations(idx)} disabled={generatingPackage}
@@ -5332,12 +5302,12 @@ function CreativesContent() {
                             </div>
                             <div className="flex gap-1">
                               <button onClick={() => {
-                                setGenConfig(c => ({ ...c, strategySource: 'recently_tested' as StrategySource, conceptAngle: pkg.angle || pkg.title || '' }));
+                                setGenConfig(c => ({ ...c, conceptSource: 'recently_tested' as ConceptSource, conceptAngle: pkg.angle || pkg.title || '' }));
                               }} className="flex-1 px-1.5 py-1 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 text-[8px] font-semibold rounded transition-colors">
                                 Iterate
                               </button>
                               <button onClick={() => {
-                                setGenConfig(c => ({ ...c, strategySource: 'winning_concepts' as StrategySource, conceptAngle: pkg.angle || pkg.title || '' }));
+                                setGenConfig(c => ({ ...c, conceptSource: 'use_existing' as ConceptSource, conceptAngle: pkg.angle || pkg.title || '' }));
                               }} className="flex-1 px-1.5 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 text-[8px] font-semibold rounded transition-colors">
                                 Scale
                               </button>
@@ -5399,21 +5369,21 @@ function CreativesContent() {
                           )}
                           <div className="flex gap-1">
                             {concept.status === 'scale' && (
-                              <button onClick={() => setGenConfig(c => ({ ...c, strategySource: 'winning_concepts' as StrategySource, quantity: 2, hooksPerConcept: 3, variationsPerHook: 2, conceptAngle: concept.name }))}
+                              <button onClick={() => setGenConfig(c => ({ ...c, conceptSource: 'use_existing' as ConceptSource, quantity: 1, creativesPerConcept: 5, conceptAngle: concept.name }))}
                                 className="flex-1 px-1.5 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 text-[8px] font-semibold rounded transition-colors">
                                 Scale
                               </button>
                             )}
                             {concept.status === 'test' && (
-                              <button onClick={() => setGenConfig(c => ({ ...c, strategySource: 'recently_tested' as StrategySource, quantity: 2, hooksPerConcept: 2, variationsPerHook: 2, conceptAngle: concept.name }))}
+                              <button onClick={() => setGenConfig(c => ({ ...c, conceptSource: 'recently_tested' as ConceptSource, quantity: 1, creativesPerConcept: 3, conceptAngle: concept.name }))}
                                 className="flex-1 px-1.5 py-1 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 text-[8px] font-semibold rounded transition-colors">
                                 Test More
                               </button>
                             )}
                             {concept.fatigue.status === 'fatiguing' && (
-                              <button onClick={() => setGenConfig(c => ({ ...c, strategySource: 'winning_concepts' as StrategySource, hookStrategy: 'generate_new' as HookStrategy, conceptAngle: concept.name }))}
+                              <button onClick={() => setGenConfig(c => ({ ...c, conceptSource: 'use_existing' as ConceptSource, quantity: 1, creativesPerConcept: 3, conceptAngle: concept.name }))}
                                 className="flex-1 px-1.5 py-1 bg-orange-600/20 hover:bg-orange-600/30 text-orange-400 text-[8px] font-semibold rounded transition-colors">
-                                Refresh Creative
+                                Refresh
                               </button>
                             )}
                             {concept.status === 'kill' && (
@@ -5774,7 +5744,7 @@ function CreativesContent() {
                       <div><p className="text-[9px] text-slate-500 uppercase">Angle</p><p className="text-slate-300">{genStrategy.recommendedAngle}</p></div>
                       <div><p className="text-[9px] text-slate-500 uppercase">Hook</p><p className="text-slate-300">{genStrategy.recommendedHook}</p></div>
                       <div><p className="text-[9px] text-slate-500 uppercase">Structure</p><p className="text-slate-300">{genStrategy.recommendedStructure}</p></div>
-                      {/* CTA hidden */}
+                      <div><p className="text-[9px] text-slate-500 uppercase">CTA</p><p className="text-slate-300">{genStrategy.recommendedCta}</p></div>
                       <div><p className="text-[9px] text-slate-500 uppercase">Format</p><p className="text-slate-300">{genStrategy.recommendedFormat}</p></div>
                       {/* Confidence */}
                       {genStrategy.confidence > 0 && (
@@ -6069,7 +6039,8 @@ function CreativesContent() {
                                 {lpkg.hookText && <p className="text-[10px] text-pink-300 mb-1">Hook: {lpkg.hookText}</p>}
                                 {lpkg.script && <p className="text-[10px] text-slate-400 line-clamp-3">{lpkg.script}</p>}
                                 {lpkg.headline && <p className="text-[10px] text-white font-medium">{lpkg.headline}</p>}
-                                {/* CTA hidden */}
+                                {lpkg.cta && <p className="text-[10px] text-emerald-400 mt-1">CTA: {lpkg.cta}</p>}
+                                {lpkg.ctaText && <p className="text-[10px] text-emerald-400 mt-1">CTA: {lpkg.ctaText}</p>}
                               </div>
                             ))}
                             {/* Actions row */}
