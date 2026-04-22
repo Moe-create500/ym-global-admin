@@ -1800,7 +1800,8 @@ function CreativesContent() {
       setGeneratingPackage(false);
       return;
     }
-    if (!window.confirm(`Generate ${genConfig.quantity} creative package(s)? This will call AI APIs.`)) return;
+    const totalAds = Math.min(genConfig.quantity * (genConfig.hooksPerConcept || 1) * (genConfig.variationsPerHook || 1), 5);
+    if (!window.confirm(`Generate ${totalAds} creative package(s)? This will call AI APIs.`)) return;
     setGeneratingPackage(true);
     setGenPackageError('');
     setGenPackages([]);
@@ -4478,11 +4479,13 @@ function CreativesContent() {
                       const totalAds = concepts * hooks * variations;
                       const stages = genConfig.funnelStructure === 'full' ? 3 : 1;
                       const grandTotal = totalAds * stages;
+                      const capped = Math.min(grandTotal, 5);
+                      const isCapped = grandTotal > 5;
                       return (
-                        <div className="bg-purple-950/20 border border-purple-900/30 rounded-lg px-3 py-2.5">
+                        <div className={`rounded-lg px-3 py-2.5 ${isCapped ? 'bg-amber-950/20 border border-amber-900/30' : 'bg-purple-950/20 border border-purple-900/30'}`}>
                           <div className="flex items-center justify-between mb-1.5">
-                            <span className="text-[10px] text-purple-400 font-bold">Output Breakdown</span>
-                            <span className="text-sm text-white font-bold">{grandTotal} ads</span>
+                            <span className={`text-[10px] font-bold ${isCapped ? 'text-amber-400' : 'text-purple-400'}`}>Output Breakdown</span>
+                            <span className="text-sm text-white font-bold">{capped} ads</span>
                           </div>
                           <div className="flex items-center gap-2 text-[10px]">
                             <span className="text-white font-semibold">{concepts} concept{concepts > 1 ? 's' : ''}</span>
@@ -4492,7 +4495,11 @@ function CreativesContent() {
                             <span className="text-emerald-400">{variations} variation{variations > 1 ? 's' : ''}</span>
                             {stages > 1 && <><span className="text-slate-600">×</span><span className="text-orange-400">{stages} stages</span></>}
                             <span className="text-slate-600">=</span>
-                            <span className="text-white font-bold">{grandTotal}</span>
+                            {isCapped ? (
+                              <><span className="text-slate-500 line-through">{grandTotal}</span><span className="text-amber-400 font-bold ml-1">capped at 5</span></>
+                            ) : (
+                              <span className="text-white font-bold">{grandTotal}</span>
+                            )}
                           </div>
                         </div>
                       );
@@ -4822,7 +4829,7 @@ function CreativesContent() {
                     {generatingPackage ? 'Generating...' : (() => {
                       if (genConfig.genMode === 'clone_ad') return 'Clone Ad from Reference';
                       if (genConfig.engine === 'higgsfield') return `Generate ${higgsStyle.replace(/_/g, ' ')} Pack`;
-                      const total = genConfig.quantity * genConfig.hooksPerConcept * genConfig.variationsPerHook * (genConfig.funnelStructure === 'full' ? 3 : 1);
+                      const total = Math.min(genConfig.quantity * genConfig.hooksPerConcept * genConfig.variationsPerHook * (genConfig.funnelStructure === 'full' ? 3 : 1), 5);
                       return `Generate ${total} Creative${total > 1 ? 's' : ''}`;
                     })()}
                   </button>

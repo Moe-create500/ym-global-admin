@@ -170,6 +170,10 @@ export async function POST(req: NextRequest) {
   const generationGoal = normalize(body.generationGoal || 'new_concept');
   const platformTarget = body.platformTarget || 'meta';
   const quantity = body.quantity || 3;
+  const hooksPerConcept = body.hooksPerConcept || 1;
+  const variationsPerHook = body.variationsPerHook || 1;
+  const conceptAngle = (body.conceptAngle || '').trim();
+  const totalPackages = Math.min(quantity * hooksPerConcept * variationsPerHook, 5);
   const fastMode = body.fast !== false; // fast mode ON by default
 
   if (!storeId) {
@@ -307,7 +311,7 @@ export async function POST(req: NextRequest) {
       accountInsights: intel ? { avgRoas: intel.metrics?.avgRoas, avgCtr: intel.metrics?.avgCtr, avgCpa: intel.metrics?.avgCpa, learnedWins, learnedLosses, fatiguedNames } : null,
     });
     // Fast mode: compact contract (~1200 tokens). Full mode: complete contract (~2800 tokens).
-    const contract = fastMode ? buildFastContract(creativeIntent, contentType, quantity, funnelStage) : buildGenerationContract(creativeIntent, contentType, quantity);
+    const contract = fastMode ? buildFastContract(creativeIntent, contentType, totalPackages, funnelStage) : buildGenerationContract(creativeIntent, contentType, totalPackages);
     const addendum = [
       strategy.evidence?.length > 0 ? `\nEvidence: ${strategy.evidence.slice(0, 3).map((e: any) => `${e.metric}: ${e.value}`).join(', ')}` : '',
       strategy.overrides?.length > 0 ? `\nOverrides: ${strategy.overrides.map((o: any) => `${o.field}: ${o.current}→${o.suggested}`).join(', ')}` : '',
@@ -317,9 +321,10 @@ export async function POST(req: NextRequest) {
     return jsonError('CONTRACT_ERROR', 'Failed to build generation contract', e.message, 500);
   }
 
+  const angleContext = conceptAngle ? `\n\nCUSTOM ANGLE (use this as the primary creative direction — all packages must revolve around this angle): ${conceptAngle}` : '';
   const userPrompt = isVariation
-    ? `Generate ${quantity} VARIATIONS.${parentPackageContext}${productInfo}${winningAdsContext}`
-    : `Generate ${quantity} ${contentType} creative packages.${productInfo}${baseAdContext}${winningAdsContext}`;
+    ? `Generate ${totalPackages} VARIATIONS.${parentPackageContext}${productInfo}${winningAdsContext}`
+    : `Generate ${totalPackages} ${contentType} creative packages.${angleContext}${productInfo}${baseAdContext}${winningAdsContext}`;
 
   let packages: any[] = [];
   let usage: any = null;
@@ -328,7 +333,7 @@ export async function POST(req: NextRequest) {
     const result = await chatCompletion([
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
-    ], { temperature: 0.9, maxTokens: Math.min(4096, 800 * quantity + 200) });
+    ], { temperature: 0.9, maxTokens: Math.min(4096, 800 * totalPackages + 200) });
 
     usage = result.usage;
 
@@ -344,7 +349,7 @@ export async function POST(req: NextRequest) {
       console.error(`[QUOTA] OpenAI quota exceeded for store ${storeId} at ${new Date().toISOString()}`);
 
       // Fallback: generate rule-based packages from strategy + taxonomy (no AI needed)
-      const fallbackPackages = Array.from({ length: quantity }, (_, i) => {
+      const fallbackPackages = Array.from({ length: totalPackages }, (_, i) => {
         const productTitle = productObj?.title || 'your product';
         const hookExamples = HOOK_STYLES[hookStyle]?.exampleFormats || ['"Did you know..."'];
         const hookExample = hookExamples[i % hookExamples.length] || hookExamples[0];
@@ -374,7 +379,7 @@ export async function POST(req: NextRequest) {
           angle: `${CREATIVE_TYPES[creativeType]?.label || 'image'} concept for ${productTitle}`,
           headline: productTitle.substring(0, 30),
           subheadline: CREATIVE_TYPES[creativeType]?.useCase?.substring(0, 60) || '',
-          conceptAngle: CREATIVE_TYPES[creativeType]?.definition || '',
+          conceptAngle: conceptAngle || CREATIVE_TYPES[creativeType]?.definition || '',
           visualComposition: 'Product hero shot, clean background, bold headline overlay',
           offerPlacement: offer ? `Offer "${offer}" prominently displayed` : 'No offer specified',
           ctaDirection: funnelCta.split(':')[0],
