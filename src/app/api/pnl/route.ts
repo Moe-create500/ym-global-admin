@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { getSession, getAccessibleStoreIds, requireStoreAccess } from '@/lib/auth-tenant';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,7 +9,21 @@ export async function GET(req: NextRequest) {
   const storeId = searchParams.get('storeId');
   const from = searchParams.get('from');
   const to = searchParams.get('to');
-  const period = searchParams.get('period') || 'daily'; // daily | weekly | monthly
+  const period = searchParams.get('period') || 'daily';
+
+  // ═══ AUTH CHECK ═══
+  const session = getSession(req);
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const isAdmin = session.role === 'admin' || session.role === 'data_corrector';
+
+  // If specific storeId requested, verify access
+  if (storeId) {
+    const auth = requireStoreAccess(req, storeId);
+    if (!auth.authorized) return auth.response;
+  }
 
   const db = getDb();
 
@@ -27,7 +42,22 @@ export async function GET(req: NextRequest) {
   let where = 'WHERE 1=1';
   const params: any[] = [];
 
-  if (storeId) { where += ' AND dp.store_id = ?'; params.push(storeId); }
+  if (storeId) {
+    // Specific store requested (already authorized above)
+    where += ' AND dp.store_id = ?';
+    params.push(storeId);
+  } else if (!isAdmin) {
+    // No storeId requested by non-admin — scope to their accessible stores
+    const accessibleIds = getAccessibleStoreIds(session.employeeId, session.role);
+    if (accessibleIds.length === 0) {
+      return NextResponse.json({ rows: [], totals: {} });
+    }
+    const placeholders = accessibleIds.map(() => '?').join(',');
+    where += ` AND dp.store_id IN (${placeholders})`;
+    params.push(...accessibleIds);
+  }
+  // Admin with no storeId = global view (allowed)
+
   if (from) { where += ' AND dp.date >= ?'; params.push(from); }
   if (to) { where += ' AND dp.date <= ?'; params.push(to); }
 
@@ -53,13 +83,11 @@ export async function GET(req: NextRequest) {
     LIMIT 365
   `).all(...params);
 
-  // Compute margin per row
   const data = rows.map((r: any) => ({
     ...r,
     margin_pct: r.revenue_cents > 0 ? (r.net_profit_cents / r.revenue_cents) * 100 : 0,
   }));
 
-  // Totals
   const totals = db.prepare(`
     SELECT
       SUM(dp.revenue_cents) as revenue_cents,

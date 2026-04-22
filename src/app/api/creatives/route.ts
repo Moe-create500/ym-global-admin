@@ -1,3 +1,4 @@
+import { requireStoreAccess, getSession, getAccessibleStoreIds } from '@/lib/auth-tenant';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import crypto from 'crypto';
@@ -7,6 +8,10 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const storeId = searchParams.get('storeId');
+  // ═══ TENANT ACCESS CHECK ═══
+  const auth = requireStoreAccess(req, storeId);
+  if (!auth.authorized) return auth.response;
+
   const type = searchParams.get('type');
   const status = searchParams.get('status');
 
@@ -15,7 +20,20 @@ export async function GET(req: NextRequest) {
   let where = 'WHERE 1=1';
   const params: any[] = [];
 
-  if (storeId) { where += ' AND c.store_id = ?'; params.push(storeId); }
+  if (storeId) {
+    where += ' AND c.store_id = ?'; params.push(storeId);
+  } else {
+    const session = getSession(req);
+    if (session && session.role !== 'admin' && session.role !== 'data_corrector') {
+      const accessibleIds = getAccessibleStoreIds(session.employeeId, session.role);
+      if (accessibleIds.length > 0) {
+        where += ` AND c.store_id IN (${accessibleIds.map(() => '?').join(',')})`;
+        params.push(...accessibleIds);
+      } else {
+        return NextResponse.json({ creatives: [] });
+      }
+    }
+  }
   if (type) { where += ' AND c.type = ?'; params.push(type); }
   if (status) { where += ' AND c.status = ?'; params.push(status); }
 

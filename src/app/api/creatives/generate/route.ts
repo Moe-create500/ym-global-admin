@@ -1,3 +1,4 @@
+import { requireStoreAccess, assertBillingReady } from '@/lib/auth-tenant';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { textToVideo, imageToVideo, getVideoStatus as nbGetStatus } from '@/lib/nanobanana';
@@ -13,6 +14,8 @@ import { generateImage as ideogramGenerateImage } from '@/lib/ideogram';
 import { generateImage as nanoBananaGenerateImage, editImage as nanoBananaEditImage } from '@/lib/nano-banana-image';
 import { selectProvider } from '@/lib/provider-router';
 import { describeProductImage } from '@/lib/vision';
+import { processVoicePipeline, buildLanguageEnforcement, extractSpokenScript, chunkScriptForSeedance, VOICE_CONFIG } from '@/lib/voice-pipeline';
+import { logUsage } from '@/lib/usage-tracking';
 import crypto from 'crypto';
 import sharp from 'sharp';
 
@@ -43,12 +46,25 @@ export async function POST(req: NextRequest) {
   }
 
   const { storeId, type, prompt: originalPrompt, imageUrls, title, angle, resolution, duration, engine, packageId, packageIndex, dimension, creativeType, coverImageUrl, userSelectedCover } = body;
+  // ═══ TENANT ACCESS CHECK ═══
+  const _auth = requireStoreAccess(req, storeId);
+  if (!_auth.authorized) return _auth.response;
+  // ═══ BILLING ENFORCEMENT — non-internal clients must have payment method ═══
+  if (storeId && _auth.authorized) {
+    const billing = assertBillingReady(storeId, _auth.role);
+    if (!billing.allowed) {
+      return NextResponse.json({ success: false, error: { code: 'BILLING_REQUIRED', message: billing.reason } }, { status: 402 });
+    }
+  }
+
 
   // ═══ Cover image flow (trace logs — user's explicit selection must survive) ═══
   // Priority: body.coverImageUrl (explicit) > first valid imageUrls (legacy)
+  // Accepts https:// URLs AND local /api/ paths (uploaded product images)
+  const isValidUrl = (u: any): boolean => typeof u === 'string' && (u.startsWith('https://') || u.startsWith('/api/') || u.startsWith('http://'));
   const resolvedCover: string =
-    (typeof coverImageUrl === 'string' && coverImageUrl.startsWith('https://')) ? coverImageUrl :
-    (Array.isArray(imageUrls) && imageUrls.find((u: any) => typeof u === 'string' && u.startsWith('https://'))) || '';
+    (isValidUrl(coverImageUrl)) ? coverImageUrl :
+    (Array.isArray(imageUrls) && imageUrls.find((u: any) => isValidUrl(u))) || '';
   console.log(`[COVER-TRACE] userSelectedCover=${userSelectedCover === true}`);
   console.log(`[COVER-TRACE] body.coverImageUrl=${coverImageUrl ? String(coverImageUrl).substring(0, 120) : '(absent)'}`);
   console.log(`[COVER-TRACE] body.imageUrls[0]=${imageUrls?.[0] ? String(imageUrls[0]).substring(0, 120) : '(absent)'}`);
@@ -56,9 +72,10 @@ export async function POST(req: NextRequest) {
 
   // Generate a vision description of the user-selected cover and inject it into the prompt
   // so the text-to-video engine renders a product that matches THAT specific image.
-  // Skip for Seedance — it uses reference-to-video with actual photos instead.
+  // Only runs when a cover is provided. If vision fails, generation proceeds without the
+  // description (with a warning log) rather than blocking the user.
   let prompt = originalPrompt;
-  if (resolvedCover && engine !== 'seedance') {
+  if (resolvedCover) {
     const isVideoType = type !== 'text-to-image' && !['dalle', 'gemini-image', 'minimax-image', 'stability', 'ideogram'].includes(type || '');
     if (isVideoType) {
       try {
@@ -148,6 +165,7 @@ export async function POST(req: NextRequest) {
       `).run(id, storeId, title, prompt, angle || null, result.videoId, packageId || null, packageIndex ?? null);
       try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
 
+      logUsage({ storeId, provider: 'sora', operationType: 'video', units: parseInt(duration) || 20, jobId: id, metadata: { model: result.model, resolution } });
       return jsonSuccess({ id, engine: 'sora', videoId: result.videoId, model: result.model, seconds: result.seconds, size: result.size });
 
     } else if (useEngine === 'veo') {
@@ -170,6 +188,7 @@ export async function POST(req: NextRequest) {
       `).run(id, storeId, title, prompt, angle || null, result.operationName, packageId || null, packageIndex ?? null);
       try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
 
+      logUsage({ storeId, provider: 'veo', operationType: 'video', units: parseInt(duration) || 8, jobId: id, metadata: { model: result.model } });
       return jsonSuccess({ id, engine: 'veo', operationName: result.operationName, model: result.model });
 
     } else if (useEngine === 'minimax') {
@@ -318,56 +337,124 @@ export async function POST(req: NextRequest) {
       return jsonSuccess({ id, engine: 'higgsfield', requestId: result.requestId });
 
     } else if (useEngine === 'seedance') {
-      // Seedance 2.0 — ByteDance via fal.ai. Supports 4-15s, 720p, native audio
-      const seedDuration = Math.max(4, Math.min(15, parseInt(duration) || 15));
+      // ═══ SEEDANCE — single full-duration render (4-15s) ═══
+      // Seedance handles up to 15s natively. No scene splitting needed.
+      // Clean prompt: visual directions + natural dialogue (separated).
+      // Product image via I2V starting frame when available.
+      const { parsePromptIntoScenes, renderScene, buildCaptions } = await import('@/lib/seedance-pipeline');
+
+      const seedDuration = Math.max(4, Math.min(15, parseInt(duration) || 8));
       const seedAspect = dimension === '16:9' ? '16:9' : dimension === '1:1' ? '1:1' : '9:16';
 
-      // Collect all valid product image URLs for reference-to-video
-      const refImages: string[] = [];
-      if (resolvedCover && resolvedCover.startsWith('https://')) refImages.push(resolvedCover);
-      if (Array.isArray(imageUrls)) {
-        for (const u of imageUrls) {
-          if (typeof u === 'string' && u.startsWith('https://') && !refImages.includes(u)) refImages.push(u);
+      // Resolve product image for I2V mode
+      // Use ANY available image: imageUrls[0], resolvedCover, or coverImageUrl
+      // Do NOT gate on type === 'image-to-video' — the frontend may send 'text-to-video'
+      // even when a cover image is selected.
+      let resolvedImageUrl: string | null = null;
+      const rawImageUrl = imageUrls?.[0] || resolvedCover || null;
+      if (rawImageUrl) {
+        if (rawImageUrl.startsWith('https://') || rawImageUrl.startsWith('http://')) {
+          // Validate the URL is accessible before passing to Seedance
+          try {
+            const headRes = await fetch(rawImageUrl, { method: 'HEAD', signal: AbortSignal.timeout(10000) });
+            if (headRes.ok) {
+              resolvedImageUrl = rawImageUrl;
+              console.log(`[SEEDANCE] Product image validated (HTTP ${headRes.status}): ${rawImageUrl.substring(0, 80)}...`);
+            } else {
+              console.error(`[SEEDANCE] Product image URL returned HTTP ${headRes.status}: ${rawImageUrl.substring(0, 80)}`);
+            }
+          } catch (fetchErr: any) {
+            console.error(`[SEEDANCE] Product image URL unreachable: ${fetchErr.message}`);
+          }
+        } else if (rawImageUrl.startsWith('/api/products/uploads?file=') || rawImageUrl.startsWith('/api/')) {
+          try {
+            const { readFile: rf } = await import('fs/promises');
+            const pathMod = await import('path');
+            const filename = new URL(rawImageUrl, 'http://localhost').searchParams.get('file');
+            if (filename) {
+              const filePath = pathMod.join(process.cwd(), 'public', 'uploads', filename);
+              const buf = await rf(filePath);
+              const ext = filename.split('.').pop()?.toLowerCase() || 'png';
+              const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png';
+              resolvedImageUrl = `data:${mime};base64,${buf.toString('base64')}`;
+              console.log(`[SEEDANCE] Product image loaded from disk: ${filename} (${buf.length} bytes)`);
+            }
+          } catch (e: any) {
+            console.error(`[SEEDANCE] Local file resolve failed: ${e.message}`);
+          }
         }
       }
 
-      let result;
-      let seedanceTier: string;
-      if (refImages.length > 0) {
-        // Reference-to-video: submit actual product photos so the model
-        // renders the REAL product with native audio (generate_audio: true).
-        const refLabels = refImages.map((_, i) => `@Image${i + 1}`).join(', ');
-        const cinematicPrompt = `${originalPrompt}\n\nProduct reference images: ${refLabels} — show this EXACT product naturally in the scene, match packaging, colors, and branding precisely.\n\nTECHNICAL: ${seedDuration}-second video. Aspect ratio ${seedAspect}. Photorealistic, natural lighting. Normal conversational pacing — NOT slow motion. UGC authentic feel.`;
-        console.log(`[SEEDANCE-R2V] Reference-to-video: ${refImages.length} product images, prompt=${cinematicPrompt.length} chars`);
-        result = await seedanceR2V(cinematicPrompt, refImages, {
-          duration: seedDuration, aspectRatio: seedAspect, resolution: '720p',
-        });
-        seedanceTier = 'reference-to-video';
-      } else {
-        // No product images — fall back to text-to-video with native audio
-        const cinematicPrompt = `${prompt}\n\nTECHNICAL: ${seedDuration}-second video. Aspect ratio ${seedAspect}. Photorealistic, natural lighting. Normal conversational pacing — NOT slow motion. UGC authentic feel.`;
-        console.log(`[SEEDANCE-T2V] Text-to-video (no product images): prompt=${cinematicPrompt.length} chars`);
-        result = await seedanceT2V(cinematicPrompt, {
-          duration: seedDuration, aspectRatio: seedAspect,
-        });
-        seedanceTier = 'text-to-video';
+      // Product reference enforcement
+      const hasProductImage = !!resolvedImageUrl;
+      console.log(`[SEEDANCE] Product image selected: ${rawImageUrl ? 'true' : 'false'}`);
+      console.log(`[SEEDANCE] Product image resolved: ${hasProductImage}`);
+      if (rawImageUrl && !resolvedImageUrl) {
+        // Product was selected but couldn't be resolved — fail the job
+        return jsonError('PRODUCT_RESOLVE_FAILED', 'Selected product image could not be loaded. Please try a different image.', { imageUrl: rawImageUrl }, 400);
       }
 
-      // Store voiceover script and tier in template_data (matches partner's pipeline format)
-      const templateData = JSON.stringify({
-        voiceoverScript: prompt,
-        voiceoverPending: false,
-        seedanceTier,
+      // Get product description for visual context
+      let productDesc: string | undefined;
+      if (resolvedCover) {
+        try {
+          const productName = (title || '').replace(/\s+–\s+V\d+.*$/, '').trim();
+          productDesc = await describeProductImage(resolvedCover, productName) || undefined;
+        } catch {}
+      }
+
+      // Parse prompt into visual + dialogue (one scene, full duration)
+      const scenes = parsePromptIntoScenes(originalPrompt, seedDuration, hasProductImage);
+      // Merge all scenes into one full-duration scene for single Seedance render
+      const mergedScene = {
+        sceneIndex: 0,
+        spokenScript: scenes.map(s => s.spokenScript).join(' '),
+        visualPrompt: scenes[0]?.visualPrompt || 'UGC selfie video. Person talking to camera in natural light.',
+        duration: seedDuration,
+        productVisible: hasProductImage,
+        productInHand: hasProductImage,
+        productNearFace: false,
+      };
+
+      console.log(`[SEEDANCE] Duration: ${seedDuration}s (full, no scene split)`);
+      console.log(`[SEEDANCE] Mode: ${hasProductImage ? 'I2V (product as starting frame)' : 'T2V (no product image)'}`);
+      console.log(`[SEEDANCE] Visual: "${mergedScene.visualPrompt.substring(0, 80)}..."`);
+      console.log(`[SEEDANCE] Spoken: "${mergedScene.spokenScript.substring(0, 80)}..."`);
+      console.log(`[SEEDANCE] Product visible: ${mergedScene.productVisible}, attached: ${hasProductImage}`);
+
+      // Render single full-duration scene
+      const job = await renderScene({
+        scene: mergedScene,
+        productImageUrl: resolvedImageUrl,
+        productDescription: productDesc,
+        aspectRatio: seedAspect,
       });
 
       db.prepare(`
         INSERT INTO creatives (id, store_id, type, title, description,
-          angle, nb_video_id, nb_status, status, template_id, template_data, package_id, package_index)
-        VALUES (?, ?, 'video', ?, ?, ?, ?, 'processing', 'draft', 'seedance', ?, ?, ?)
-      `).run(id, storeId, title, prompt, angle || null, result.requestId, templateData, packageId || null, packageIndex ?? null);
+          angle, nb_video_id, nb_status, status, template_id, package_id, package_index)
+        VALUES (?, ?, 'video', ?, ?, ?, ?, 'processing', 'draft', 'seedance', ?, ?)
+      `).run(id, storeId, title, prompt, angle || null, job.requestId, packageId || null, packageIndex ?? null);
       try { if (persistedFormat) db.prepare('UPDATE creatives SET format = ? WHERE id = ?').run(persistedFormat, id); } catch {}
 
-      return jsonSuccess({ id, engine: 'seedance', requestId: result.requestId, model: result.model });
+      // Save spoken script + captions
+      const spokenScript = mergedScene.spokenScript;
+      try {
+        db.prepare('UPDATE creatives SET template_data = ? WHERE id = ?').run(
+          JSON.stringify({
+            voiceoverScript: spokenScript,
+            voiceoverPending: false,
+            seedanceTier: hasProductImage ? 'image-to-video' : 'text-to-video',
+            captionText: spokenScript,
+            captionSource: 'spoken_script',
+            productAttached: hasProductImage,
+          }),
+          id,
+        );
+      } catch {}
+
+      logUsage({ storeId, provider: 'seedance', operationType: 'video', units: seedDuration, jobId: id, metadata: { tier: hasProductImage ? 'i2v' : 't2v', resolution: '480p' } });
+      return jsonSuccess({ id, engine: 'seedance', requestId: job.requestId, model: job.model, tier: hasProductImage ? 'image-to-video' : 'text-to-video' });
 
     } else {
       // NanoBanana
@@ -385,6 +472,7 @@ export async function POST(req: NextRequest) {
       `).run(id, storeId, title, prompt, result.videoUrl || null, result.thumbnailUrl || null,
         angle || null, result.videoId, packageId || null, packageIndex ?? null);
 
+      logUsage({ storeId, provider: 'nano-banana', operationType: 'video', units: parseInt(duration) || 10, jobId: id, metadata: { resolution } });
       return jsonSuccess({ id, engine: 'nanobanana', videoId: result.videoId, videoUrl: result.videoUrl, thumbnailUrl: result.thumbnailUrl, creditsUsed: result.creditsUsed });
     }
   } catch (err: any) {
@@ -532,9 +620,30 @@ export async function GET(req: NextRequest) {
       return jsonSuccess({ creative, status: status.status === 'completed' ? 'completed' : status.status === 'failed' || status.status === 'nsfw' ? 'failed' : 'processing', providerError: status.error });
 
     } else if (engineType === 'seedance') {
-      const endpoint = creative.type === 'video' && creative.file_url ? 'bytedance/seedance-2.0/image-to-video' : 'bytedance/seedance-2.0/text-to-video';
-      const status = await seedanceGetStatus(creative.nb_video_id, endpoint);
+      // ═══ SEEDANCE NATIVE — no external TTS, no ffmpeg mux ═══
+      // Seedance handles speech + lip sync + timing natively (generate_audio: true).
+      // Output is used directly. No audio replacement.
+      const status = await seedanceGetStatus(creative.nb_video_id);
       if (status.status === 'COMPLETED' && status.videoUrl) {
+        const templateData = creative.template_data ? JSON.parse(creative.template_data) : null;
+
+        console.log(`[SEEDANCE] Job ${id} completed`);
+        console.log(`[SEEDANCE] Native audio used: true`);
+        console.log(`[SEEDANCE] External TTS used: false`);
+        console.log(`[SEEDANCE] Video URL: ${status.videoUrl.substring(0, 80)}...`);
+
+        // Mark complete — captions from spoken script, not provider transcript
+        db.prepare('UPDATE creatives SET template_data = ? WHERE id = ?').run(
+          JSON.stringify({
+            ...templateData,
+            voiceoverPending: false,
+            voiceoverApplied: false,
+            voiceProvider: 'seedance-native',
+            captionText: templateData?.captionText || templateData?.voiceoverScript || '',
+            captionSource: 'spoken_script',
+          }), id
+        );
+
         db.prepare("UPDATE creatives SET nb_status = 'completed', file_url = ?, updated_at = datetime('now') WHERE id = ?").run(status.videoUrl, id);
         creative.nb_status = 'completed';
         creative.file_url = status.videoUrl;

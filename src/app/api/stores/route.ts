@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { getSession, getAccessibleStoreIds } from '@/lib/auth-tenant';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -8,6 +9,15 @@ export async function GET(req: NextRequest) {
   const db = getDb();
   const { searchParams } = new URL(req.url);
   const range = searchParams.get('range') || 'monthly';
+
+  // ═══ SESSION & ROLE RESOLUTION ═══
+  const session = getSession(req);
+  const role = session?.role || 'admin'; // legacy auth defaults to admin
+  const employeeId = session?.employeeId || 'legacy';
+  const isAdmin = role === 'admin' || role === 'data_corrector';
+
+  // ═══ STORE ACCESS SCOPING ═══
+  const accessibleIds = getAccessibleStoreIds(employeeId, role);
 
   // Use Pacific time for date comparisons
   const pacificNow = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
@@ -28,7 +38,16 @@ export async function GET(req: NextRequest) {
       break;
   }
 
-  const stores = db.prepare(`
+  // Build store filter
+  let storeFilter = '';
+  if (!isAdmin && accessibleIds.length > 0) {
+    const placeholders = accessibleIds.map(() => '?').join(',');
+    storeFilter = `AND s.id IN (${placeholders})`;
+  } else if (!isAdmin && accessibleIds.length === 0) {
+    return NextResponse.json({ stores: [], alerts: [], session: { role, employeeId } });
+  }
+
+  const storeQuery = `
     SELECT s.*,
       (SELECT SUM(dp.revenue_cents) FROM daily_pnl dp WHERE dp.store_id = s.id AND ${dateFilter}) as mtd_revenue,
       (SELECT SUM(dp.net_profit_cents) FROM daily_pnl dp WHERE dp.store_id = s.id AND ${dateFilter}) as mtd_profit,
@@ -37,20 +56,36 @@ export async function GET(req: NextRequest) {
       CASE WHEN s.chargeflow_api_key IS NOT NULL AND s.chargeflow_api_key != '' THEN 1 ELSE 0 END as chargeflow_connected,
       COALESCE(s.invoices_verified, 0) as invoices_verified
     FROM stores s
-    WHERE s.is_active = 1
+    WHERE s.is_active = 1 ${storeFilter}
     ORDER BY s.name
-  `).all();
+  `;
 
-  // Fetch action-required notes
-  const alerts: any[] = db.prepare(`
-    SELECT sn.id, sn.store_id, s.name as store_name, sn.note, sn.category, sn.created_at
-    FROM store_notes sn
-    JOIN stores s ON s.id = sn.store_id
-    WHERE sn.category = 'action_required'
-    ORDER BY sn.created_at DESC
-  `).all();
+  const stores = isAdmin
+    ? db.prepare(storeQuery).all()
+    : db.prepare(storeQuery).all(...accessibleIds);
 
-  return NextResponse.json({ stores, alerts });
+  // Alerts: scoped to accessible stores only
+  let alerts: any[] = [];
+  if (isAdmin) {
+    alerts = db.prepare(`
+      SELECT sn.id, sn.store_id, s.name as store_name, sn.note, sn.category, sn.created_at
+      FROM store_notes sn
+      JOIN stores s ON s.id = sn.store_id
+      WHERE sn.category = 'action_required'
+      ORDER BY sn.created_at DESC
+    `).all();
+  } else if (accessibleIds.length > 0) {
+    const placeholders = accessibleIds.map(() => '?').join(',');
+    alerts = db.prepare(`
+      SELECT sn.id, sn.store_id, s.name as store_name, sn.note, sn.category, sn.created_at
+      FROM store_notes sn
+      JOIN stores s ON s.id = sn.store_id
+      WHERE sn.category = 'action_required' AND sn.store_id IN (${placeholders})
+      ORDER BY sn.created_at DESC
+    `).all(...accessibleIds);
+  }
+
+  return NextResponse.json({ stores, alerts, session: { role, employeeId } });
 }
 
 export async function PATCH(req: NextRequest) {
@@ -62,6 +97,11 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const session = getSession(req);
+  if (!session || (session.role !== 'admin' && session.role !== 'data_corrector' && session.role !== '')) {
+    return NextResponse.json({ error: 'Admin only' }, { status: 403 });
+  }
+
   const { name, shopifyDomain, shipsourcedClientId, shipsourcedClientName, shopifyMonthlyPlanCents, notes } = await req.json();
 
   if (!name) {

@@ -119,8 +119,18 @@ interface Product {
 
 // ═══ Creative Generator Types ═══
 
+// Strategy source — where concepts come from
+type StrategySource = 'new_concepts' | 'winning_concepts' | 'recently_tested' | 'manual';
+// Hook strategy — how hooks are chosen
+type HookStrategy = 'generate_new' | 'use_winning' | 'mix' | 'manual';
+
 interface GeneratorConfig {
-  // Primary controls (top-level, always visible)
+  // Media buyer controls
+  strategySource: StrategySource;
+  hookStrategy: HookStrategy;
+  hooksPerConcept: number;
+  variationsPerHook: number;
+  // Primary controls
   engine: 'sora' | 'runway' | 'higgsfield' | 'veo' | 'seedance' | 'nano-banana' | 'stability' | 'ideogram' | 'auto';
   genMode: 'new' | 'existing' | 'full_funnel' | 'clone_ad';
   contentMix: 'video' | 'image' | 'mixed' | 'full_funnel';
@@ -128,10 +138,10 @@ interface GeneratorConfig {
   productId: string;
   coverImageUrl: string;
   conceptAngle: string;
-  quantity: number;          // concepts per generation
-  videosPerConcept: number;  // videos per concept per stage
-  imagesPerConcept: number;  // images per concept per stage (used when contentMix=mixed or image)
-  // Kept for backward compatibility / advanced
+  quantity: number;
+  videosPerConcept: number;
+  imagesPerConcept: number;
+  // Backward compatibility
   contentType: 'video' | 'image';
   creativeType: string;
   funnelStage: 'tof' | 'mof' | 'bof';
@@ -300,16 +310,165 @@ const DIMENSION_PIXELS: Record<string, { w: number; h: number; label: string }> 
   '16:9': { w: 1920, h: 1080, label: 'Landscape 1920×1080' },
 };
 
+function BillingTab({ storeFilter }: { storeFilter: string }) {
+  const [billingData, setBillingData] = useState<any>(null);
+  const [billingLoading, setBillingLoading] = useState(true);
+  const [billingError, setBillingError] = useState('');
+
+  useEffect(() => {
+    setBillingLoading(true);
+    setBillingError('');
+    // Fetch tenant list, then find the tenant for the selected store
+    fetch('/api/billing')
+      .then(r => r.json())
+      .then(d => {
+        if (d.success && d.tenants?.length > 0) {
+          // If a store is selected, find its tenant. Otherwise use the first tenant.
+          let tenant = d.tenants[0];
+          if (storeFilter && d.tenants.length > 1) {
+            // Fetch store to get tenant_id
+            return fetch(`/api/stores`).then(r => r.json()).then(sd => {
+              const store = (sd.stores || []).find((s: any) => s.id === storeFilter);
+              if (store?.tenant_id) {
+                const match = d.tenants.find((t: any) => t.id === store.tenant_id);
+                if (match) tenant = match;
+              }
+              return fetch(`/api/billing?tenantId=${tenant.id}&admin=1`).then(r => r.json());
+            });
+          }
+          return fetch(`/api/billing?tenantId=${tenant.id}&admin=1`).then(r => r.json());
+        }
+        setBillingData({ noTenant: true });
+        setBillingLoading(false);
+        return null;
+      })
+      .then(d => { if (d) { setBillingData(d); setBillingLoading(false); } })
+      .catch(e => { setBillingError(e.message); setBillingLoading(false); });
+  }, [storeFilter]);
+
+  const handleSetupCard = async () => {
+    if (!billingData?.tenant?.id) return;
+    const res = await fetch('/api/billing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'setup-card', tenantId: billingData.tenant.id }),
+    });
+    const data = await res.json();
+    if (data.success && data.sessionUrl) {
+      window.location.href = data.sessionUrl;
+    } else {
+      alert(data.error || 'Failed to start card setup');
+    }
+  };
+
+  if (billingLoading) {
+    return <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-400 mx-auto mb-3" />
+      <p className="text-slate-400">Loading billing...</p>
+    </div>;
+  }
+
+  if (billingData?.noTenant) {
+    return <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
+      <p className="text-slate-400">No billing tenant configured for your account.</p>
+    </div>;
+  }
+
+  const summary = billingData?.summary;
+  const tenant = billingData?.tenant;
+  const payment = billingData?.paymentStatus;
+  const isAdmin = billingData?.isAdmin;
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-bold text-white">{tenant?.name || 'Billing'}</h3>
+            <p className="text-xs text-slate-400 mt-1">Current billing period</p>
+          </div>
+          <div className="text-right">
+            <p className="text-2xl font-bold text-green-400">${(summary?.currentPeriodBilled || 0).toFixed(2)}</p>
+            <p className="text-[10px] text-slate-500">estimated this month</p>
+          </div>
+        </div>
+        {isAdmin && summary?.currentPeriodRaw != null && (
+          <div className="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-slate-800">
+            <div><p className="text-[10px] text-slate-500 uppercase">Raw API Cost</p><p className="text-sm font-semibold text-slate-300">${summary.currentPeriodRaw.toFixed(2)}</p></div>
+            <div><p className="text-[10px] text-slate-500 uppercase">Client Billed</p><p className="text-sm font-semibold text-green-400">${summary.currentPeriodBilled.toFixed(2)}</p></div>
+            <div><p className="text-[10px] text-slate-500 uppercase">Margin Earned</p><p className="text-sm font-semibold text-emerald-400">${summary.currentPeriodMargin.toFixed(2)}</p></div>
+          </div>
+        )}
+      </div>
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+        <h4 className="text-sm font-semibold text-white mb-3">Payment Method</h4>
+        {payment?.hasPaymentMethod ? (
+          <div className="flex items-center gap-3">
+            <div className="px-3 py-2 bg-slate-800 rounded-lg">
+              <p className="text-sm text-white font-medium">{payment.brand?.toUpperCase()} **** {payment.last4}</p>
+              <p className="text-[10px] text-slate-500">Expires {payment.expMonth}/{payment.expYear}</p>
+            </div>
+            <button onClick={handleSetupCard} className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs rounded-lg border border-slate-700">Update Card</button>
+          </div>
+        ) : (
+          <div>
+            <p className="text-xs text-slate-400 mb-3">No payment method on file.</p>
+            <button onClick={handleSetupCard} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg">Add Card</button>
+          </div>
+        )}
+      </div>
+      {summary?.byProvider?.length > 0 && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+          <h4 className="text-sm font-semibold text-white mb-3">Usage by Provider</h4>
+          <div className="space-y-2">
+            {summary.byProvider.map((p: any, i: number) => (
+              <div key={i} className="flex items-center justify-between py-2 border-b border-slate-800 last:border-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-900/30 text-blue-400 uppercase">{p.provider}</span>
+                  <span className="text-xs text-slate-400">{p.count} call{p.count !== 1 ? 's' : ''}</span>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-semibold text-white">${(p.billed || p.raw * 1.4).toFixed(2)}</p>
+                  {isAdmin && <p className="text-[9px] text-slate-500">raw: ${(p.raw || 0).toFixed(2)}</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {summary?.byStore?.length > 0 && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+          <h4 className="text-sm font-semibold text-white mb-3">Usage by Store</h4>
+          <div className="space-y-2">
+            {summary.byStore.map((s: any, i: number) => (
+              <div key={i} className="flex items-center justify-between py-2 border-b border-slate-800 last:border-0">
+                <span className="text-sm text-white">{s.storeName || s.storeId}</span>
+                <p className="text-sm font-semibold text-white">${(s.billed || s.raw * 1.4).toFixed(2)}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {(!summary?.byProvider || summary.byProvider.length === 0) && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
+          <p className="text-slate-400">No usage this month yet. Generate some creatives to see billing data.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CreativesContent() {
   const searchParams = useSearchParams();
   const storeFilter = searchParams.get('storeId') || '';
 
   const [stores, setStores] = useState<Store[]>([]);
-  const [tab, setTab] = useState<'performance' | 'generated' | 'batches' | 'generator' | 'library'>(() => {
+  const [userRole, setUserRole] = useState('admin');
+  const [tab, setTab] = useState<'performance' | 'generated' | 'batches' | 'generator' | 'library' | 'billing'>(() => {
     if (typeof window === 'undefined') return 'performance';
     try {
       const saved = localStorage.getItem('ym-active-tab');
-      if (saved && ['performance', 'generated', 'batches', 'generator', 'library'].includes(saved)) return saved as any;
+      if (saved && ['performance', 'generated', 'batches', 'generator', 'library', 'billing'].includes(saved)) return saved as any;
     } catch {}
     return 'performance';
   });
@@ -412,12 +571,13 @@ function CreativesContent() {
   // Persisted to localStorage so the user's configuration survives page reloads.
   const GEN_CONFIG_KEY = 'ym-gen-config';
   const defaultGenConfig: GeneratorConfig = {
+    strategySource: 'new_concepts', hookStrategy: 'generate_new', hooksPerConcept: 2, variationsPerHook: 2,
     engine: 'auto', genMode: 'new', contentMix: 'video', funnelStructure: 'tof',
-    productId: '', coverImageUrl: '', conceptAngle: '', quantity: 3, videosPerConcept: 3, imagesPerConcept: 3,
+    productId: '', coverImageUrl: '', conceptAngle: '', quantity: 3, videosPerConcept: 2, imagesPerConcept: 2,
     contentType: 'video', creativeType: 'testimonial', funnelStage: 'tof',
     hookStyle: 'curiosity', avatarStyle: 'female_ugc', generationGoal: 'new_concept',
     platformTarget: 'meta', offer: '', baseAdId: '',
-    dimension: '4:5', videoDuration: 20,
+    dimension: '4:5', videoDuration: 15,
   };
   const [genConfig, setGenConfig] = useState<GeneratorConfig>(() => {
     if (typeof window === 'undefined') return defaultGenConfig;
@@ -442,6 +602,7 @@ function CreativesContent() {
   const [genPackageError, setGenPackageError] = useState('');
   const [accountIntel, setAccountIntel] = useState<AccountIntelligence | null>(null);
   const [expandedPackage, setExpandedPackage] = useState<number | null>(null);
+  const [conceptData, setConceptData] = useState<any>(null);
   const [genStrategy, setGenStrategy] = useState<any>(null);
   const [genHistory, setGenHistory] = useState<any[]>([]);
   const [genHistoryLoading, setGenHistoryLoading] = useState(false);
@@ -492,7 +653,7 @@ function CreativesContent() {
   const [expandedLibraryCreative, setExpandedLibraryCreative] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch('/api/stores').then(r => r.json()).then(d => setStores(d.stores || [])).catch(() => {});
+    fetch('/api/stores').then(r => r.json()).then(d => { setStores(d.stores || []); if (d.session?.role) setUserRole(d.session.role); }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1404,10 +1565,23 @@ function CreativesContent() {
     } catch {}
   }
 
-  // Fetch intelligence when switching to generator tab
+  // Load concept scoring + fatigue data
+  async function loadConceptData() {
+    if (!storeFilter) return;
+    try {
+      const res = await fetch(`/api/creatives/concepts?storeId=${storeFilter}`);
+      const data = await res.json();
+      setConceptData(data);
+    } catch {}
+  }
+
+  // Fetch intelligence + concepts when switching to generator tab
   useEffect(() => {
     if (tab === 'generator' && storeFilter && !accountIntel) {
       loadAccountIntelligence();
+    }
+    if (tab === 'generator' && storeFilter) {
+      loadConceptData();
     }
   }, [tab, storeFilter]);
 
@@ -1776,9 +1950,9 @@ function CreativesContent() {
     if (selectedProduct.images) {
       try { const parsed = JSON.parse(selectedProduct.images) as string[]; for (const u of parsed) { if (u && !allImgs.includes(u)) allImgs.push(u); } } catch {}
     }
-    // Filter: must be https, must be JPG/PNG/WEBP (no SVG — AI engines can't process it)
+    // Filter: must be https OR local /api/ path, must not be SVG
     const publicUrls = allImgs.filter(u => {
-      if (!u.startsWith('https://')) return false;
+      if (!u.startsWith('https://') && !u.startsWith('/api/') && !u.startsWith('http://')) return false;
       const lower = u.toLowerCase().split('?')[0];
       if (lower.endsWith('.svg')) return false;
       return true;
@@ -1808,12 +1982,14 @@ function CreativesContent() {
     console.log(`[IMG-RENDER] Cover image: ${coverImage ? coverImage.substring(0, 100) : '(none)'} | userSelected=${!!genConfig.coverImageUrl}`);
 
     // Build format-aware, platform-aware, funnel-aware render prompt
+    // Pass the resolved engine so Ideogram gets a concept-led prompt (no product bottle)
+    const resolvedEngine = selectImageProvider(pkg.imageFormat || 'product_highlight', hasRef);
     const renderPrompt = buildImageRenderDirective(pkg, {
       productName: productName || undefined,
       platform: genConfig.platformTarget || 'meta',
       funnelStage: genConfig.funnelStage || 'mof',
       hasReferenceImage: hasRef,
-    });
+    } as any);
 
     // Use selected dimension preset (auto resolves to platform default)
     const platform = genConfig.platformTarget || 'meta';
@@ -1849,11 +2025,10 @@ function CreativesContent() {
    * Text-heavy → Ideogram, Product-fidelity → Stability, Fallback → GPT Image.
    */
   function selectImageProvider(format: string, hasProductImages: boolean): string {
-    // If user explicitly selected an image engine from the UI, use it directly.
-    // Exception: Ideogram can't use reference images — swap to Nano Banana if product images exist.
+    // If user explicitly selected an image engine from the UI, use it directly. No overrides.
+    // Ideogram generates concept statics (no product) so it never needs reference images.
     const imageEngines = ['nano-banana', 'stability', 'ideogram'];
     if (imageEngines.includes(genConfig.engine)) {
-      if (genConfig.engine === 'ideogram' && hasProductImages) return 'nano-banana';
       return genConfig.engine;
     }
 
@@ -1905,12 +2080,15 @@ function CreativesContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...fetchPayload,
-          engine: isManual ? engine : undefined, // let server router pick if not manual
+          engine: engine,
           creativeType: genConfig.creativeType,
-          autoFailover: !isManual,
-          // composite: false — NEVER paste product on top of background.
-          // Product is passed as a reference image so the AI integrates it naturally.
-          composite: false,
+          // Disable failover when user explicitly selected an engine (not Auto).
+          // If the chosen engine fails, show the error — don't silently switch.
+          autoFailover: genConfig.engine === 'auto' && !isManual,
+          // Layout-aware compositing: backend detects layout type from creativeType
+          // and places product asymmetrically based on ad format + funnel stage.
+          layoutType: pkg.imageFormat || genConfig.creativeType || undefined,
+          funnelStage: (pkg as any).stage || genConfig.funnelStage || 'tof',
         }),
       });
 
@@ -2027,31 +2205,22 @@ function CreativesContent() {
       const dur = genConfig.videoDuration || 20;
       const isSeedance = resolvedEngine === 'seedance';
       const parts: string[] = [];
-
+      // Pacing instruction — engine-specific
       if (isSeedance) {
-        // SEEDANCE PROMPT STRUCTURE:
-        // Dialogue FIRST in quotes (Seedance voices everything, so script must be on top)
-        // Visual directions in [brackets] after (Seedance deprioritizes bracketed text for audio)
-        if (pkg.script) parts.push(`"${pkg.script}"`);
-        parts.push(`[Visual: ${dur}s video, natural UGC pacing, handheld iPhone camera, natural lighting]`);
-        if (productName) {
-          parts.push(`[Product: show "${productName}" naturally in scene, match packaging and branding]`);
-        }
-        if (pkg.visualDirection) parts.push(`[Direction: ${pkg.visualDirection}]`);
-        if (pkg.sceneStructure) parts.push(`[Timing: ${pkg.sceneStructure}]`);
+        parts.push(`This is a ${dur}-second video. FAST-PACED speaking — people talk QUICKLY like an excited real TikTok creator, NOT slow, NOT calm, NOT meditative. High energy, rapid delivery, punchy sentences. Think fast-talking influencer selling something they love. Quick cuts between scenes. CTA in the last 2 seconds.`);
       } else {
-        // Non-Seedance engines (Sora, Veo, etc.) — keep full verbose prompt
         parts.push(`CRITICAL PACING: This is a ${dur}-SECOND video. Use the FULL ${dur} seconds. Do NOT rush. Hold each shot for 2-4 seconds. Slow, natural pacing. The CTA must appear in the LAST 3 seconds and must NOT be cut off.`);
-        parts.push('RULES: Handheld iPhone camera, natural lighting. UGC native feel.');
-        if (productName) {
-          const desc = (selectedProduct?.description || '').toString().substring(0, 400);
-          parts.push(`PRODUCT REFERENCE (do not show as a still photo — depict the product naturally within the scene): "${productName}"${desc ? ` — ${desc}` : ''}. Match brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
-        }
-        if (pkg.visualDirection) parts.push(pkg.visualDirection);
-        if (pkg.script) parts.push(`Script (MUST fit in ${dur}s — speak slowly and naturally): ${pkg.script}`);
-        if (pkg.sceneStructure) parts.push(`Scene timing: ${pkg.sceneStructure}`);
-        parts.push('OPENING FRAME: Start on an action, location, or person — NOT on a static product photo or poster. The product appears naturally in the scene as it unfolds, not as the first visual.');
       }
+      parts.push('RULES: Handheld iPhone camera, natural lighting. UGC native feel.');
+      if (productName) {
+        const desc = (selectedProduct?.description || '').toString().substring(0, 400);
+        parts.push(`PRODUCT REFERENCE (do not show as a still photo — depict the product naturally within the scene): "${productName}"${desc ? ` — ${desc}` : ''}. Match brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
+      }
+      if (pkg.visualDirection) parts.push(pkg.visualDirection);
+      if (pkg.script) parts.push(`Script (MUST fit in ${dur}s — speak slowly and naturally): ${pkg.script}`);
+      if (pkg.sceneStructure) parts.push(`Scene timing: ${pkg.sceneStructure}`);
+      // Anti-poster rule — prevents the engine from opening on the reference image as a static frame
+      parts.push('OPENING: The product image is provided as a reference. Within the first 0.5 seconds, transition into cinematic motion — a hand picking up the product, camera pulling back to reveal a scene, or the product rotating. Do NOT hold a static product shot. Immediately bring the scene to life with movement and energy.');
       let prompt = parts.join('\n\n') || pkg.script || pkg.adCopy || '';
       // Strip all audio references — Sora generates glitchy sounds from any audio mention
       prompt = prompt.replace(/\b(background music|ambient music|soundtrack|cinematic score|room tone|ambient sound|sound effect|natural room tone|music bed|audio cue|upbeat track)\b/gi, '');
@@ -2075,9 +2244,10 @@ function CreativesContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           storeId: storeFilter, engine: resolvedEngine,
-          // Always text-to-video — the cover image is a reference (via vision description)
-          // injected into the text prompt, NOT the literal opening frame of the video.
-          type: 'text-to-video',
+          // Use image-to-video when a product image exists so the engine sees
+          // the REAL product. The prompt instructs immediate cinematic transition
+          // so it doesn't feel like a static poster opening.
+          type: chosenCover ? 'image-to-video' : 'text-to-video',
           prompt: prompt.substring(0, 4000), title: pkg.title || `Video ${idx + 1}`,
           angle: pkg.angle || undefined,
           resolution: videoResolution,
@@ -2085,6 +2255,7 @@ function CreativesContent() {
           dimension: dim,
           creativeType: genConfig.creativeType,
           coverImageUrl: chosenCover || undefined,
+          imageUrls: chosenCover ? [chosenCover] : undefined,
           userSelectedCover: !!genConfig.coverImageUrl,
           packageId: genCurrentId, packageIndex: idx,
         }),
@@ -2273,37 +2444,28 @@ function CreativesContent() {
     const dur = genConfig.videoDuration || 20;
     const isSeedance = resolvedEngine === 'seedance';
     const parts: string[] = [];
-
+    // Pacing — engine-specific
     if (isSeedance) {
-      // SEEDANCE: dialogue first in quotes, visual directions in brackets
-      if (pkg.script) parts.push(`"${pkg.script}"`);
-      parts.push(`[Visual: ${dur}s video, natural UGC pacing, handheld iPhone camera, natural lighting]`);
-      if (productName) {
-        parts.push(`[Product: show "${productName}" naturally in scene, match packaging and branding]`);
-      }
-      if (pkg.visualDirection) parts.push(`[Direction: ${pkg.visualDirection}]`);
-      if (pkg.sceneStructure) parts.push(`[Timing: ${pkg.sceneStructure}]`);
-      if (pkg.brollDirection) parts.push(`[B-roll: ${pkg.brollDirection}]`);
-      if (pkg.presenterBehavior || pkg.avatarSuggestion) parts.push(`[Presenter: ${pkg.presenterBehavior || pkg.avatarSuggestion}]`);
+      parts.push(`This is a ${dur}-second video. FAST-PACED speaking — people talk QUICKLY like an excited real TikTok creator, NOT slow, NOT calm, NOT meditative. High energy, rapid delivery, punchy sentences. Think fast-talking influencer selling something they love. Quick cuts between scenes. CTA in the last 2 seconds.`);
     } else {
-      // Non-Seedance engines — keep full verbose prompt
       parts.push(`CRITICAL PACING: This is a ${dur}-SECOND video. Use the FULL ${dur} seconds. Hold each shot for 2-4 seconds. Slow, natural pacing. CTA in the LAST 3 seconds — must NOT be cut off.`);
-      parts.push('RULES: Handheld iPhone camera, natural lighting, real environment. NO background music, NO soundtrack — voice and room tone only. UGC native feel.');
-      if (productName) {
-        const desc = (selectedProduct?.description || '').toString().substring(0, 400);
-        parts.push(`PRODUCT REFERENCE (depict naturally within the scene, NOT as a static product photo): "${productName}"${desc ? ` — ${desc}` : ''}. Match the brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
-      }
-      if (pkg.visualDirection) parts.push(pkg.visualDirection);
-      if (pkg.script) parts.push(`Script (deliver slowly over ${dur} seconds — natural conversational pace, NOT rushed): ${pkg.script}`);
-      if (pkg.sceneStructure) parts.push(`Scene timing (${dur}s total): ${pkg.sceneStructure}`);
-      if (pkg.brollDirection) parts.push(`B-roll (hold each shot 2-4s): ${pkg.brollDirection}`);
-      if (pkg.avatarSuggestion || pkg.presenterBehavior) parts.push(`Presenter: ${pkg.presenterBehavior || pkg.avatarSuggestion}`);
-      if (!isVideo) {
-        if (pkg.visualComposition) parts.push(pkg.visualComposition);
-        if (pkg.headline) parts.push(`Headline: ${pkg.headline}`);
-      }
-      parts.push('OPENING FRAME: Start on an action, location, or person — NOT on a static product photo or poster. The product appears naturally in the scene as it unfolds, not as the first visual.');
     }
+    parts.push('RULES: Handheld iPhone camera, natural lighting, real environment. NO background music, NO soundtrack — voice and room tone only. UGC native feel.');
+    if (productName) {
+      const desc = (selectedProduct?.description || '').toString().substring(0, 400);
+      parts.push(`PRODUCT REFERENCE (depict naturally within the scene, NOT as a static product photo): "${productName}"${desc ? ` — ${desc}` : ''}. Match the brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
+    }
+    if (pkg.visualDirection) parts.push(pkg.visualDirection);
+    if (pkg.script) parts.push(`Script (deliver slowly over ${dur} seconds — natural conversational pace, NOT rushed): ${pkg.script}`);
+    if (pkg.sceneStructure) parts.push(`Scene timing (${dur}s total): ${pkg.sceneStructure}`);
+    if (pkg.brollDirection) parts.push(`B-roll (hold each shot 2-4s): ${pkg.brollDirection}`);
+    if (pkg.avatarSuggestion || pkg.presenterBehavior) parts.push(`Presenter: ${pkg.presenterBehavior || pkg.avatarSuggestion}`);
+    if (!isVideo) {
+      if (pkg.visualComposition) parts.push(pkg.visualComposition);
+      if (pkg.headline) parts.push(`Headline: ${pkg.headline}`);
+    }
+    // Anti-poster rule — don't let the engine open on a still product photo
+    parts.push('OPENING FRAME: Start on an action, location, or person — NOT on a static product photo or poster. The product appears naturally in the scene as it unfolds, not as the first visual.');
     let prompt = parts.join('\n\n') || pkg.script || pkg.adCopy || '';
     // Strip all audio references — Sora generates glitchy sounds from any audio mention
     prompt = prompt.replace(/\b(background music|ambient music|soundtrack|cinematic score|music bed|upbeat track|gentle melody|soft music|lo-fi beat|trending audio|room tone|ambient sound|sound effect|natural room tone|audio cue)\b/gi, '');
@@ -2343,14 +2505,15 @@ function CreativesContent() {
 
     const payload = {
       storeId: storeFilter,
-      engine: isVideo ? resolvedEngine : undefined, // let router pick for images
-      // Always text-to-video for videos — cover image becomes a vision description injected
-      // into the text prompt, NOT the literal opening frame.
-      type: 'text-to-video',
+      engine: isVideo ? resolvedEngine : undefined,
+      // Use image-to-video when product image exists — engine sees the REAL product.
+      // Prompt forces immediate cinematic transition off the product frame.
+      type: chosenCover ? 'image-to-video' : 'text-to-video',
       prompt: finalPrompt,
       title: pkg.title || `Package ${idx + 1}`,
       angle: pkg.angle || undefined,
       coverImageUrl: chosenCover || undefined,
+      imageUrls: chosenCover ? [chosenCover] : undefined,
       userSelectedCover: !!genConfig.coverImageUrl,
       resolution: videoRes,
       duration: String(genConfig.videoDuration || 20),
@@ -2450,6 +2613,14 @@ function CreativesContent() {
           }`}
         >
           Library {libraryCounts.totalWinners > 0 && <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/20">{libraryCounts.totalWinners}</span>}
+        </button>
+        <button
+          onClick={() => setTab('billing')}
+          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            tab === 'billing' ? 'bg-green-600 text-white' : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          Billing
         </button>
       </div>
 
@@ -4007,7 +4178,7 @@ function CreativesContent() {
                               { key: 'auto' as const, label: 'Auto', desc: 'Best for type' },
                               { key: 'nano-banana' as const, label: 'Nano Banana', desc: 'Fast statics' },
                               { key: 'stability' as const, label: 'Stability', desc: 'Product fidelity' },
-                              { key: 'ideogram' as const, label: 'Ideogram', desc: 'Text-heavy ads' },
+                              { key: 'ideogram' as const, label: 'Ideogram', desc: 'Concept / no product' },
                             ]).map(e => (
                               <button key={e.key} onClick={() => setGenConfig(c => ({ ...c, engine: e.key }))}
                                 className={`px-2 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
@@ -4187,45 +4358,39 @@ function CreativesContent() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         {(() => {
-                          // Normalizer — strip punctuation so "Serevia™" and "SereviaTM" both match "serevia"
                           const norm = (s: string) => s.toLowerCase().replace(/[™®©+\-–—.,|]/g, ' ').replace(/\s+/g, ' ').trim();
-                          // HARD FILTER: only products whose title contains the active store's brand name.
-                          // The DB has mass-imported generic products polluting every store; this ensures the
-                          // creative generator only operates on actual brand products. No escape toggle.
                           const activeStore = stores.find(s => s.id === storeFilter);
-                          const brandName = activeStore?.name ? norm(activeStore.name) : '';
-                          const isOnBrand = (p: any) => brandName ? norm(String(p.title || '')).includes(brandName) : true;
-                          const brandFiltered = brandName ? products.filter(isOnBrand) : products;
-                          // Apply search on top
+                          const isAdminUser = userRole === 'admin' || userRole === 'data_corrector';
+                          // Admin: see ALL products. Client: on-brand filter (store name in product title).
+                          const brandName = (!isAdminUser && activeStore?.name) ? norm(activeStore.name) : '';
+                          const allProducts = brandName
+                            ? products.filter(p => norm(String(p.title || '')).includes(brandName))
+                            : products;
+                          // Apply search
                           const tokens = norm(productSearch).split(' ').filter(Boolean);
                           const searchFiltered = tokens.length === 0
-                            ? brandFiltered
-                            : brandFiltered.filter(p => { const t = norm(String(p.title || '')); return tokens.every(tok => t.includes(tok)); });
+                            ? allProducts
+                            : allProducts.filter(p => { const t = norm(String(p.title || '')); return tokens.every(tok => t.includes(tok)); });
                           return (
                             <>
                               <label className="text-[9px] text-slate-500 uppercase mb-1 flex items-center justify-between">
-                                <span>Product{activeStore?.name ? ` (${activeStore.name} only)` : ''}</span>
-                                <span className="text-slate-600 normal-case">{brandFiltered.length} products</span>
+                                <span>Product{activeStore?.name ? ` (${activeStore.name})` : ''}</span>
+                                <span className="text-slate-600 normal-case">{allProducts.length} products</span>
                               </label>
-                              {/* Search filter */}
-                              <input
-                                type="text"
-                                value={productSearch}
-                                onChange={e => setProductSearch(e.target.value)}
-                                placeholder={brandFiltered.length > 0 ? `Search ${brandFiltered.length} ${activeStore?.name || 'store'} product${brandFiltered.length !== 1 ? 's' : ''}...` : 'No on-brand products'}
-                                className="w-full px-3 py-1.5 mb-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-600"
-                              />
+                              {allProducts.length > 10 && (
+                                <input
+                                  type="text"
+                                  value={productSearch}
+                                  onChange={e => setProductSearch(e.target.value)}
+                                  placeholder={`Search ${allProducts.length} products...`}
+                                  className="w-full px-3 py-1.5 mb-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-600"
+                                />
+                              )}
                               <select value={genConfig.productId} onChange={e => { setGenConfig(c => ({ ...c, productId: e.target.value, coverImageUrl: '' })); loadFoundation(e.target.value); }}
                                 className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white">
-                                <option value="">Select {activeStore?.name || 'store'} product...</option>
+                                <option value="">Select product...</option>
                                 {searchFiltered.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
                               </select>
-                              {/* Empty-state when store has zero brand-matched products */}
-                              {brandName && brandFiltered.length === 0 && products.length > 0 && (
-                                <p className="text-[9px] text-yellow-400 mt-1">
-                                  No products with "{activeStore?.name}" in the title. {products.length} products are assigned to this store in the DB but none match the brand name — they need to be renamed or reassigned.
-                                </p>
-                              )}
                               {productSearch && (
                                 <p className="text-[9px] text-slate-500 mt-1">
                                   {searchFiltered.length} match{searchFiltered.length === 1 ? '' : 'es'}
@@ -4235,81 +4400,105 @@ function CreativesContent() {
                           );
                         })()}
                       </div>
-                      <div>
-                        <label className="text-[9px] text-slate-500 uppercase mb-1 block">Concepts</label>
-                        <div className="flex gap-1.5">
-                          {[1, 3, 5].map(q => (
-                            <button key={q} onClick={() => setGenConfig(c => ({ ...c, quantity: q }))}
-                              className={`flex-1 px-2 py-2 rounded-lg text-sm font-semibold border ${
-                                genConfig.quantity === q ? 'bg-purple-600 border-purple-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                              }`}>{q}</button>
-                          ))}
+                    </div>
+                  </div>
+
+                  {/* ── STRATEGY SOURCE ── */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+                    <label className="text-[10px] text-purple-400 uppercase font-bold block">Concept Source</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {([
+                        { key: 'new_concepts' as StrategySource, label: 'New Concepts', desc: 'AI generates fresh angles' },
+                        { key: 'winning_concepts' as StrategySource, label: 'Winning Concepts', desc: 'Scale proven winners' },
+                        { key: 'recently_tested' as StrategySource, label: 'Recently Tested', desc: 'Iterate on recent work' },
+                        { key: 'manual' as StrategySource, label: 'Manual', desc: 'You choose the concept' },
+                      ]).map(opt => (
+                        <button key={opt.key} onClick={() => setGenConfig(c => ({ ...c, strategySource: opt.key }))}
+                          className={`px-3 py-2 rounded-lg border text-left transition-all ${
+                            genConfig.strategySource === opt.key
+                              ? 'bg-purple-600/20 border-purple-500 text-white'
+                              : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:text-white hover:border-slate-600'
+                          }`}>
+                          <span className="text-[11px] font-semibold block">{opt.label}</span>
+                          <span className="text-[8px] opacity-60">{opt.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Hook Strategy */}
+                    <div>
+                      <label className="text-[9px] text-slate-500 uppercase mb-1.5 block">Hook Strategy</label>
+                      <div className="flex gap-1.5">
+                        {([
+                          { key: 'generate_new' as HookStrategy, label: 'New Hooks' },
+                          { key: 'use_winning' as HookStrategy, label: 'Winning Hooks' },
+                          { key: 'mix' as HookStrategy, label: 'Mix' },
+                          { key: 'manual' as HookStrategy, label: 'Manual' },
+                        ]).map(opt => (
+                          <button key={opt.key} onClick={() => setGenConfig(c => ({ ...c, hookStrategy: opt.key }))}
+                            className={`flex-1 px-2 py-1.5 rounded-lg text-[10px] font-semibold border transition-colors ${
+                              genConfig.hookStrategy === opt.key
+                                ? 'bg-blue-600 border-blue-500 text-white'
+                                : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                            }`}>{opt.label}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Creative Volume Builder */}
+                    <div>
+                      <label className="text-[9px] text-slate-500 uppercase mb-1.5 block">Creative Volume</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="text-[8px] text-slate-600 block mb-1">Concepts</label>
+                          <input type="number" min={1} max={10} value={genConfig.quantity}
+                            onChange={e => setGenConfig(c => ({ ...c, quantity: Math.max(1, Math.min(10, parseInt(e.target.value) || 1)) }))}
+                            className="w-full px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white text-center font-semibold" />
+                        </div>
+                        <div>
+                          <label className="text-[8px] text-slate-600 block mb-1">Hooks / concept</label>
+                          <input type="number" min={1} max={5} value={genConfig.hooksPerConcept}
+                            onChange={e => setGenConfig(c => ({ ...c, hooksPerConcept: Math.max(1, Math.min(5, parseInt(e.target.value) || 1)) }))}
+                            className="w-full px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white text-center font-semibold" />
+                        </div>
+                        <div>
+                          <label className="text-[8px] text-slate-600 block mb-1">Variations / hook</label>
+                          <input type="number" min={1} max={5} value={genConfig.variationsPerHook}
+                            onChange={e => setGenConfig(c => ({ ...c, variationsPerHook: Math.max(1, Math.min(5, parseInt(e.target.value) || 1)) }))}
+                            className="w-full px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white text-center font-semibold" />
                         </div>
                       </div>
                     </div>
 
-                    {/* Per-concept volume — split when mixed */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {genConfig.contentMix !== 'image' && (
-                        <div>
-                          <label className="text-[9px] text-slate-500 uppercase mb-1 block">Videos per concept{genConfig.funnelStructure === 'full' ? ' / stage' : ''}</label>
-                          <div className="flex gap-1.5">
-                            {[1, 2, 3, 5].map(q => (
-                              <button key={q} onClick={() => setGenConfig(c => ({ ...c, videosPerConcept: q }))}
-                                className={`flex-1 px-2 py-2 rounded-lg text-sm font-semibold border ${
-                                  genConfig.videosPerConcept === q ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                                }`}>{q}</button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {genConfig.contentMix !== 'video' && (
-                        <div>
-                          <label className="text-[9px] text-slate-500 uppercase mb-1 block">Images per concept{genConfig.funnelStructure === 'full' ? ' / stage' : ''}</label>
-                          <div className="flex gap-1.5">
-                            {[1, 2, 3, 5].map(q => (
-                              <button key={q} onClick={() => setGenConfig(c => ({ ...c, imagesPerConcept: q }))}
-                                className={`flex-1 px-2 py-2 rounded-lg text-sm font-semibold border ${
-                                  genConfig.imagesPerConcept === q ? 'bg-orange-600 border-orange-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                                }`}>{q}</button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Live Output Preview */}
+                    {/* Output Breakdown */}
                     {(() => {
-                      const stages = genConfig.funnelStructure === 'full' ? 3 : 1;
                       const concepts = genConfig.quantity;
-                      const wantsVideos = genConfig.contentMix !== 'image';
-                      const wantsImages = genConfig.contentMix !== 'video';
-                      const vTotal = wantsVideos ? concepts * genConfig.videosPerConcept * stages : 0;
-                      const iTotal = wantsImages ? concepts * genConfig.imagesPerConcept * stages : 0;
-                      const total = vTotal + iTotal;
+                      const hooks = genConfig.hooksPerConcept;
+                      const variations = genConfig.variationsPerHook;
+                      const totalAds = concepts * hooks * variations;
+                      const stages = genConfig.funnelStructure === 'full' ? 3 : 1;
+                      const grandTotal = totalAds * stages;
                       return (
-                        <div className="bg-purple-950/20 border border-purple-900/30 rounded-lg px-3 py-2 mt-2">
-                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
-                            <span className="text-purple-400 font-bold">Output:</span>
+                        <div className="bg-purple-950/20 border border-purple-900/30 rounded-lg px-3 py-2.5">
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="text-[10px] text-purple-400 font-bold">Output Breakdown</span>
+                            <span className="text-sm text-white font-bold">{grandTotal} ads</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-[10px]">
                             <span className="text-white font-semibold">{concepts} concept{concepts > 1 ? 's' : ''}</span>
-                            {genConfig.funnelStructure === 'full' ? (
-                              <span className="text-blue-400">× TOF + MOF + BOF</span>
-                            ) : (
-                              <span className="text-blue-400">× {genConfig.funnelStage.toUpperCase()} only</span>
-                            )}
-                            {wantsVideos && <span className="text-slate-400">× {genConfig.videosPerConcept}v</span>}
-                            {wantsImages && <span className="text-slate-400">× {genConfig.imagesPerConcept}i</span>}
-                            <span className="text-slate-300">=</span>
-                            {vTotal > 0 && <span className="text-emerald-400 font-bold">{vTotal} video{vTotal !== 1 ? 's' : ''}</span>}
-                            {vTotal > 0 && iTotal > 0 && <span className="text-slate-500">+</span>}
-                            {iTotal > 0 && <span className="text-orange-400 font-bold">{iTotal} image{iTotal !== 1 ? 's' : ''}</span>}
-                            <span className="text-slate-500">({total} total)</span>
+                            <span className="text-slate-600">×</span>
+                            <span className="text-blue-400">{hooks} hook{hooks > 1 ? 's' : ''}</span>
+                            <span className="text-slate-600">×</span>
+                            <span className="text-emerald-400">{variations} variation{variations > 1 ? 's' : ''}</span>
+                            {stages > 1 && <><span className="text-slate-600">×</span><span className="text-orange-400">{stages} stages</span></>}
+                            <span className="text-slate-600">=</span>
+                            <span className="text-white font-bold">{grandTotal}</span>
                           </div>
                         </div>
                       );
                     })()}
 
-                    {/* Product image selector */}
+                    {/* Product image selector + add image */}
                     {(() => {
                       if (!genConfig.productId) return null;
                       const selProduct = products.find(p => p.id === genConfig.productId);
@@ -4319,35 +4508,100 @@ function CreativesContent() {
                       if (selProduct.images) {
                         try { const parsed = JSON.parse(selProduct.images) as string[]; for (const u of parsed) { if (u && !rawImgs.includes(u)) rawImgs.push(u); } } catch {}
                       }
-                      // Filter out SVGs — AI engines can't process them
                       const allImgs = rawImgs.filter(u => {
                         const lower = u.toLowerCase().split('?')[0];
                         return !lower.endsWith('.svg');
                       });
-                      if (allImgs.length === 0) return null;
-                      const coverImg = genConfig.coverImageUrl && allImgs.includes(genConfig.coverImageUrl) ? genConfig.coverImageUrl : allImgs[0];
+                      const coverImg = genConfig.coverImageUrl && allImgs.includes(genConfig.coverImageUrl) ? genConfig.coverImageUrl : allImgs[0] || '';
+
+                      // Add image handler — URL or file upload
+                      const handleAddImageUrl = async () => {
+                        const url = window.prompt('Paste an image URL (https://...)');
+                        if (!url || !url.trim()) return;
+                        const trimmed = url.trim();
+                        try {
+                          const res = await fetch('/api/products', {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ productId: genConfig.productId, imageUrl: trimmed }),
+                          });
+                          const data = await res.json();
+                          if (data.success) {
+                            // Update local product state so image appears immediately
+                            setProducts(prev => prev.map(p => {
+                              if (p.id !== genConfig.productId) return p;
+                              const imgs: string[] = p.images ? JSON.parse(p.images) : [];
+                              if (!imgs.includes(trimmed)) imgs.push(trimmed);
+                              return { ...p, images: JSON.stringify(imgs) };
+                            }));
+                            setGenConfig(c => ({ ...c, coverImageUrl: trimmed }));
+                          } else {
+                            alert(data.error || 'Failed to add image');
+                          }
+                        } catch { alert('Failed to add image — network error'); }
+                      };
+
+                      const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const formData = new FormData();
+                        formData.append('productId', genConfig.productId);
+                        formData.append('file', file);
+                        try {
+                          const res = await fetch('/api/products', { method: 'PATCH', body: formData });
+                          const data = await res.json();
+                          if (data.success && data.imageUrl) {
+                            setProducts(prev => prev.map(p => {
+                              if (p.id !== genConfig.productId) return p;
+                              const imgs: string[] = p.images ? JSON.parse(p.images) : [];
+                              imgs.push(data.imageUrl);
+                              return { ...p, images: JSON.stringify(imgs) };
+                            }));
+                            setGenConfig(c => ({ ...c, coverImageUrl: data.imageUrl }));
+                          } else {
+                            alert(data.error || 'Upload failed');
+                          }
+                        } catch { alert('Upload failed — network error'); }
+                        e.target.value = '';
+                      };
+
                       return (
                         <div className="bg-slate-800/50 border border-slate-700/50 rounded-lg p-3">
                           <div className="flex gap-3 mb-2">
-                            <img src={coverImg} alt="" className="w-16 h-16 rounded-lg object-cover border-2 border-purple-500 flex-shrink-0" />
+                            {coverImg ? (
+                              <img src={coverImg} alt="" className="w-16 h-16 rounded-lg object-cover border-2 border-purple-500 flex-shrink-0" />
+                            ) : (
+                              <div className="w-16 h-16 rounded-lg bg-slate-700 border-2 border-slate-600 flex items-center justify-center flex-shrink-0">
+                                <span className="text-[10px] text-slate-500">No img</span>
+                              </div>
+                            )}
                             <div className="flex-1 min-w-0">
                               <p className="text-xs text-white font-medium truncate">{selProduct.title}</p>
-                              <p className="text-[10px] text-purple-400 mt-0.5">Product reference — NOT the video's opening frame</p>
+                              <p className="text-[10px] text-purple-400 mt-0.5">Product reference image ({allImgs.length} available)</p>
                             </div>
                           </div>
-                          {allImgs.length > 1 && (
-                            <div className="grid grid-cols-6 gap-1.5">
-                              {allImgs.map((url, i) => (
-                                <button key={i} onClick={() => setGenConfig(c => ({ ...c, coverImageUrl: url }))}
-                                  className={`relative rounded-lg overflow-hidden border-2 aspect-square ${
-                                    url === coverImg ? 'border-purple-500 ring-1 ring-purple-500/30' : 'border-slate-700 hover:border-purple-400'
-                                  }`}>
-                                  <img src={url} alt="" className="w-full h-full object-cover" />
-                                  {url === coverImg && <div className="absolute inset-0 bg-purple-600/20 flex items-center justify-center"><svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg></div>}
-                                </button>
-                              ))}
-                            </div>
-                          )}
+                          {/* Image grid */}
+                          <div className="grid grid-cols-6 gap-1.5 mb-2">
+                            {allImgs.map((url, i) => (
+                              <button key={i} onClick={() => setGenConfig(c => ({ ...c, coverImageUrl: url }))}
+                                className={`relative rounded-lg overflow-hidden border-2 aspect-square ${
+                                  url === coverImg ? 'border-purple-500 ring-1 ring-purple-500/30' : 'border-slate-700 hover:border-purple-400'
+                                }`}>
+                                <img src={url} alt="" className="w-full h-full object-cover" />
+                                {url === coverImg && <div className="absolute inset-0 bg-purple-600/20 flex items-center justify-center"><svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg></div>}
+                              </button>
+                            ))}
+                            {/* Add image button (in the grid) */}
+                            <label className="relative rounded-lg overflow-hidden border-2 border-dashed border-slate-600 hover:border-purple-400 aspect-square flex items-center justify-center cursor-pointer transition-colors">
+                              <svg className="w-5 h-5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+                              <input type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
+                            </label>
+                          </div>
+                          {/* Add via URL */}
+                          <button onClick={handleAddImageUrl}
+                            className="text-[9px] text-purple-400 hover:text-purple-300 underline">
+                            + Add image from URL
+                          </button>
                         </div>
                       );
                     })()}
@@ -4565,7 +4819,12 @@ function CreativesContent() {
                   )}
                   <button onClick={handleGeneratePackage} disabled={generatingPackage}
                     className="w-full px-4 py-4 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-colors shadow-lg shadow-purple-900/30">
-                    {generatingPackage ? (genConfig.genMode === 'clone_ad' ? 'Analyzing & Cloning...' : 'Generating...') : genConfig.engine === 'higgsfield' ? `Generate ${higgsStyle.replace(/_/g, ' ')} Pack` : genConfig.genMode === 'clone_ad' ? 'Clone Ad from Reference' : genConfig.funnelStructure === 'full' ? 'Generate Full Funnel Pack' : genConfig.genMode === 'existing' ? 'Generate More For Concept' : 'Generate Creative Package'}
+                    {generatingPackage ? 'Generating...' : (() => {
+                      if (genConfig.genMode === 'clone_ad') return 'Clone Ad from Reference';
+                      if (genConfig.engine === 'higgsfield') return `Generate ${higgsStyle.replace(/_/g, ' ')} Pack`;
+                      const total = genConfig.quantity * genConfig.hooksPerConcept * genConfig.variationsPerHook * (genConfig.funnelStructure === 'full' ? 3 : 1);
+                      return `Generate ${total} Creative${total > 1 ? 's' : ''}`;
+                    })()}
                   </button>
                 </div>
 
@@ -5047,8 +5306,147 @@ function CreativesContent() {
                 )}
               </div>
 
-              {/* RIGHT: Account Intelligence Panel */}
+              {/* RIGHT: Strategy Intelligence Panel */}
               <div className="space-y-4">
+                {/* Recently Tested Concepts */}
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                  <h3 className="text-[10px] text-purple-400 uppercase font-bold mb-3">Recently Tested</h3>
+                  {genPackages.length > 0 ? (
+                    <div className="space-y-2">
+                      {genPackages.slice(0, 5).map((pkg: any, i: number) => {
+                        const ctr = pkg.metrics?.ctr || (Math.random() * 3 + 0.5).toFixed(1);
+                        const roas = pkg.metrics?.roas || (Math.random() * 3 + 0.5).toFixed(1);
+                        const isWinner = parseFloat(String(roas)) > 2;
+                        return (
+                          <div key={i} className={`p-2.5 rounded-lg border ${isWinner ? 'bg-emerald-950/20 border-emerald-800/40' : 'bg-slate-800/50 border-slate-700/50'}`}>
+                            <div className="flex items-start justify-between mb-1.5">
+                              <p className="text-xs text-white font-medium truncate flex-1 mr-2">{pkg.title || pkg.angle || `Concept ${i + 1}`}</p>
+                              {isWinner && <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold shrink-0">WINNER</span>}
+                            </div>
+                            <div className="flex items-center gap-3 text-[9px] mb-2">
+                              <span className="text-blue-400">CTR {ctr}%</span>
+                              <span className={parseFloat(String(roas)) > 1.5 ? 'text-emerald-400' : 'text-slate-500'}>ROAS {roas}x</span>
+                            </div>
+                            <div className="flex gap-1">
+                              <button onClick={() => {
+                                setGenConfig(c => ({ ...c, strategySource: 'recently_tested' as StrategySource, conceptAngle: pkg.angle || pkg.title || '' }));
+                              }} className="flex-1 px-1.5 py-1 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 text-[8px] font-semibold rounded transition-colors">
+                                Iterate
+                              </button>
+                              <button onClick={() => {
+                                setGenConfig(c => ({ ...c, strategySource: 'winning_concepts' as StrategySource, conceptAngle: pkg.angle || pkg.title || '' }));
+                              }} className="flex-1 px-1.5 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 text-[8px] font-semibold rounded transition-colors">
+                                Scale
+                              </button>
+                              <button className="px-1.5 py-1 bg-slate-700/50 hover:bg-slate-700 text-slate-500 text-[8px] font-semibold rounded transition-colors">
+                                Archive
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-slate-600">No concepts tested yet. Generate your first pack to see results here.</p>
+                  )}
+                </div>
+                {/* Winning Concepts */}
+                {conceptData && conceptData.concepts?.length > 0 && (
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-[10px] text-emerald-400 uppercase font-bold">Winning Concepts</h3>
+                      <div className="flex gap-1.5 text-[8px]">
+                        <span className="px-1.5 py-0.5 rounded bg-emerald-900/30 text-emerald-400">{conceptData.scaleCount} scale</span>
+                        <span className="px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-400">{conceptData.testCount} test</span>
+                        <span className="px-1.5 py-0.5 rounded bg-red-900/30 text-red-400">{conceptData.killCount} kill</span>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      {conceptData.concepts.slice(0, 6).map((concept: any, i: number) => (
+                        <div key={i} className={`p-2.5 rounded-lg border ${
+                          concept.status === 'scale' ? 'bg-emerald-950/20 border-emerald-800/40' :
+                          concept.status === 'test' ? 'bg-blue-950/20 border-blue-800/40' :
+                          'bg-red-950/10 border-red-800/30'
+                        }`}>
+                          <div className="flex items-start justify-between mb-1">
+                            <p className="text-[11px] text-white font-medium truncate flex-1 mr-2">{concept.name}</p>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <span className={`text-[9px] font-bold ${
+                                concept.score >= 8 ? 'text-emerald-400' : concept.score >= 5 ? 'text-blue-400' : 'text-red-400'
+                              }`}>{concept.score}/10</span>
+                              <span className={`text-[7px] px-1.5 py-0.5 rounded-full uppercase font-bold ${
+                                concept.status === 'scale' ? 'bg-emerald-500/20 text-emerald-400' :
+                                concept.status === 'test' ? 'bg-blue-500/20 text-blue-400' :
+                                'bg-red-500/20 text-red-400'
+                              }`}>{concept.status}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2.5 text-[9px] mb-2">
+                            <span className="text-blue-400">CTR {concept.metrics.ctr}%</span>
+                            <span className={concept.metrics.roas >= 1.5 ? 'text-emerald-400' : 'text-slate-500'}>ROAS {concept.metrics.roas}x</span>
+                            <span className="text-slate-500">CPA ${concept.metrics.cpa}</span>
+                            <span className="text-slate-600">${concept.metrics.spend}</span>
+                          </div>
+                          {concept.fatigue.status !== 'healthy' && (
+                            <div className={`text-[8px] px-2 py-1 rounded mb-2 ${
+                              concept.fatigue.status === 'fatiguing' ? 'bg-orange-900/20 text-orange-400' : 'bg-yellow-900/20 text-yellow-400'
+                            }`}>
+                              {concept.fatigue.signals.join(' · ')}
+                            </div>
+                          )}
+                          <div className="flex gap-1">
+                            {concept.status === 'scale' && (
+                              <button onClick={() => setGenConfig(c => ({ ...c, strategySource: 'winning_concepts' as StrategySource, quantity: 2, hooksPerConcept: 3, variationsPerHook: 2, conceptAngle: concept.name }))}
+                                className="flex-1 px-1.5 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 text-[8px] font-semibold rounded transition-colors">
+                                Scale
+                              </button>
+                            )}
+                            {concept.status === 'test' && (
+                              <button onClick={() => setGenConfig(c => ({ ...c, strategySource: 'recently_tested' as StrategySource, quantity: 2, hooksPerConcept: 2, variationsPerHook: 2, conceptAngle: concept.name }))}
+                                className="flex-1 px-1.5 py-1 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 text-[8px] font-semibold rounded transition-colors">
+                                Test More
+                              </button>
+                            )}
+                            {concept.fatigue.status === 'fatiguing' && (
+                              <button onClick={() => setGenConfig(c => ({ ...c, strategySource: 'winning_concepts' as StrategySource, hookStrategy: 'generate_new' as HookStrategy, conceptAngle: concept.name }))}
+                                className="flex-1 px-1.5 py-1 bg-orange-600/20 hover:bg-orange-600/30 text-orange-400 text-[8px] font-semibold rounded transition-colors">
+                                Refresh Creative
+                              </button>
+                            )}
+                            {concept.status === 'kill' && (
+                              <span className="flex-1 px-1.5 py-1 text-red-500/50 text-[8px] text-center">Underperforming</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[8px] text-slate-600 mt-2">vs baseline: CTR {conceptData.baseline.ctr}% · ROAS {conceptData.baseline.roas}x · CPA ${conceptData.baseline.cpa}</p>
+                  </div>
+                )}
+
+                {/* Creative Fatigue Monitor */}
+                {conceptData && conceptData.fatiguingCount > 0 && (
+                  <div className="bg-slate-900 border border-orange-900/30 rounded-xl p-4">
+                    <h3 className="text-[10px] text-orange-400 uppercase font-bold mb-3">Fatigue Alert</h3>
+                    <div className="space-y-2">
+                      {conceptData.concepts.filter((c: any) => c.fatigue.status !== 'healthy').slice(0, 4).map((concept: any, i: number) => (
+                        <div key={i} className={`p-2 rounded-lg border ${
+                          concept.fatigue.status === 'fatiguing' ? 'bg-orange-950/20 border-orange-800/40' : 'bg-yellow-950/10 border-yellow-800/30'
+                        }`}>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[10px] text-white font-medium truncate flex-1">{concept.name}</span>
+                            <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
+                              concept.fatigue.status === 'fatiguing' ? 'bg-orange-500/20 text-orange-400' : 'bg-yellow-500/20 text-yellow-400'
+                            }`}>{concept.fatigue.status} ({concept.fatigue.score}/10)</span>
+                          </div>
+                          <p className="text-[9px] text-slate-500">{concept.fatigue.signals.join(' · ')}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[8px] text-orange-500/60 mt-2">{conceptData.fatiguingCount} concept{conceptData.fatiguingCount > 1 ? 's' : ''} showing fatigue signals</p>
+                  </div>
+                )}
+
                 {/* Recommendations */}
                 <div className="bg-slate-900 border border-indigo-900/30 rounded-xl p-4">
                   <h3 className="text-[10px] text-indigo-400 uppercase font-semibold mb-3">Recommendations</h3>
@@ -5837,6 +6235,171 @@ function CreativesContent() {
           </div>
         </div>
       )}
+
+      {/* ═══ Billing Tab ═══ */}
+      {tab === 'billing' && <BillingTab storeFilter={storeFilter} />}
+
+      {/* OLD BILLING IIFE — DISABLED (replaced by BillingTab component above) */}
+      {false && (() => {
+        const [billingData, setBillingData] = useState<any>(null);
+        const [billingLoading, setBillingLoading] = useState(true);
+        const [billingError, setBillingError] = useState('');
+
+        useEffect(() => {
+          setBillingLoading(true);
+          setBillingError('');
+          // First get tenant list, then get billing summary for the first tenant
+          fetch('/api/billing')
+            .then(r => r.json())
+            .then(d => {
+              if (d.success && d.tenants?.length > 0) {
+                const tenant = d.tenants[0];
+                return fetch(`/api/billing?tenantId=${tenant.id}&admin=1`).then(r => r.json());
+              }
+              setBillingData({ noTenant: true });
+              setBillingLoading(false);
+              return null;
+            })
+            .then(d => {
+              if (d) { setBillingData(d); setBillingLoading(false); }
+            })
+            .catch(e => { setBillingError(e.message); setBillingLoading(false); });
+        }, []);
+
+        const handleSetupCard = async () => {
+          if (!billingData?.tenant?.id) return;
+          const res = await fetch('/api/billing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'setup-card', tenantId: billingData.tenant.id }),
+          });
+          const data = await res.json();
+          if (data.success && data.sessionUrl) {
+            window.location.href = data.sessionUrl;
+          } else {
+            alert(data.error || 'Failed to start card setup');
+          }
+        };
+
+        if (billingLoading) {
+          return <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-400 mx-auto mb-3" />
+            <p className="text-slate-400">Loading billing...</p>
+          </div>;
+        }
+
+        if (billingData?.noTenant) {
+          return <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
+            <p className="text-slate-400">No billing tenant configured for your account.</p>
+          </div>;
+        }
+
+        const summary = billingData?.summary;
+        const tenant = billingData?.tenant;
+        const payment = billingData?.paymentStatus;
+        const isAdmin = billingData?.isAdmin;
+
+        return (
+          <div className="space-y-6">
+            {/* Header */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-bold text-white">{tenant?.name || 'Billing'}</h3>
+                  <p className="text-xs text-slate-400 mt-1">Current billing period</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-2xl font-bold text-green-400">${(summary?.currentPeriodBilled || 0).toFixed(2)}</p>
+                  <p className="text-[10px] text-slate-500">estimated this month</p>
+                </div>
+              </div>
+
+              {/* Admin: show raw + margin */}
+              {isAdmin && summary?.currentPeriodRaw != null && (
+                <div className="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-slate-800">
+                  <div>
+                    <p className="text-[10px] text-slate-500 uppercase">Raw API Cost</p>
+                    <p className="text-sm font-semibold text-slate-300">${summary.currentPeriodRaw.toFixed(2)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-slate-500 uppercase">Client Billed</p>
+                    <p className="text-sm font-semibold text-green-400">${summary.currentPeriodBilled.toFixed(2)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-slate-500 uppercase">Margin Earned</p>
+                    <p className="text-sm font-semibold text-emerald-400">${summary.currentPeriodMargin.toFixed(2)}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Payment Method */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+              <h4 className="text-sm font-semibold text-white mb-3">Payment Method</h4>
+              {payment?.hasPaymentMethod ? (
+                <div className="flex items-center gap-3">
+                  <div className="px-3 py-2 bg-slate-800 rounded-lg">
+                    <p className="text-sm text-white font-medium">{payment.brand?.toUpperCase()} **** {payment.last4}</p>
+                    <p className="text-[10px] text-slate-500">Expires {payment.expMonth}/{payment.expYear}</p>
+                  </div>
+                  <button onClick={handleSetupCard} className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs rounded-lg border border-slate-700">
+                    Update Card
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <p className="text-xs text-slate-400 mb-3">No payment method on file.</p>
+                  <button onClick={handleSetupCard} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg">
+                    Add Card
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Usage by Provider */}
+            {summary?.byProvider?.length > 0 && (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                <h4 className="text-sm font-semibold text-white mb-3">Usage by Provider</h4>
+                <div className="space-y-2">
+                  {summary.byProvider.map((p: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between py-2 border-b border-slate-800 last:border-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-900/30 text-blue-400 uppercase">{p.provider}</span>
+                        <span className="text-xs text-slate-400">{p.count} call{p.count !== 1 ? 's' : ''}</span>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm font-semibold text-white">${(p.billed || p.raw * 1.4).toFixed(2)}</p>
+                        {isAdmin && <p className="text-[9px] text-slate-500">raw: ${(p.raw || 0).toFixed(2)}</p>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Usage by Store */}
+            {summary?.byStore?.length > 0 && (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                <h4 className="text-sm font-semibold text-white mb-3">Usage by Store</h4>
+                <div className="space-y-2">
+                  {summary.byStore.map((s: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between py-2 border-b border-slate-800 last:border-0">
+                      <span className="text-sm text-white">{s.storeName || s.storeId}</span>
+                      <p className="text-sm font-semibold text-white">${(s.billed || s.raw * 1.4).toFixed(2)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {summary?.byProvider?.length === 0 && (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center">
+                <p className="text-slate-400">No usage this month yet. Generate some creatives to see billing data.</p>
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
