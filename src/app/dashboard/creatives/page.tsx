@@ -5088,9 +5088,7 @@ function CreativesContent() {
                                   {(pkg as VideoPackage).avatarSuggestion && (
                                     <div><p className="text-[10px] text-amber-400 uppercase font-semibold mb-1">Avatar / Presenter</p><p className="text-xs text-slate-300">{(pkg as VideoPackage).avatarSuggestion}</p></div>
                                   )}
-                                  {(pkg as VideoPackage).cta && (
-                                    <div><p className="text-[10px] text-emerald-400 uppercase font-semibold mb-1">CTA</p><p className="text-sm text-emerald-300 font-medium">{(pkg as VideoPackage).cta}</p></div>
-                                  )}
+                                  {/* CTA hidden */}
                                 </>
                               ) : (
                                 <>
@@ -5137,9 +5135,7 @@ function CreativesContent() {
                                   {(pkg as ImagePackage).offerPlacement && (
                                     <div><p className="text-[10px] text-amber-400 uppercase font-semibold mb-1">Offer</p><p className="text-xs text-slate-300">{(pkg as ImagePackage).offerPlacement}</p></div>
                                   )}
-                                  {(pkg as ImagePackage).ctaText && (
-                                    <div><p className="text-[10px] text-emerald-400 uppercase font-semibold mb-1">CTA</p><p className="text-sm text-emerald-300 font-medium">{(pkg as ImagePackage).ctaText} <span className="text-[9px] text-slate-500">({(pkg as ImagePackage).ctaPlacement})</span></p></div>
-                                  )}
+                                  {/* CTA hidden */}
                                 </>
                               )}
                               {/* Ad Copy */}
@@ -5298,7 +5294,7 @@ function CreativesContent() {
                             </div>
                             <div><p className="text-[9px] text-slate-500 uppercase">Angle</p><p className="text-[10px] text-slate-300">{(pkg as any).angle || (pkg as any).conceptAngle}</p></div>
                             <div><p className="text-[9px] text-slate-500 uppercase">Hook</p><p className="text-[10px] text-purple-300">{isVideo ? (pkg as any).hook : (pkg as any).headline}</p></div>
-                            <div><p className="text-[9px] text-slate-500 uppercase">CTA</p><p className="text-[10px] text-emerald-300">{(pkg as any).cta || (pkg as any).ctaDirection}</p></div>
+                            {/* CTA hidden */}
                             {isVideo && <div><p className="text-[9px] text-slate-500 uppercase">Avatar</p><p className="text-[10px] text-slate-300">{(pkg as any).avatarSuggestion}</p></div>}
                             <div><p className="text-[9px] text-slate-500 uppercase">Structure</p><p className="text-[10px] text-slate-400">{isVideo ? (pkg as any).sceneStructure?.substring(0, 120) : (pkg as any).visualComposition?.substring(0, 120)}...</p></div>
                             <button onClick={() => handleGenerateVariations(idx)} disabled={generatingPackage}
@@ -5778,7 +5774,7 @@ function CreativesContent() {
                       <div><p className="text-[9px] text-slate-500 uppercase">Angle</p><p className="text-slate-300">{genStrategy.recommendedAngle}</p></div>
                       <div><p className="text-[9px] text-slate-500 uppercase">Hook</p><p className="text-slate-300">{genStrategy.recommendedHook}</p></div>
                       <div><p className="text-[9px] text-slate-500 uppercase">Structure</p><p className="text-slate-300">{genStrategy.recommendedStructure}</p></div>
-                      <div><p className="text-[9px] text-slate-500 uppercase">CTA</p><p className="text-slate-300">{genStrategy.recommendedCta}</p></div>
+                      {/* CTA hidden */}
                       <div><p className="text-[9px] text-slate-500 uppercase">Format</p><p className="text-slate-300">{genStrategy.recommendedFormat}</p></div>
                       {/* Confidence */}
                       {genStrategy.confidence > 0 && (
@@ -6073,8 +6069,7 @@ function CreativesContent() {
                                 {lpkg.hookText && <p className="text-[10px] text-pink-300 mb-1">Hook: {lpkg.hookText}</p>}
                                 {lpkg.script && <p className="text-[10px] text-slate-400 line-clamp-3">{lpkg.script}</p>}
                                 {lpkg.headline && <p className="text-[10px] text-white font-medium">{lpkg.headline}</p>}
-                                {lpkg.cta && <p className="text-[10px] text-emerald-400 mt-1">CTA: {lpkg.cta}</p>}
-                                {lpkg.ctaText && <p className="text-[10px] text-emerald-400 mt-1">CTA: {lpkg.ctaText}</p>}
+                                {/* CTA hidden */}
                               </div>
                             ))}
                             {/* Actions row */}
