@@ -319,25 +319,37 @@ export async function renderScene(opts: {
     productPlacement = parts.join('. ') + '.';
   }
 
-  // Construct the Seedance prompt: spoken dialogue ONLY for audio,
-  // visual directions wrapped in [brackets] so Seedance treats them as
-  // scene direction and does NOT vocalize them.
+  // Construct the Seedance prompt as NATURAL LANGUAGE.
+  // Seedance with generate_audio:true vocalizes ALL text in the prompt,
+  // so we cannot use brackets, labels, or meta-instructions — they get
+  // read aloud. Instead: brief visual setup sentence + quoted dialogue.
   const promptParts: string[] = [];
 
-  // Visual scene direction — bracketed so Seedance does NOT read aloud
-  if (scene.visualPrompt) {
-    promptParts.push(`[SCENE DIRECTION — DO NOT SPEAK: ${scene.visualPrompt}]`);
+  // Visual scene as ONE brief natural sentence (Seedance reads everything aloud,
+  // so keep this minimal — strip all labeled lines, take only the first 1-2 sentences)
+  const visualClean = (scene.visualPrompt || '')
+    .split('\n')
+    .filter(l => !/^(PRODUCT VISUAL|CAMERA|LIGHTING|STYLE|TECHNICAL|RULES|FORMAT|COMPOSITION|VISUAL|OPENING|CTA|HOOK)\s*:/i.test(l.trim()))
+    .join(' ')
+    .replace(/\b(UGC|9:16|16:9|4:5|1:1|480p|720p|iPhone|selfie mode|aspect ratio|vertical|horizontal)\b/gi, '')
+    .replace(/\s+/g, ' ').trim();
+  // Take only the first 2 sentences to keep the visual brief
+  const visualSentences = visualClean.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 3).slice(0, 2);
+  const visualBrief = visualSentences.join(' ').trim();
+  if (visualBrief) {
+    promptParts.push(visualBrief.endsWith('.') ? visualBrief : visualBrief + '.');
   }
-
-  // Product placement — also bracketed as visual-only
   if (productPlacement) {
-    promptParts.push(`[VISUAL ONLY: ${productPlacement}]`);
+    promptParts.push(productPlacement);
   }
 
-  // Spoken dialogue — this is the ONLY part Seedance should vocalize
-  promptParts.push(chunkScriptForSeedance(scene.spokenScript));
+  // Spoken dialogue — just the raw quoted text, no labels, no instructions
+  const cleanDialogue = normalizeScript(scene.spokenScript).trim();
+  if (cleanDialogue) {
+    promptParts.push(`Speaking to camera: "${cleanDialogue}"`);
+  }
 
-  const seedancePrompt = promptParts.join('\n\n');
+  const seedancePrompt = promptParts.join(' ');
 
   console.log(`[SEEDANCE-PIPELINE] Rendering scene ${scene.sceneIndex}: dur=${scene.duration}s, product=${scene.productVisible}, prompt=${seedancePrompt.length} chars`);
   console.log(`[SEEDANCE-PIPELINE] Visual: "${scene.visualPrompt.substring(0, 80)}..."`);
