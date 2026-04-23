@@ -17,7 +17,7 @@
 
 import { generateText } from '@/lib/openai-chat';
 import { createImageToVideo as seedanceI2V, createTextToVideo as seedanceT2V } from '@/lib/seedance';
-import { normalizeScript } from '@/lib/voice-pipeline';
+import { normalizeScript, chunkScriptForSeedance, buildLanguageEnforcement } from '@/lib/voice-pipeline';
 
 // ════════════════════════════════════════════════════════════
 // TYPES
@@ -299,8 +299,11 @@ export async function renderScene(opts: {
     promptParts.push(productPlacement);
   }
 
-  // Spoken dialogue — clean, no labels, just speech
-  promptParts.push(scene.spokenScript);
+  // Spoken dialogue — chunked and formatted for clear Seedance speech
+  promptParts.push(chunkScriptForSeedance(scene.spokenScript));
+
+  // Language enforcement to prevent gibberish/drift
+  promptParts.push(buildLanguageEnforcement());
 
   const seedancePrompt = promptParts.join('\n\n');
 
