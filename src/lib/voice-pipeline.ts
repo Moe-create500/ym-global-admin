@@ -255,18 +255,18 @@ export function chunkScriptForSeedance(script: string): string {
     .map(s => s.trim())
     .filter(s => s.length > 3 && /[a-zA-Z]/.test(s));
 
-  // Further split any sentence over 10 words (strict limit for Seedance body safety)
+  // Keep natural sentences intact — only split if over 18 words
   const shortSentences: string[] = [];
   for (const sent of rawSentences) {
     const words = sent.split(/\s+/);
-    if (words.length <= 10) {
+    if (words.length <= 18) {
       shortSentences.push(sent);
     } else {
-      // Split at comma or at 8 words max
+      // Split at comma or natural break, keeping chunks ~12-15 words
       let chunk: string[] = [];
       for (const word of words) {
         chunk.push(word);
-        if (chunk.length >= 6 && (word.endsWith(',') || chunk.length >= 10)) {
+        if (chunk.length >= 10 && (word.endsWith(',') || chunk.length >= 15)) {
           let text = chunk.join(' ');
           if (!text.match(/[.!?]$/)) text += '.';
           shortSentences.push(text);

@@ -167,21 +167,54 @@ export function parsePromptIntoScenes(
   const dialogueLines: string[] = [];
   const visualLines: string[] = [];
 
+  // Visual/technical keyword pattern — lines containing these are NOT dialogue
+  const visualPattern = /\b(UGC|selfie|camera|lighting|light|iPhone|handheld|close-up|wide shot|pan|zoom|B-roll|aspect ratio|vertical|horizontal|framing|9:16|16:9|4:5|1:1|480p|720p|resolution|golden.hour|bedroom|morning light|natural light|soft light|filter|authentic feel|selfie mode|pull back|start with|end with|portrait|landscape|cinematic|slow motion|depth of field|bokeh|transition|fade|cut to|angle|overhead|eye.level|product bottle|label|comparison|before.after)\b/i;
+
+  // First pass: extract quoted dialogue (highest priority — these are definitely spoken)
+  const quotedDialogue: string[] = [];
   for (const line of rawPrompt.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    if (/^".*"$/.test(trimmed)) {
+      quotedDialogue.push(trimmed.replace(/^"|"$/g, ''));
+    }
+  }
 
-    // Visual/technical lines
-    if (/^\[/.test(trimmed) ||
-        /^(PRODUCT VISUAL|CAMERA|LIGHTING|STYLE|TECHNICAL|VISUAL|OPENING|Scene|Shot|RULES|FORMAT|COMPOSITION|FAST-PACED|This is a \d|PRODUCT REFERENCE|HOOK|CTA|Offer)/i.test(trimmed)) {
+  // If we found quoted dialogue, use ONLY that as spoken script
+  // Everything else is visual direction
+  if (quotedDialogue.length > 0) {
+    for (const line of rawPrompt.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (/^".*"$/.test(trimmed)) continue; // already captured
       visualLines.push(trimmed);
-    } else if (/^".*"$/.test(trimmed)) {
-      // Quoted dialogue
-      dialogueLines.push(trimmed.replace(/^"|"$/g, ''));
-    } else if (trimmed.length > 10 && /[a-z]/.test(trimmed) && !/^(RULES|Do not|Must be|Ensure|Avoid|Never|Always|Critical)/i.test(trimmed)) {
-      dialogueLines.push(trimmed);
-    } else {
-      visualLines.push(trimmed);
+    }
+    dialogueLines.push(...quotedDialogue);
+  } else {
+    // No quoted dialogue — use heuristic with stricter visual detection
+    for (const line of rawPrompt.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      // Explicit visual/technical lines (bracketed or keyword-prefixed)
+      if (/^\[/.test(trimmed) ||
+          /^(PRODUCT VISUAL|CAMERA|LIGHTING|STYLE|TECHNICAL|VISUAL|OPENING|Scene|Shot|RULES|FORMAT|COMPOSITION|FAST-PACED|This is a \d|PRODUCT REFERENCE|HOOK|CTA|Offer)/i.test(trimmed)) {
+        visualLines.push(trimmed);
+      }
+      // Lines with visual/camera terms — NOT dialogue
+      else if (visualPattern.test(trimmed)) {
+        visualLines.push(trimmed);
+      }
+      // Instructions/rules — NOT dialogue
+      else if (/^(RULES|Do not|Must be|Ensure|Avoid|Never|Always|Critical|Keep it|No filters|Real person)/i.test(trimmed)) {
+        visualLines.push(trimmed);
+      }
+      // Remaining text with lowercase and length > 10 = likely dialogue
+      else if (trimmed.length > 10 && /[a-z]/.test(trimmed)) {
+        dialogueLines.push(trimmed);
+      } else {
+        visualLines.push(trimmed);
+      }
     }
   }
 
