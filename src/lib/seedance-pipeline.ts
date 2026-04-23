@@ -286,24 +286,23 @@ export async function renderScene(opts: {
     productPlacement = parts.join('. ') + '.';
   }
 
-  // Construct the Seedance prompt: visual context, then natural dialogue
+  // Construct the Seedance prompt: spoken dialogue ONLY for audio,
+  // visual directions wrapped in [brackets] so Seedance treats them as
+  // scene direction and does NOT vocalize them.
   const promptParts: string[] = [];
 
-  // Visual scene direction
+  // Visual scene direction — bracketed so Seedance does NOT read aloud
   if (scene.visualPrompt) {
-    promptParts.push(scene.visualPrompt);
+    promptParts.push(`[SCENE DIRECTION — DO NOT SPEAK: ${scene.visualPrompt}]`);
   }
 
-  // Product placement (part of visual, not dialogue)
+  // Product placement — also bracketed as visual-only
   if (productPlacement) {
-    promptParts.push(productPlacement);
+    promptParts.push(`[VISUAL ONLY: ${productPlacement}]`);
   }
 
-  // Spoken dialogue — chunked and formatted for clear Seedance speech
+  // Spoken dialogue — this is the ONLY part Seedance should vocalize
   promptParts.push(chunkScriptForSeedance(scene.spokenScript));
-
-  // Language enforcement to prevent gibberish/drift
-  promptParts.push(buildLanguageEnforcement());
 
   const seedancePrompt = promptParts.join('\n\n');
 
