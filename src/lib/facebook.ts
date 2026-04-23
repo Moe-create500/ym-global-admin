@@ -373,6 +373,7 @@ export interface FBBillingCharge {
   transaction_id: string;
   funding_source_id?: string;
   card_last4?: string;
+  status: 'paid' | 'declined' | 'pending';
 }
 
 export async function getBillingCharges(
@@ -395,12 +396,27 @@ export async function getBillingCharges(
       try {
         const extra = JSON.parse(item.extra_data || '{}');
         if (!extra.transaction_id || !extra.new_value) continue;
+
+        // Check for declined/failed indicators in extra_data
+        const chargeStatus = extra.billing_event_type || extra.charge_type || extra.status || '';
+        const reason = (extra.reason || '').toLowerCase();
+        const isDeclined = /decline|fail|reject|insufficient|expired/i.test(chargeStatus)
+          || /decline|fail|reject|insufficient|expired/i.test(reason);
+
+        // Skip declined charges — they should not be recorded as paid
+        if (isDeclined) {
+          console.log(`[FB-BILLING] Skipping declined charge ${extra.transaction_id}: ${chargeStatus || reason}`);
+          continue;
+        }
+
         allCharges.push({
           event_time: item.event_time,
           date: item.event_time.slice(0, 10),
           amount_cents: extra.new_value,
           currency: extra.currency || 'USD',
           transaction_id: extra.transaction_id,
+          funding_source_id: extra.funding_source_id,
+          status: 'paid',
         });
       } catch {
         continue;

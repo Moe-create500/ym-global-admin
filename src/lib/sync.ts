@@ -649,6 +649,12 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
         }
 
         for (const charge of charges) {
+          // Skip declined/non-paid charges — only import successful transactions
+          if (charge.status !== 'paid') {
+            console.log(`[SYNC] Skipping non-paid FB charge ${charge.transaction_id}: status=${charge.status}`);
+            continue;
+          }
+
           const existingPayment = db.prepare('SELECT id FROM ad_payments WHERE transaction_id = ?').get(charge.transaction_id);
           if (existingPayment) continue;
 
@@ -670,10 +676,10 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
 
           db.prepare(`
             INSERT INTO ad_payments (id, store_id, platform, date, transaction_id, payment_method, card_last4, amount_cents, currency, status, account_id)
-            VALUES (?, ?, 'facebook', ?, ?, ?, ?, ?, ?, 'paid', ?)
+            VALUES (?, ?, 'facebook', ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(crypto.randomUUID(), profile.store_id, charge.date,
             charge.transaction_id, chargePaymentMethod || null, chargeCardLast4 || null,
-            charge.amount_cents, charge.currency, profile.ad_account_id);
+            charge.amount_cents, charge.currency, charge.status, profile.ad_account_id);
           invoicesImported++;
         }
       } catch (invoiceErr: any) {
