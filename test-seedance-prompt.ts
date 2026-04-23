@@ -1,5 +1,5 @@
 import { parsePromptIntoScenes } from './src/lib/seedance-pipeline';
-import { chunkScriptForSeedance, buildLanguageEnforcement } from './src/lib/voice-pipeline';
+import { normalizeScript } from './src/lib/voice-pipeline';
 
 // Simulate a typical UGC ad prompt from generate-package
 const samplePrompt = `UGC selfie video. Young woman talking directly to camera in natural morning light. Soft, golden-hour bedroom lighting. Casual, authentic feel. iPhone selfie mode. 9:16 vertical.
@@ -31,23 +31,46 @@ console.log('=== PARSED SCENES ===');
 for (const s of scenes) {
   console.log(`\nScene ${s.sceneIndex}:`);
   console.log(`  spoken: "${s.spokenScript}"`);
-  console.log(`  visual: "${s.visualPrompt.substring(0, 80)}..."`);
+  console.log(`  visual: "${s.visualPrompt.substring(0, 120)}..."`);
 }
 
 console.log('\n=== MERGED SPOKEN SCRIPT ===');
 console.log(mergedScene.spokenScript);
 
-console.log('\n=== CHUNKED FOR SEEDANCE ===');
-console.log(chunkScriptForSeedance(mergedScene.spokenScript));
-
-// Build the full prompt exactly like renderScene does
+// Build the full prompt exactly like the NEW renderScene does
 const productPlacement = 'Person is holding the product.';
+
+const visualClean = (mergedScene.visualPrompt || '')
+  .split('\n')
+  .filter(l => !/^(PRODUCT VISUAL|CAMERA|LIGHTING|STYLE|TECHNICAL|RULES|FORMAT|COMPOSITION|VISUAL|OPENING|CTA|HOOK)\s*:/i.test(l.trim()))
+  .join(' ')
+  .replace(/\b(UGC|9:16|16:9|4:5|1:1|480p|720p|iPhone|selfie mode|aspect ratio|vertical|horizontal)\b/gi, '')
+  .replace(/\s+/g, ' ').trim();
+const visualSentences = visualClean.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 3).slice(0, 2);
+const visualBrief = visualSentences.join(' ').trim();
+
 const promptParts: string[] = [];
-promptParts.push(`[SCENE DIRECTION — DO NOT SPEAK: ${mergedScene.visualPrompt}]`);
-promptParts.push(`[VISUAL ONLY: ${productPlacement}]`);
-promptParts.push(chunkScriptForSeedance(mergedScene.spokenScript));
-const finalPrompt = promptParts.join('\n\n');
+if (visualBrief) {
+  promptParts.push(visualBrief.endsWith('.') ? visualBrief : visualBrief + '.');
+}
+promptParts.push(productPlacement);
+
+const cleanDialogue = normalizeScript(mergedScene.spokenScript).trim();
+if (cleanDialogue) {
+  promptParts.push(`Speaking to camera: "${cleanDialogue}"`);
+}
+
+const finalPrompt = promptParts.join(' ');
 
 console.log('\n=== FINAL SEEDANCE PROMPT ===');
 console.log(finalPrompt);
 console.log(`\n=== PROMPT LENGTH: ${finalPrompt.length} chars ===`);
+
+// Verify: no brackets, no labels, no meta-instructions
+const hasBrackets = /\[.*?\]/.test(finalPrompt);
+const hasLabels = /\b(Hook|Line \d|CTA|SCENE DIRECTION|VISUAL ONLY|SPOKEN DIALOGUE):/i.test(finalPrompt);
+const hasMeta = /DO NOT SPEAK|read each line|exactly as written/i.test(finalPrompt);
+console.log(`\n=== QUALITY CHECKS ===`);
+console.log(`  No brackets: ${!hasBrackets ? 'PASS' : 'FAIL'}`);
+console.log(`  No labels: ${!hasLabels ? 'PASS' : 'FAIL'}`);
+console.log(`  No meta-instructions: ${!hasMeta ? 'PASS' : 'FAIL'}`);
