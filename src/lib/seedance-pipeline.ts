@@ -369,7 +369,7 @@ export async function renderScene(opts: {
   const productAction = scene.productInHand
     ? (productDescription ? `holding a ${productDescription.split('.')[0].substring(0, 40).trim()}` : 'holding a product bottle')
     : '';
-  promptParts.push(`UGC creator, iPhone, natural lighting, medium close-up. A young woman ${productAction} in a bright room.`);
+  promptParts.push(`UGC creator, iPhone, natural lighting, medium close-up. A young woman ${productAction} in a bright room. She speaks quickly and energetically, fast-paced delivery.`);
 
   // Emotion labels to cycle through for variety
   const emotions = ['looks at camera and says:', 'earnestly says:', 'smiles and says:', 'nods and says:'];
