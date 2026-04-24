@@ -198,7 +198,7 @@ export function parsePromptIntoScenes(
 
       // Explicit visual/technical lines (bracketed or keyword-prefixed)
       if (/^\[/.test(trimmed) ||
-          /^(PRODUCT VISUAL|CAMERA|LIGHTING|STYLE|TECHNICAL|VISUAL|OPENING|Scene|Shot|RULES|FORMAT|COMPOSITION|FAST-PACED|This is a \d|PRODUCT REFERENCE|HOOK|CTA|Offer)/i.test(trimmed)) {
+          /^(PRODUCT VISUAL|CAMERA|LIGHTING|STYLE|TECHNICAL|VISUAL|OPENING|Scene|Shot|RULES|FORMAT|COMPOSITION|FAST-PACED|This is a \d|PRODUCT REFERENCE|HOOK|CTA|Offer|Creative style|Presenter|Script\s*:|Person talking|UGC|Handheld|CRITICAL PACING)/i.test(trimmed)) {
         visualLines.push(trimmed);
       }
       // Lines with visual/camera terms — NOT dialogue
@@ -437,13 +437,15 @@ export function buildCaptions(scenes: Scene[]): string {
  */
 function cleanScript(text: string): string {
   let s = text;
-  // Remove labels like "Hook:", "Line 1:", "CTA:", "Scene 1:"
-  s = s.replace(/^(Hook|Line \d+|CTA|Scene \d+|Shot \d+|OPENING|BODY|CLOSE)\s*[:—–-]\s*/gim, '');
+  // Remove labels like "Hook:", "Line 1:", "CTA:", "Scene 1:", "Creative style:", "Presenter:", "Script:"
+  s = s.replace(/^(Hook|Line \d+|CTA|Scene \d+|Shot \d+|OPENING|BODY|CLOSE|Creative style|Presenter|Script)\s*[:—–-]\s*/gim, '');
   // Remove brackets
   s = s.replace(/\[.*?\]/g, '');
   s = s.replace(/\(.*?\)/g, '');
-  // Remove technical keywords
-  s = s.replace(/^(CAMERA|LIGHTING|TECHNICAL|VISUAL|PRODUCT VISUAL|RULES|FORMAT|COMPOSITION)[:].*/gim, '');
+  // Remove technical keywords and meta-instructions
+  s = s.replace(/^(CAMERA|LIGHTING|TECHNICAL|VISUAL|PRODUCT VISUAL|RULES|FORMAT|COMPOSITION|FAST-PACED|CRITICAL PACING|This is a \d+-second|Person talking to camera)[:].*/gim, '');
+  // Remove standalone meta lines (no colon)
+  s = s.replace(/^(FAST-PACED speaking|This is a \d+-second video|Person talking to camera|UGC selfie style|Handheld iPhone).*$/gim, '');
   // Normalize through voice pipeline
   s = normalizeScript(s);
   // Final cleanup
