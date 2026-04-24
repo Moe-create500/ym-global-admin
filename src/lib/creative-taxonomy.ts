@@ -253,6 +253,19 @@ export const CREATIVE_TYPES: Record<string, TaxonomyEntry> = {
     outputRequirements: 'Must depict a universally experienced moment. Product introduction must feel like a natural discovery, not an ad. Use trending POV formats.',
     antiPatterns: 'No forced relatability. No scenarios that only apply to 1% of people. No product placement that breaks the POV immersion.',
   },
+  product_stack: {
+    id: 'product_stack',
+    label: 'Product Stack / BOGO',
+    definition: 'Multiple units of the same product stacked, fanned out, or arranged together on a clean surface. Faceless — only hands visible. A voiceover announces the offer. Designed for BOGO, bundle, and limited-time deals.',
+    useCase: 'Bottom-of-funnel offer ads. When running BOGO, bundle deals, or volume discounts. The visual of multiple products creates perceived value and urgency.',
+    preferWhen: 'Running a specific offer (BOGO, bundle, discount code). Product packaging is visually appealing. BOF retargeting warm audiences.',
+    avoidWhen: 'No offer to announce. Product is digital or has no physical form. Top-of-funnel cold audience who doesn\'t know the brand yet.',
+    bestFunnelFit: ['bof'],
+    bestProductFit: ['skincare', 'supplements', 'beauty', 'wellness', 'bundles', 'serums', 'oils'],
+    metaUseCases: 'Reels (quick stack reveal + offer), Feed (arrangement + deal CTA), Stories (swipe-up offer).',
+    outputRequirements: 'Must show: 3-5 identical products arranged together. Hands arranging or touching products. Clean surface, good lighting. Voiceover announces the offer clearly. CTA with offer code or deal.',
+    antiPatterns: 'No showing a single product. No face visible. No long explanations — keep it short and punchy. No cluttered background distracting from the product stack.',
+  },
 };
 
 // ── Funnel Stage ──
@@ -1168,6 +1181,17 @@ export const FORMAT_REALISM: Record<string, FormatRealism> = {
     visualDirective: 'Phone-shot, raw, native. This should look exactly like organic social content. Zero production value beyond a phone camera.',
     avoidList: ['"Ad pretending to be POV"', 'Forced relatability', 'Niche scenarios', 'Over-acting the scenario', 'Product placement that breaks the POV'],
     authenticityMarkers: ['Instant recognition', 'Platform-native format', 'Organic product discovery', 'Feels like real content, not paid ad'],
+  },
+  product_stack: {
+    realism: 'high', polish: 'medium_high', rawness: 'medium', adIntensity: 'high',
+    toneDirective: 'Excited, deal-focused energy. Like someone who just discovered an incredible deal and has to share it. Short, punchy, offer-driven.',
+    pacingDirective: 'Fast and punchy. Show the product stack immediately. Announce the offer within 3 seconds. The entire video is about the deal — no buildup needed.',
+    scriptDirective: 'Ultra-short offer script. 2-3 sentences max. "Buy one, get one free!" / "Stock up while you can." / "Use code X for Y% off." No storytelling — just the deal.',
+    hookFilter: 'The stack of products IS the hook. Multiple products = perceived value. Open with the visual of 3-5 products together.',
+    presenterDirective: 'FACELESS. Hands only — arranging, stacking, touching, or picking up products. No face, no body above wrists. Clean, well-lit hands.',
+    visualDirective: 'Clean surface (marble, wood, white). Top-down or 45-degree angle. Products stacked, fanned, or pyramid-arranged. Hands entering frame to arrange. Good lighting highlighting product labels.',
+    avoidList: ['Face visible', 'Single product only', 'Cluttered background', 'Long monologue', 'Storytelling arc'],
+    authenticityMarkers: ['Multiple products visible', 'Clean arrangement', 'Hands-only presenter', 'Clear offer announcement', 'Deal urgency'],
   },
 };
 

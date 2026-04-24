@@ -242,6 +242,7 @@ const CREATIVE_TYPES = [
   { key: 'comparison', label: 'Comparison', icon: '⚖️' },
   { key: 'myth_busting', label: 'Myth Busting', icon: '🚫' },
   { key: 'pov_relatable', label: 'POV / Relatable', icon: '👀' },
+  { key: 'product_stack', label: 'Product Stack / BOGO', icon: '🏷️' },
 ] as const;
 
 const HOOK_STYLES = [
@@ -277,6 +278,7 @@ const CREATIVE_TYPE_DIRECTIONS: Record<string, string> = {
   comparison: 'Comparison: person compares this product to alternatives, showing why this one is better.',
   myth_busting: 'Myth busting: person calls out a common misconception, then reveals the truth using this product.',
   pov_relatable: 'POV relatable: first-person perspective, person shares a relatable struggle and how this product helped.',
+  product_stack: 'Product stack: 3-5 identical products stacked or arranged on a clean surface. Faceless — hands only, arranging the products. Voiceover announces the offer. Fast, deal-focused energy.',
 };
 const HOOK_DIRECTIONS: Record<string, string> = {
   pattern_interrupt: 'HOOK: Open with something unexpected — a surprising statement, dramatic gesture, or pattern-breaking visual.',
