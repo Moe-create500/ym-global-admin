@@ -5053,7 +5053,7 @@ function CreativesContent() {
                               {isVideo ? (
                                 <>
                                   {(pkg as VideoPackage).hook && (
-                                    <div><p className="text-[10px] text-purple-400 uppercase font-semibold mb-1">Hook (0-3s)</p><p className="text-sm text-white bg-purple-900/20 border border-purple-900/30 rounded-lg p-3">{(pkg as VideoPackage).hook}</p></div>
+                                    <div><p className="text-[10px] text-purple-400 uppercase font-semibold mb-1">Hook (0-3s)</p><textarea className="text-sm text-white bg-purple-900/20 border border-purple-900/30 rounded-lg p-3 w-full resize-none focus:outline-none focus:border-purple-500" rows={2} value={(pkg as VideoPackage).hook} onChange={e => { const v = e.target.value; setGenPackages(prev => prev.map((p, pi) => pi === idx ? { ...p, hook: v } as any : p)); }} /></div>
                                   )}
                                   {(pkg as VideoPackage).script && (
                                     <div>
@@ -5068,23 +5068,23 @@ function CreativesContent() {
                                           </span>
                                         )}
                                       </div>
-                                      <pre className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 whitespace-pre-wrap leading-relaxed">{(pkg as VideoPackage).script}</pre>
+                                      <textarea className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 w-full resize-none focus:outline-none focus:border-blue-500 border border-transparent leading-relaxed font-mono" rows={4} value={(pkg as VideoPackage).script} onChange={e => { const v = e.target.value; setGenPackages(prev => prev.map((p, pi) => pi === idx ? { ...p, script: v } as any : p)); }} />
                                     </div>
                                   )}
                                   {(pkg as VideoPackage).sceneStructure && (
-                                    <div><p className="text-[10px] text-cyan-400 uppercase font-semibold mb-1">Scene Structure</p><p className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 whitespace-pre-wrap">{(pkg as VideoPackage).sceneStructure}</p></div>
+                                    <div><p className="text-[10px] text-cyan-400 uppercase font-semibold mb-1">Scene Structure</p><textarea className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 w-full resize-none focus:outline-none focus:border-cyan-500 border border-transparent" rows={2} value={(pkg as VideoPackage).sceneStructure} onChange={e => { const v = e.target.value; setGenPackages(prev => prev.map((p, pi) => pi === idx ? { ...p, sceneStructure: v } as any : p)); }} /></div>
                                   )}
                                   {(pkg as VideoPackage).visualDirection && (
-                                    <div><p className="text-[10px] text-indigo-400 uppercase font-semibold mb-1">Visual Direction</p><p className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 whitespace-pre-wrap">{(pkg as VideoPackage).visualDirection}</p></div>
+                                    <div><p className="text-[10px] text-indigo-400 uppercase font-semibold mb-1">Visual Direction</p><textarea className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 w-full resize-none focus:outline-none focus:border-indigo-500 border border-transparent" rows={2} value={(pkg as VideoPackage).visualDirection} onChange={e => { const v = e.target.value; setGenPackages(prev => prev.map((p, pi) => pi === idx ? { ...p, visualDirection: v } as any : p)); }} /></div>
                                   )}
                                   {(pkg as VideoPackage).brollDirection && (
-                                    <div><p className="text-[10px] text-teal-400 uppercase font-semibold mb-1">B-Roll Direction</p><p className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 whitespace-pre-wrap">{(pkg as VideoPackage).brollDirection}</p></div>
+                                    <div><p className="text-[10px] text-teal-400 uppercase font-semibold mb-1">B-Roll Direction</p><textarea className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 w-full resize-none focus:outline-none focus:border-teal-500 border border-transparent" rows={2} value={(pkg as VideoPackage).brollDirection} onChange={e => { const v = e.target.value; setGenPackages(prev => prev.map((p, pi) => pi === idx ? { ...p, brollDirection: v } as any : p)); }} /></div>
                                   )}
                                   {(pkg as VideoPackage).avatarSuggestion && (
-                                    <div><p className="text-[10px] text-amber-400 uppercase font-semibold mb-1">Avatar / Presenter</p><p className="text-xs text-slate-300">{(pkg as VideoPackage).avatarSuggestion}</p></div>
+                                    <div><p className="text-[10px] text-amber-400 uppercase font-semibold mb-1">Avatar / Presenter</p><textarea className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 w-full resize-none focus:outline-none focus:border-amber-500 border border-transparent" rows={1} value={(pkg as VideoPackage).avatarSuggestion} onChange={e => { const v = e.target.value; setGenPackages(prev => prev.map((p, pi) => pi === idx ? { ...p, avatarSuggestion: v } as any : p)); }} /></div>
                                   )}
                                   {(pkg as VideoPackage).cta && (
-                                    <div><p className="text-[10px] text-emerald-400 uppercase font-semibold mb-1">CTA</p><p className="text-sm text-emerald-300 font-medium">{(pkg as VideoPackage).cta}</p></div>
+                                    <div><p className="text-[10px] text-emerald-400 uppercase font-semibold mb-1">CTA</p><textarea className="text-sm text-emerald-300 font-medium bg-transparent rounded-lg p-1 w-full resize-none focus:outline-none focus:border-emerald-500 border border-transparent" rows={1} value={(pkg as VideoPackage).cta} onChange={e => { const v = e.target.value; setGenPackages(prev => prev.map((p, pi) => pi === idx ? { ...p, cta: v } as any : p)); }} /></div>
                                   )}
                                 </>
                               ) : (
@@ -5139,7 +5139,7 @@ function CreativesContent() {
                               )}
                               {/* Ad Copy */}
                               {(pkg as any).adCopy && (
-                                <div><p className="text-[10px] text-orange-400 uppercase font-semibold mb-1">Ad Copy</p><p className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 whitespace-pre-wrap leading-relaxed">{(pkg as any).adCopy}</p></div>
+                                <div><p className="text-[10px] text-orange-400 uppercase font-semibold mb-1">Ad Copy</p><textarea className="text-xs text-slate-300 bg-slate-800/60 rounded-lg p-3 w-full resize-none focus:outline-none focus:border-orange-500 border border-transparent leading-relaxed" rows={3} value={(pkg as any).adCopy} onChange={e => { const v = e.target.value; setGenPackages(prev => prev.map((p, pi) => pi === idx ? { ...p, adCopy: v } as any : p)); }} /></div>
                               )}
                               {/* Variants */}
                               {(pkg as any).variants?.length > 0 && (
