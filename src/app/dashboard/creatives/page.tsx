@@ -2203,43 +2203,46 @@ function CreativesContent() {
       const dur = genConfig.videoDuration || 20;
       const isSeedance = resolvedEngine === 'seedance';
       const parts: string[] = [];
-      // Pacing instruction — engine-specific
       if (isSeedance) {
-        parts.push(`Person talking to camera, natural conversational pace. UGC selfie style, handheld iPhone camera, natural lighting.`);
+        // Seedance prompt: CLEAN — no labels, no meta-instructions, no technical terms.
+        // renderScene() will structure it into the optimal Seedance format.
+        // We only send: quoted dialogue + minimal visual context.
+        if (pkg.script) parts.push(`"${pkg.script}"`);
+        else if (pkg.adCopy) parts.push(`"${pkg.adCopy}"`);
+        if (pkg.visualDirection) parts.push(pkg.visualDirection);
       } else {
+        // Non-Seedance engines: full prompt with labels
         parts.push(`CRITICAL PACING: This is a ${dur}-SECOND video. Use the FULL ${dur} seconds. Do NOT rush. Hold each shot for 2-4 seconds. Slow, natural pacing. The CTA must appear in the LAST 3 seconds and must NOT be cut off.`);
         parts.push('RULES: Handheld iPhone camera, natural lighting. UGC native feel.');
+        if (productName) {
+          const desc = (selectedProduct?.description || '').toString().substring(0, 400);
+          parts.push(`PRODUCT REFERENCE (do not show as a still photo — depict the product naturally within the scene): "${productName}"${desc ? ` — ${desc}` : ''}. Match brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
+        }
+        if (genConfig.creativeType && genConfig.creativeType !== 'testimonial') {
+          parts.push(`Creative style: ${genConfig.creativeType.replace(/_/g, ' ')}`);
+        }
+        if (genConfig.hookStyle && genConfig.hookStyle !== 'curiosity') {
+          parts.push(`Hook approach: ${genConfig.hookStyle.replace(/_/g, ' ')}`);
+        }
+        if (genConfig.avatarStyle && genConfig.avatarStyle !== 'female_ugc') {
+          parts.push(`Presenter: ${genConfig.avatarStyle.replace(/_/g, ' ')}`);
+        }
+        if (genConfig.funnelStage === 'bof') {
+          parts.push(`Funnel stage: Bottom of funnel — urgency, direct CTA, social proof, offer-driven.`);
+        } else if (genConfig.funnelStage === 'mof') {
+          parts.push(`Funnel stage: Middle of funnel — build trust, show proof, educate.`);
+        }
+        if (genConfig.offer) {
+          parts.push(`Offer: ${genConfig.offer}`);
+        }
+        if (pkg.visualDirection) parts.push(pkg.visualDirection);
+        if (pkg.script) parts.push(`Script (MUST fit in ${dur}s — speak slowly and naturally): ${pkg.script}`);
+        if (pkg.sceneStructure) parts.push(`Scene timing: ${pkg.sceneStructure}`);
+        parts.push('OPENING: The product image is provided as a reference. Within the first 0.5 seconds, transition into cinematic motion — a hand picking up the product, camera pulling back to reveal a scene, or the product rotating. Do NOT hold a static product shot. Immediately bring the scene to life with movement and energy.');
       }
-      if (productName) {
-        const desc = (selectedProduct?.description || '').toString().substring(0, 400);
-        parts.push(`PRODUCT REFERENCE (do not show as a still photo — depict the product naturally within the scene): "${productName}"${desc ? ` — ${desc}` : ''}. Match brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
-      }
-      // Advanced options — creative direction from user selections
-      if (genConfig.creativeType && genConfig.creativeType !== 'testimonial') {
-        parts.push(`Creative style: ${genConfig.creativeType.replace(/_/g, ' ')}`);
-      }
-      if (genConfig.hookStyle && genConfig.hookStyle !== 'curiosity') {
-        parts.push(`Hook approach: ${genConfig.hookStyle.replace(/_/g, ' ')}`);
-      }
-      if (genConfig.avatarStyle && genConfig.avatarStyle !== 'female_ugc') {
-        parts.push(`Presenter: ${genConfig.avatarStyle.replace(/_/g, ' ')}`);
-      }
-      if (genConfig.funnelStage === 'bof') {
-        parts.push(`Funnel stage: Bottom of funnel — urgency, direct CTA, social proof, offer-driven.`);
-      } else if (genConfig.funnelStage === 'mof') {
-        parts.push(`Funnel stage: Middle of funnel — build trust, show proof, educate.`);
-      }
-      if (genConfig.offer) {
-        parts.push(`Offer: ${genConfig.offer}`);
-      }
-      if (pkg.visualDirection) parts.push(pkg.visualDirection);
-      if (pkg.script) parts.push(`Script (MUST fit in ${dur}s — speak slowly and naturally): ${pkg.script}`);
-      if (pkg.sceneStructure) parts.push(`Scene timing: ${pkg.sceneStructure}`);
-      // Anti-poster rule — prevents the engine from opening on the reference image as a static frame
-      parts.push('OPENING: The product image is provided as a reference. Within the first 0.5 seconds, transition into cinematic motion — a hand picking up the product, camera pulling back to reveal a scene, or the product rotating. Do NOT hold a static product shot. Immediately bring the scene to life with movement and energy.');
       let prompt = parts.join('\n\n') || pkg.script || pkg.adCopy || '';
       // Strip all audio references — Sora generates glitchy sounds from any audio mention
-      prompt = prompt.replace(/\b(background music|ambient music|soundtrack|cinematic score|room tone|ambient sound|sound effect|natural room tone|music bed|audio cue|upbeat track)\b/gi, '');
+      if (!isSeedance) prompt = prompt.replace(/\b(background music|ambient music|soundtrack|cinematic score|room tone|ambient sound|sound effect|natural room tone|music bed|audio cue|upbeat track)\b/gi, '');
 
       const dim = genConfig.dimension === 'auto'
         ? (genConfig.platformTarget === 'tiktok' ? '9:16' : '4:5')
@@ -2461,31 +2464,33 @@ function CreativesContent() {
     const dur = genConfig.videoDuration || 20;
     const isSeedance = resolvedEngine === 'seedance';
     const parts: string[] = [];
-    // Pacing — engine-specific
     if (isSeedance) {
-      parts.push(`Person talking to camera, natural conversational pace. UGC selfie style, handheld iPhone camera, natural lighting.`);
+      // Seedance: CLEAN prompt — only quoted dialogue + minimal visual.
+      // renderScene() structures it into optimal Seedance action-sequence format.
+      if (pkg.script) parts.push(`"${pkg.script}"`);
+      else if (pkg.adCopy) parts.push(`"${pkg.adCopy}"`);
+      if (pkg.visualDirection) parts.push(pkg.visualDirection);
     } else {
+      // Non-Seedance engines: full prompt with labels
       parts.push(`CRITICAL PACING: This is a ${dur}-SECOND video. Use the FULL ${dur} seconds. Hold each shot for 2-4 seconds. Slow, natural pacing. CTA in the LAST 3 seconds — must NOT be cut off.`);
       parts.push('RULES: Handheld iPhone camera, natural lighting, real environment. NO background music, NO soundtrack — voice and room tone only. UGC native feel.');
+      if (productName) {
+        const desc = (selectedProduct?.description || '').toString().substring(0, 400);
+        parts.push(`PRODUCT REFERENCE (depict naturally within the scene, NOT as a static product photo): "${productName}"${desc ? ` — ${desc}` : ''}. Match the brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
+      }
+      if (pkg.visualDirection) parts.push(pkg.visualDirection);
+      if (pkg.script) parts.push(`Script (deliver slowly over ${dur} seconds — natural conversational pace, NOT rushed): ${pkg.script}`);
+      if (pkg.sceneStructure) parts.push(`Scene timing (${dur}s total): ${pkg.sceneStructure}`);
+      if (pkg.brollDirection) parts.push(`B-roll (hold each shot 2-4s): ${pkg.brollDirection}`);
+      if (pkg.avatarSuggestion || pkg.presenterBehavior) parts.push(`Presenter: ${pkg.presenterBehavior || pkg.avatarSuggestion}`);
+      if (!isVideo) {
+        if (pkg.visualComposition) parts.push(pkg.visualComposition);
+        if (pkg.headline) parts.push(`Headline: ${pkg.headline}`);
+      }
+      parts.push('OPENING FRAME: Start on an action, location, or person — NOT on a static product photo or poster. The product appears naturally in the scene as it unfolds, not as the first visual.');
     }
-    if (productName) {
-      const desc = (selectedProduct?.description || '').toString().substring(0, 400);
-      parts.push(`PRODUCT REFERENCE (depict naturally within the scene, NOT as a static product photo): "${productName}"${desc ? ` — ${desc}` : ''}. Match the brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
-    }
-    if (pkg.visualDirection) parts.push(pkg.visualDirection);
-    if (pkg.script) parts.push(`Script (deliver slowly over ${dur} seconds — natural conversational pace, NOT rushed): ${pkg.script}`);
-    if (pkg.sceneStructure) parts.push(`Scene timing (${dur}s total): ${pkg.sceneStructure}`);
-    if (pkg.brollDirection) parts.push(`B-roll (hold each shot 2-4s): ${pkg.brollDirection}`);
-    if (pkg.avatarSuggestion || pkg.presenterBehavior) parts.push(`Presenter: ${pkg.presenterBehavior || pkg.avatarSuggestion}`);
-    if (!isVideo) {
-      if (pkg.visualComposition) parts.push(pkg.visualComposition);
-      if (pkg.headline) parts.push(`Headline: ${pkg.headline}`);
-    }
-    // Anti-poster rule — don't let the engine open on a still product photo
-    parts.push('OPENING FRAME: Start on an action, location, or person — NOT on a static product photo or poster. The product appears naturally in the scene as it unfolds, not as the first visual.');
     let prompt = parts.join('\n\n') || pkg.script || pkg.adCopy || '';
-    // Strip all audio references — Sora generates glitchy sounds from any audio mention
-    prompt = prompt.replace(/\b(background music|ambient music|soundtrack|cinematic score|music bed|upbeat track|gentle melody|soft music|lo-fi beat|trending audio|room tone|ambient sound|sound effect|natural room tone|audio cue)\b/gi, '');
+    if (!isSeedance) prompt = prompt.replace(/\b(background music|ambient music|soundtrack|cinematic score|music bed|upbeat track|gentle melody|soft music|lo-fi beat|trending audio|room tone|ambient sound|sound effect|natural room tone|audio cue)\b/gi, '');
 
     // Runway/Higgsfield need ultra-simple visual motion prompts with correct product behavior.
     let finalPrompt = prompt;

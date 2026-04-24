@@ -320,35 +320,88 @@ export async function renderScene(opts: {
     productPlacement = parts.join('. ') + '.';
   }
 
-  // Construct the Seedance prompt as NATURAL LANGUAGE.
-  // Seedance with generate_audio:true vocalizes ALL text in the prompt,
-  // so we cannot use brackets, labels, or meta-instructions — they get
-  // read aloud. Instead: brief visual setup sentence + quoted dialogue.
+  // ═══ SEEDANCE PROMPT — optimized for clear speech ═══
+  // Seedance with generate_audio:true vocalizes ALL text in the prompt.
+  // Rules from research:
+  //   1. Max 5-10 words per spoken line (longer = gibberish)
+  //   2. Emotion verb before each line ("earnestly says:", "smiles and says:")
+  //   3. Action beats between speech lines (gives model breathing room)
+  //   4. "Dialogue clean and prominent, no music" at end
+  //   5. Medium close-up for best lip-sync
+  //   6. No labels, no meta-instructions, no technical terms
+
+  // Clean the spoken script
+  const cleanDialogue = normalizeScript(scene.spokenScript).trim();
+
+  // Split dialogue into short chunks (max 10 words each)
+  const allSentences = cleanDialogue
+    .split(/(?<=[.!?])\s+/)
+    .filter(s => s.trim().length > 3);
+  const chunks: string[] = [];
+  for (const sent of allSentences) {
+    const words = sent.trim().split(/\s+/);
+    if (words.length <= 10) {
+      chunks.push(sent.trim());
+    } else {
+      // Split at natural breaks
+      let buf: string[] = [];
+      for (const w of words) {
+        buf.push(w);
+        if (buf.length >= 7 && (/[,;]$/.test(w) || buf.length >= 10)) {
+          let t = buf.join(' ');
+          if (!/[.!?]$/.test(t)) t += '.';
+          chunks.push(t);
+          buf = [];
+        }
+      }
+      if (buf.length > 0) {
+        let t = buf.join(' ');
+        if (!/[.!?]$/.test(t)) t += '.';
+        chunks.push(t);
+      }
+    }
+  }
+
+  // Build action-sequence prompt with interleaved dialogue
   const promptParts: string[] = [];
 
-  // Visual scene as ONE brief natural sentence (Seedance reads everything aloud,
-  // so keep this minimal — strip all labeled lines, take only the first 1-2 sentences)
-  const visualClean = (scene.visualPrompt || '')
-    .split('\n')
-    .filter(l => !/^(PRODUCT VISUAL|CAMERA|LIGHTING|STYLE|TECHNICAL|RULES|FORMAT|COMPOSITION|VISUAL|OPENING|CTA|HOOK)\s*:/i.test(l.trim()))
-    .join(' ')
-    .replace(/\b(UGC|9:16|16:9|4:5|1:1|480p|720p|iPhone|selfie mode|aspect ratio|vertical|horizontal)\b/gi, '')
-    .replace(/\s+/g, ' ').trim();
-  // Take only the first 2 sentences to keep the visual brief
-  const visualSentences = visualClean.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 3).slice(0, 2);
-  const visualBrief = visualSentences.join(' ').trim();
-  if (visualBrief) {
-    promptParts.push(visualBrief.endsWith('.') ? visualBrief : visualBrief + '.');
-  }
-  if (productPlacement) {
-    promptParts.push(productPlacement);
+  // Camera + subject setup (one natural sentence)
+  const productAction = scene.productInHand
+    ? (productDescription ? `holding a ${productDescription.split('.')[0].substring(0, 40).trim()}` : 'holding a product bottle')
+    : '';
+  promptParts.push(`UGC creator, iPhone, natural lighting, medium close-up. A young woman ${productAction} in a bright room.`);
+
+  // Emotion labels to cycle through for variety
+  const emotions = ['looks at camera and says:', 'earnestly says:', 'smiles and says:', 'nods and says:'];
+  // Action beats to insert between lines
+  const actions = [
+    'She holds up the product.',
+    'She shows the label to camera.',
+    'She touches her skin gently.',
+    'She applies product to her hand.',
+  ];
+
+  if (chunks.length === 0) {
+    promptParts.push('She looks at camera and says: "Check out this product. You need to try it."');
+  } else if (chunks.length === 1) {
+    promptParts.push(`She looks at camera and says: "${chunks[0]}"`);
+  } else {
+    // First line — hook
+    promptParts.push(`She looks at camera and says: "${chunks[0]}"`);
+    // Middle lines with action beats
+    for (let i = 1; i < chunks.length - 1 && i < 4; i++) {
+      if (scene.productVisible && i <= actions.length) {
+        promptParts.push(actions[i - 1]);
+      }
+      promptParts.push(`She ${emotions[i % emotions.length]} "${chunks[i]}"`);
+    }
+    // Last line — CTA
+    const last = chunks[chunks.length - 1];
+    promptParts.push(`She smiles and says: "${last}"`);
   }
 
-  // Spoken dialogue — just the raw quoted text, no labels, no instructions
-  const cleanDialogue = normalizeScript(scene.spokenScript).trim();
-  if (cleanDialogue) {
-    promptParts.push(`Speaking to camera: "${cleanDialogue}"`);
-  }
+  // Audio priority directive
+  promptParts.push('Dialogue clean and prominent, no music, no text on screen.');
 
   const seedancePrompt = promptParts.join(' ');
 
