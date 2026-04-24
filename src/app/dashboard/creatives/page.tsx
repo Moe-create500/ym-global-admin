@@ -2237,13 +2237,11 @@ function CreativesContent() {
       const dur = genConfig.videoDuration || 20;
       const isSeedance = resolvedEngine === 'seedance';
       const parts: string[] = [];
-      parts.push(`This is a ${dur}-second video. FAST-PACED speaking — people talk QUICKLY like an excited real TikTok creator, NOT slow, NOT calm, NOT meditative. High energy, rapid delivery, punchy sentences. Think fast-talking influencer selling something they love. Quick cuts between scenes. CTA in the last 2 seconds.`);
-      parts.push(`CRITICAL PACING: This is a ${dur}-SECOND video. Use the FULL ${dur} seconds. Do NOT rush. Hold each shot for 2-4 seconds. Slow, natural pacing. The CTA must appear in the LAST 3 seconds and must NOT be cut off.`);
       const presenterDesc = PRESENTER_DESCRIPTIONS[genConfig.avatarStyle || 'female_ugc'] || PRESENTER_DESCRIPTIONS.female_ugc;
-      parts.push(`RULES: Handheld iPhone camera, natural lighting. ${presenterDesc} NO background music, NO soundtrack — voice and room tone only. UGC native feel.`);
+      parts.push(`${dur}-second UGC video. FAST-PACED — she talks QUICKLY like an excited TikTok creator. Rapid delivery, punchy sentences, high energy. Handheld iPhone, natural lighting. ${presenterDesc} NO background music, NO soundtrack — voice and room tone only.`);
       if (productName) {
         const desc = (selectedProduct?.description || '').toString().substring(0, 400);
-        parts.push(`PRODUCT REFERENCE (do not show as a still photo — depict the product naturally within the scene): "${productName}"${desc ? ` — ${desc}` : ''}. Match brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
+        parts.push(`Product in scene: "${productName}"${desc ? ` — ${desc}` : ''}. Show naturally — held, applied, on counter. Match packaging shape and colors.`);
       }
       if (genConfig.creativeType && CREATIVE_TYPE_DIRECTIONS[genConfig.creativeType]) {
         parts.push(CREATIVE_TYPE_DIRECTIONS[genConfig.creativeType]);
@@ -2252,20 +2250,18 @@ function CreativesContent() {
         parts.push(HOOK_DIRECTIONS[genConfig.hookStyle]);
       }
       if (genConfig.funnelStage === 'bof') {
-        parts.push(`Funnel stage: Bottom of funnel — urgency, direct CTA, social proof, offer-driven.`);
+        parts.push(`Bottom of funnel — urgency, direct CTA, social proof, offer-driven.`);
       } else if (genConfig.funnelStage === 'mof') {
-        parts.push(`Funnel stage: Middle of funnel — build trust, show proof, educate.`);
+        parts.push(`Middle of funnel — build trust, show proof, educate.`);
       }
       if (genConfig.offer) {
         parts.push(`Offer: ${genConfig.offer}`);
       }
       if (genConfig.platformTarget === 'tiktok') {
-        parts.push('TikTok native: vertical framing, fast energy, trending feel.');
+        parts.push('TikTok native: vertical, fast energy, trending feel.');
       }
       if (pkg.visualDirection) parts.push(pkg.visualDirection);
-      if (pkg.script) parts.push(`Script (MUST fit in ${dur}s — speak slowly and naturally): ${pkg.script}`);
-      if (pkg.sceneStructure) parts.push(`Scene timing: ${pkg.sceneStructure}`);
-      parts.push('OPENING: The product image is provided as a reference. Within the first 0.5 seconds, transition into cinematic motion — a hand picking up the product, camera pulling back to reveal a scene, or the product rotating. Do NOT hold a static product shot. Immediately bring the scene to life with movement and energy.');
+      if (pkg.script) parts.push(`She says: "${pkg.script}"`);
       let prompt = parts.join('\n\n') || pkg.script || pkg.adCopy || '';
       // Strip all audio references — Sora generates glitchy sounds from any audio mention
       if (!isSeedance) prompt = prompt.replace(/\b(background music|ambient music|soundtrack|cinematic score|room tone|ambient sound|sound effect|natural room tone|music bed|audio cue|upbeat track)\b/gi, '');
@@ -2490,13 +2486,11 @@ function CreativesContent() {
     const dur = genConfig.videoDuration || 20;
     const isSeedance = resolvedEngine === 'seedance';
     const parts: string[] = [];
-    parts.push(`This is a ${dur}-second video. FAST-PACED speaking — people talk QUICKLY like an excited real TikTok creator, NOT slow, NOT calm, NOT meditative. High energy, rapid delivery, punchy sentences. Think fast-talking influencer selling something they love. Quick cuts between scenes. CTA in the last 2 seconds.`);
-    parts.push(`CRITICAL PACING: This is a ${dur}-SECOND video. Use the FULL ${dur} seconds. Hold each shot for 2-4 seconds. Slow, natural pacing. CTA in the LAST 3 seconds — must NOT be cut off.`);
     const presenterDesc2 = PRESENTER_DESCRIPTIONS[genConfig.avatarStyle || 'female_ugc'] || PRESENTER_DESCRIPTIONS.female_ugc;
-    parts.push(`RULES: Handheld iPhone camera, natural lighting, real environment. ${presenterDesc2} NO background music, NO soundtrack — voice and room tone only. UGC native feel.`);
+    parts.push(`${dur}-second UGC video. FAST-PACED — she talks QUICKLY like an excited TikTok creator. Rapid delivery, punchy sentences, high energy. Handheld iPhone, natural lighting. ${presenterDesc2} NO background music, NO soundtrack — voice and room tone only.`);
     if (productName) {
       const desc = (selectedProduct?.description || '').toString().substring(0, 400);
-      parts.push(`PRODUCT REFERENCE (depict naturally within the scene, NOT as a static product photo): "${productName}"${desc ? ` — ${desc}` : ''}. Match the brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
+      parts.push(`Product in scene: "${productName}"${desc ? ` — ${desc}` : ''}. Show naturally — held, applied, on counter. Match packaging shape and colors.`);
     }
     if (genConfig.creativeType && CREATIVE_TYPE_DIRECTIONS[genConfig.creativeType]) {
       parts.push(CREATIVE_TYPE_DIRECTIONS[genConfig.creativeType]);
@@ -2505,25 +2499,22 @@ function CreativesContent() {
       parts.push(HOOK_DIRECTIONS[genConfig.hookStyle]);
     }
     if (genConfig.funnelStage === 'bof') {
-      parts.push(`Funnel stage: Bottom of funnel — urgency, direct CTA, social proof, offer-driven.`);
+      parts.push(`Bottom of funnel — urgency, direct CTA, social proof, offer-driven.`);
     } else if (genConfig.funnelStage === 'mof') {
-      parts.push(`Funnel stage: Middle of funnel — build trust, show proof, educate.`);
+      parts.push(`Middle of funnel — build trust, show proof, educate.`);
     }
     if (genConfig.offer) {
       parts.push(`Offer: ${genConfig.offer}`);
     }
     if (genConfig.platformTarget === 'tiktok') {
-      parts.push('TikTok native: vertical framing, fast energy, trending feel.');
+      parts.push('TikTok native: vertical, fast energy, trending feel.');
     }
     if (pkg.visualDirection) parts.push(pkg.visualDirection);
-    if (pkg.script) parts.push(`Script (MUST fit in ${dur}s — speak slowly and naturally): ${pkg.script}`);
-    if (pkg.sceneStructure) parts.push(`Scene timing (${dur}s total): ${pkg.sceneStructure}`);
-    if (pkg.brollDirection) parts.push(`B-roll (hold each shot 2-4s): ${pkg.brollDirection}`);
+    if (pkg.script) parts.push(`She says: "${pkg.script}"`);
     if (!isVideo) {
       if (pkg.visualComposition) parts.push(pkg.visualComposition);
       if (pkg.headline) parts.push(`Headline: ${pkg.headline}`);
     }
-    parts.push('OPENING: The product image is provided as a reference. Within the first 0.5 seconds, transition into cinematic motion — a hand picking up the product, camera pulling back to reveal a scene, or the product rotating. Do NOT hold a static product shot. Immediately bring the scene to life with movement and energy.');
     let prompt = parts.join('\n\n') || pkg.script || pkg.adCopy || '';
     if (!isSeedance) prompt = prompt.replace(/\b(background music|ambient music|soundtrack|cinematic score|music bed|upbeat track|gentle melody|soft music|lo-fi beat|trending audio|room tone|ambient sound|sound effect|natural room tone|audio cue)\b/gi, '');
 
