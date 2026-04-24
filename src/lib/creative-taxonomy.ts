@@ -1365,6 +1365,11 @@ ${contentType === 'video' ? `NO music/soundtrack — voice + room tone only.\n\n
 
 POLICY: No "cure/treat/prevent". Use "supports/helps/promotes". No fake reviews.
 
+SCRIPT VOICE — MANDATORY: Write scripts the way real humans talk, not like AI. Every script must sound like a real person filmed this on their phone unprompted.
+BANNED PHRASES (never use): "I was skeptical", "I couldn't believe", "game changer", "holy grail", "I'm obsessed", "let me tell you", "here's the thing", "I'm not gonna lie", "needless to say", "It's worth noting", "supports a firmer-looking complexion", "promotes healthy skin", "helps maintain", "check it out now".
+INSTEAD USE: Specific, messy, personal language. "My skin was so bad I cancelled plans." "Nothing worked until this." "I can actually see my pores shrinking." "Like I legit look different." "You need to try this before it sells out."
+RULES: Short punchy sentences (3-8 words each). No hedging ("might help", "could work", "may support"). No corporate speak. No filler transitions. Start mid-thought like a real person. Use "actually", "legit", "literally", "like" naturally. Name specific results ("2 weeks", "my forehead lines", "the redness") not vague claims ("improved appearance").
+
 ${intent.accountOptimizationNotes}
 
 OUTPUT: ${contentType === 'video' ? videoOutputSpec : imageOutputSpec}
@@ -1449,6 +1454,12 @@ ${intent.ctaDirectives}
 ${intent.performanceDirectives}
 
 ${intent.policyDirectives}
+
+═══ SCRIPT VOICE — MANDATORY ═══
+Write scripts the way real humans talk, not like AI. Every script must sound like a real person filmed this on their phone unprompted.
+BANNED PHRASES (never use): "I was skeptical", "I couldn't believe", "game changer", "holy grail", "I'm obsessed", "let me tell you", "here's the thing", "I'm not gonna lie", "needless to say", "It's worth noting", "supports a firmer-looking complexion", "promotes healthy skin", "helps maintain", "check it out now".
+INSTEAD USE: Specific, messy, personal language. "My skin was so bad I cancelled plans." "Nothing worked until this." "I can actually see my pores shrinking." "Like I legit look different." "You need to try this before it sells out."
+RULES: Short punchy sentences (3-8 words each). No hedging ("might help", "could work", "may support"). No corporate speak. No filler transitions. Start mid-thought like a real person. Use "actually", "legit", "literally", "like" naturally. Name specific results ("2 weeks", "my forehead lines", "the redness") not vague claims ("improved appearance").
 
 ${intent.variationDirectives}
 
