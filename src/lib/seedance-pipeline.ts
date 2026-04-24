@@ -320,90 +320,24 @@ export async function renderScene(opts: {
     productPlacement = parts.join('. ') + '.';
   }
 
-  // ═══ SEEDANCE PROMPT — optimized for clear speech ═══
-  // Seedance with generate_audio:true vocalizes ALL text in the prompt.
-  // Rules from research:
-  //   1. Max 5-10 words per spoken line (longer = gibberish)
-  //   2. Emotion verb before each line ("earnestly says:", "smiles and says:")
-  //   3. Action beats between speech lines (gives model breathing room)
-  //   4. "Dialogue clean and prominent, no music" at end
-  //   5. Medium close-up for best lip-sync
-  //   6. No labels, no meta-instructions, no technical terms
-
-  // Clean the spoken script
-  const cleanDialogue = normalizeScript(scene.spokenScript).trim();
-
-  // Split dialogue into short chunks (max 10 words each)
-  const allSentences = cleanDialogue
-    .split(/(?<=[.!?])\s+/)
-    .filter(s => s.trim().length > 3);
-  const chunks: string[] = [];
-  for (const sent of allSentences) {
-    const words = sent.trim().split(/\s+/);
-    if (words.length <= 10) {
-      chunks.push(sent.trim());
-    } else {
-      // Split at natural breaks
-      let buf: string[] = [];
-      for (const w of words) {
-        buf.push(w);
-        if (buf.length >= 7 && (/[,;]$/.test(w) || buf.length >= 10)) {
-          let t = buf.join(' ');
-          if (!/[.!?]$/.test(t)) t += '.';
-          chunks.push(t);
-          buf = [];
-        }
-      }
-      if (buf.length > 0) {
-        let t = buf.join(' ');
-        if (!/[.!?]$/.test(t)) t += '.';
-        chunks.push(t);
-      }
-    }
-  }
-
-  // Build action-sequence prompt with interleaved dialogue
+  // Construct the Seedance prompt: visual context + product placement + spoken dialogue
+  // This is the original format that produced the best audio results.
   const promptParts: string[] = [];
 
-  // Camera + subject setup (one natural sentence)
-  const productAction = scene.productInHand
-    ? (productDescription ? `holding a ${productDescription.split('.')[0].substring(0, 40).trim()}` : 'holding a product bottle')
-    : '';
-  promptParts.push(`UGC creator, iPhone, natural lighting, medium close-up. A young woman ${productAction} in a bright room. She speaks quickly and energetically, fast-paced delivery.`);
-
-  // Emotion labels to cycle through for variety
-  const emotions = ['looks at camera and says:', 'earnestly says:', 'smiles and says:', 'nods and says:'];
-  // Action beats to insert between lines
-  const actions = [
-    'She holds up the product.',
-    'She shows the label to camera.',
-    'She touches her skin gently.',
-    'She applies product to her hand.',
-  ];
-
-  if (chunks.length === 0) {
-    promptParts.push('She looks at camera and says: "Check out this product. You need to try it."');
-  } else if (chunks.length === 1) {
-    promptParts.push(`She looks at camera and says: "${chunks[0]}"`);
-  } else {
-    // First line — hook
-    promptParts.push(`She looks at camera and says: "${chunks[0]}"`);
-    // Middle lines with action beats
-    for (let i = 1; i < chunks.length - 1 && i < 4; i++) {
-      if (scene.productVisible && i <= actions.length) {
-        promptParts.push(actions[i - 1]);
-      }
-      promptParts.push(`She ${emotions[i % emotions.length]} "${chunks[i]}"`);
-    }
-    // Last line — CTA
-    const last = chunks[chunks.length - 1];
-    promptParts.push(`She smiles and says: "${last}"`);
+  // Visual scene direction
+  if (scene.visualPrompt) {
+    promptParts.push(scene.visualPrompt);
   }
 
-  // Audio priority directive
-  promptParts.push('Dialogue clean and prominent, no music, no text on screen.');
+  // Product placement (part of visual, not dialogue)
+  if (productPlacement) {
+    promptParts.push(productPlacement);
+  }
 
-  const seedancePrompt = promptParts.join(' ');
+  // Spoken dialogue — passed through as-is from the frontend prompt
+  promptParts.push(scene.spokenScript);
+
+  const seedancePrompt = promptParts.join('\n\n');
 
   console.log(`[SEEDANCE-PIPELINE] Rendering scene ${scene.sceneIndex}: dur=${scene.duration}s, product=${scene.productVisible}, prompt=${seedancePrompt.length} chars`);
   console.log(`[SEEDANCE-PIPELINE] Visual: "${scene.visualPrompt.substring(0, 80)}..."`);
