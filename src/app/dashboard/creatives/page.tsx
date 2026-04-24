@@ -2238,7 +2238,7 @@ function CreativesContent() {
       parts.push(`This is a ${dur}-second video. FAST-PACED speaking — people talk QUICKLY like an excited real TikTok creator, NOT slow, NOT calm, NOT meditative. High energy, rapid delivery, punchy sentences. Think fast-talking influencer selling something they love. Quick cuts between scenes. CTA in the last 2 seconds.`);
       parts.push(`CRITICAL PACING: This is a ${dur}-SECOND video. Use the FULL ${dur} seconds. Do NOT rush. Hold each shot for 2-4 seconds. Slow, natural pacing. The CTA must appear in the LAST 3 seconds and must NOT be cut off.`);
       const presenterDesc = PRESENTER_DESCRIPTIONS[genConfig.avatarStyle || 'female_ugc'] || PRESENTER_DESCRIPTIONS.female_ugc;
-      parts.push(`RULES: Handheld iPhone camera, natural lighting. ${presenterDesc} UGC native feel.`);
+      parts.push(`RULES: Handheld iPhone camera, natural lighting. ${presenterDesc} NO background music, NO soundtrack — voice and room tone only. UGC native feel.`);
       if (productName) {
         const desc = (selectedProduct?.description || '').toString().substring(0, 400);
         parts.push(`PRODUCT REFERENCE (do not show as a still photo — depict the product naturally within the scene): "${productName}"${desc ? ` — ${desc}` : ''}. Match brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
