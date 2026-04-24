@@ -31,7 +31,7 @@ export async function createTextToVideo(
   options: {
     duration?: number;  // 4-15 seconds
     aspectRatio?: string;
-    resolution?: '480p' | '720p' | '1080p';
+    resolution?: '480p' | '720p';
     generateAudio?: boolean;
     seed?: number;
   } = {}
@@ -99,7 +99,7 @@ export async function createImageToVideo(
   options: {
     duration?: number;
     aspectRatio?: string;
-    resolution?: '480p' | '720p' | '1080p';
+    resolution?: '480p' | '720p';
     generateAudio?: boolean;
     endImageUrl?: string;  // optional end frame
     seed?: number;

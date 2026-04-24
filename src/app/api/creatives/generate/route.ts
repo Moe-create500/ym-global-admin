@@ -345,7 +345,7 @@ export async function POST(req: NextRequest) {
 
       const seedDuration = Math.max(4, Math.min(15, parseInt(duration) || 8));
       const seedAspect = dimension === '16:9' ? '16:9' : dimension === '1:1' ? '1:1' : '9:16';
-      const seedRes: '480p' | '720p' | '1080p' = (resolution === '480p' || resolution === '720p' || resolution === '1080p') ? resolution : '720p';
+      const seedRes: '480p' | '720p' = (resolution === '480p' || resolution === '720p') ? resolution : '720p';
 
       // Resolve product image for I2V mode
       // Use ANY available image: imageUrls[0], resolvedCover, or coverImageUrl

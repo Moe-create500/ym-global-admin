@@ -129,7 +129,7 @@ interface GeneratorConfig {
   creativesPerConcept: number; // creatives per concept
   // Engine + content
   engine: 'sora' | 'runway' | 'higgsfield' | 'veo' | 'seedance' | 'nano-banana' | 'stability' | 'ideogram' | 'auto';
-  seedanceQuality: '480p' | '720p' | '1080p';
+  seedanceQuality: '480p' | '720p';
   genMode: 'new' | 'existing' | 'full_funnel' | 'clone_ad';
   contentMix: 'video' | 'image' | 'mixed' | 'full_funnel';
   funnelStructure: 'tof' | 'mof' | 'bof' | 'full';
@@ -4212,11 +4212,10 @@ function CreativesContent() {
                   {genConfig.engine === 'seedance' && genConfig.contentType === 'video' && (
                     <div className="bg-slate-900 border border-emerald-900/50 rounded-xl p-4">
                       <label className="text-[10px] text-emerald-400 uppercase font-bold mb-2 block">Video Quality</label>
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="grid grid-cols-2 gap-2">
                         {([
                           { key: '480p' as const, label: '480p', desc: 'Fast + cheap' },
-                          { key: '720p' as const, label: '720p', desc: 'Balanced' },
-                          { key: '1080p' as const, label: '1080p', desc: 'Best speech' },
+                          { key: '720p' as const, label: '720p', desc: 'Best quality' },
                         ]).map(q => (
                           <button key={q.key} onClick={() => setGenConfig(c => ({ ...c, seedanceQuality: q.key }))}
                             className={`px-2 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
