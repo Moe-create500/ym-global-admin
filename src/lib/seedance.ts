@@ -31,7 +31,7 @@ export async function createTextToVideo(
   options: {
     duration?: number;  // 4-15 seconds
     aspectRatio?: string;
-    resolution?: '480p' | '720p';
+    resolution?: '480p' | '720p' | '1080p';
     generateAudio?: boolean;
     seed?: number;
   } = {}
@@ -51,7 +51,7 @@ export async function createTextToVideo(
 
   const duration = Math.max(4, Math.min(15, options.duration || 8));
 
-  console.log(`[SEEDANCE] Text-to-video: dur=${duration}s, aspect=${options.aspectRatio || '9:16'}, audio=OFF (ElevenLabs only), prompt=${prompt.substring(0, 80)}...`);
+  console.log(`[SEEDANCE] Text-to-video: dur=${duration}s, res=${options.resolution || '720p'}, aspect=${options.aspectRatio || '9:16'}, prompt=${prompt.substring(0, 80)}...`);
 
   let res: Response;
   try {
@@ -65,7 +65,7 @@ export async function createTextToVideo(
         prompt: prompt.substring(0, 5000),
         duration: String(duration),
         aspect_ratio: arMap[options.aspectRatio || '9:16'] || '9:16',
-        resolution: options.resolution || '480p',
+        resolution: options.resolution || '720p',
         generate_audio: true,
         ...(options.seed ? { seed: options.seed } : {}),
       }),
@@ -99,7 +99,7 @@ export async function createImageToVideo(
   options: {
     duration?: number;
     aspectRatio?: string;
-    resolution?: '480p' | '720p';
+    resolution?: '480p' | '720p' | '1080p';
     generateAudio?: boolean;
     endImageUrl?: string;  // optional end frame
     seed?: number;
@@ -120,7 +120,7 @@ export async function createImageToVideo(
 
   const duration = Math.max(4, Math.min(15, options.duration || 8));
 
-  console.log(`[SEEDANCE] Image-to-video: dur=${duration}s, image=${imageUrl.substring(0, 60)}..., prompt=${prompt.substring(0, 80)}...`);
+  console.log(`[SEEDANCE] Image-to-video: dur=${duration}s, res=${options.resolution || '720p'}, image=${imageUrl.substring(0, 60)}..., prompt=${prompt.substring(0, 80)}...`);
 
   let res: Response;
   try {
@@ -135,7 +135,7 @@ export async function createImageToVideo(
         image_url: imageUrl,
         duration: String(duration),
         aspect_ratio: arMap[options.aspectRatio || '9:16'] || '9:16',
-        resolution: options.resolution || '480p',
+        resolution: options.resolution || '720p',
         generate_audio: true,
         ...(options.endImageUrl ? { end_image_url: options.endImageUrl } : {}),
         ...(options.seed ? { seed: options.seed } : {}),

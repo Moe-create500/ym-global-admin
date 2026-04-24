@@ -305,6 +305,7 @@ export async function renderScene(opts: {
   productImageUrl: string | null;
   productDescription?: string;
   aspectRatio: string;
+  resolution?: '480p' | '720p' | '1080p';
 }): Promise<SeedanceJob> {
   const { scene, productImageUrl, productDescription, aspectRatio } = opts;
 
@@ -357,16 +358,19 @@ export async function renderScene(opts: {
   console.log(`[SEEDANCE-PIPELINE] Product visible=${scene.productVisible}, inHand=${scene.productInHand}, nearFace=${scene.productNearFace}`);
 
   // Use I2V if product image available and scene has product visible, else T2V
+  const seedanceRes = opts.resolution || '720p';
   if (productImageUrl && scene.productVisible) {
     const result = await seedanceI2V(seedancePrompt, productImageUrl, {
       duration: scene.duration,
       aspectRatio,
+      resolution: seedanceRes,
     });
     return { sceneIndex: scene.sceneIndex, requestId: result.requestId, model: result.model };
   } else {
     const result = await seedanceT2V(seedancePrompt, {
       duration: scene.duration,
       aspectRatio,
+      resolution: seedanceRes,
     });
     return { sceneIndex: scene.sceneIndex, requestId: result.requestId, model: result.model };
   }

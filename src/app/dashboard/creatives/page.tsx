@@ -129,6 +129,7 @@ interface GeneratorConfig {
   creativesPerConcept: number; // creatives per concept
   // Engine + content
   engine: 'sora' | 'runway' | 'higgsfield' | 'veo' | 'seedance' | 'nano-banana' | 'stability' | 'ideogram' | 'auto';
+  seedanceQuality: '480p' | '720p' | '1080p';
   genMode: 'new' | 'existing' | 'full_funnel' | 'clone_ad';
   contentMix: 'video' | 'image' | 'mixed' | 'full_funnel';
   funnelStructure: 'tof' | 'mof' | 'bof' | 'full';
@@ -574,6 +575,7 @@ function CreativesContent() {
     hookStyle: 'curiosity', avatarStyle: 'female_ugc', generationGoal: 'new_concept',
     platformTarget: 'meta', offer: '', baseAdId: '',
     dimension: '9:16', videoDuration: 15,
+    seedanceQuality: '720p',
   };
   const [genConfig, setGenConfig] = useState<GeneratorConfig>(() => {
     if (typeof window === 'undefined') return defaultGenConfig;
@@ -2242,9 +2244,10 @@ function CreativesContent() {
       const dim = genConfig.dimension === 'auto'
         ? (genConfig.platformTarget === 'tiktok' ? '9:16' : '4:5')
         : genConfig.dimension;
-      const videoResolution =
+      let videoResolution =
         dim === '9:16' || dim === '4:5' ? '720p-vertical' :
         dim === '16:9' ? '720p' : '720p-vertical';
+      if (resolvedEngine === 'seedance') videoResolution = genConfig.seedanceQuality || '720p';
       const videoDuration = String(dur);
 
       // Authoritative cover image = the one the user explicitly selected.
@@ -2508,9 +2511,10 @@ function CreativesContent() {
     const dim = genConfig.dimension === 'auto'
       ? (genConfig.platformTarget === 'tiktok' ? '9:16' : '4:5')
       : genConfig.dimension;
-    const videoRes =
+    let videoRes =
       dim === '9:16' || dim === '4:5' ? '720p-vertical' :
       dim === '16:9' ? '720p' : '720p-vertical';
+    if (resolvedEngine === 'seedance') videoRes = genConfig.seedanceQuality || '720p';
 
     // Authoritative cover = user's explicit selection; fall back to first valid image only if unset.
     const chosenCover = genConfig.coverImageUrl || productImageUrls[0] || '';
@@ -4203,6 +4207,27 @@ function CreativesContent() {
                       </div>
                     </div>
                   </div>
+
+                  {/* ── SEEDANCE QUALITY — only when Seedance engine selected ── */}
+                  {genConfig.engine === 'seedance' && genConfig.contentType === 'video' && (
+                    <div className="bg-slate-900 border border-emerald-900/50 rounded-xl p-4">
+                      <label className="text-[10px] text-emerald-400 uppercase font-bold mb-2 block">Video Quality</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {([
+                          { key: '480p' as const, label: '480p', desc: 'Fast + cheap' },
+                          { key: '720p' as const, label: '720p', desc: 'Balanced' },
+                          { key: '1080p' as const, label: '1080p', desc: 'Best speech' },
+                        ]).map(q => (
+                          <button key={q.key} onClick={() => setGenConfig(c => ({ ...c, seedanceQuality: q.key }))}
+                            className={`px-2 py-2.5 rounded-lg text-xs font-semibold border transition-colors text-center ${
+                              genConfig.seedanceQuality === q.key ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
+                            }`}>
+                            {q.label}<br /><span className="text-[8px] font-normal opacity-70">{q.desc}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* ── HIGGSFIELD STYLE PRESETS — only when Higgsfield engine selected ── */}
                   {genConfig.engine === 'higgsfield' && (

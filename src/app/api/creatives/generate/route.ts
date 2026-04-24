@@ -345,6 +345,7 @@ export async function POST(req: NextRequest) {
 
       const seedDuration = Math.max(4, Math.min(15, parseInt(duration) || 8));
       const seedAspect = dimension === '16:9' ? '16:9' : dimension === '1:1' ? '1:1' : '9:16';
+      const seedRes: '480p' | '720p' | '1080p' = (resolution === '480p' || resolution === '720p' || resolution === '1080p') ? resolution : '720p';
 
       // Resolve product image for I2V mode
       // Use ANY available image: imageUrls[0], resolvedCover, or coverImageUrl
@@ -428,6 +429,7 @@ export async function POST(req: NextRequest) {
         productImageUrl: resolvedImageUrl,
         productDescription: productDesc,
         aspectRatio: seedAspect,
+        resolution: seedRes,
       });
 
       db.prepare(`
@@ -453,7 +455,7 @@ export async function POST(req: NextRequest) {
         );
       } catch {}
 
-      logUsage({ storeId, provider: 'seedance', operationType: 'video', units: seedDuration, jobId: id, metadata: { tier: hasProductImage ? 'i2v' : 't2v', resolution: '480p' } });
+      logUsage({ storeId, provider: 'seedance', operationType: 'video', units: seedDuration, jobId: id, metadata: { tier: hasProductImage ? 'i2v' : 't2v', resolution: seedRes } });
       return jsonSuccess({ id, engine: 'seedance', requestId: job.requestId, model: job.model, tier: hasProductImage ? 'image-to-video' : 'text-to-video' });
 
     } else {
