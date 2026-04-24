@@ -1183,7 +1183,7 @@ export const FORMAT_REALISM: Record<string, FormatRealism> = {
     authenticityMarkers: ['Instant recognition', 'Platform-native format', 'Organic product discovery', 'Feels like real content, not paid ad'],
   },
   product_stack: {
-    realism: 'high', polish: 'medium_high', rawness: 'medium', adIntensity: 'high',
+    realism: 'high', polish: 'medium_high', rawness: 'medium', adIntensity: 'medium_high',
     toneDirective: 'Excited, deal-focused energy. Like someone who just discovered an incredible deal and has to share it. Short, punchy, offer-driven.',
     pacingDirective: 'Fast and punchy. Show the product stack immediately. Announce the offer within 3 seconds. The entire video is about the deal — no buildup needed.',
     scriptDirective: 'Ultra-short offer script. 2-3 sentences max. "Buy one, get one free!" / "Stock up while you can." / "Use code X for Y% off." No storytelling — just the deal.',
