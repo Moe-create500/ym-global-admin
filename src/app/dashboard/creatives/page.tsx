@@ -4383,9 +4383,8 @@ function CreativesContent() {
                         {(() => {
                           const norm = (s: string) => s.toLowerCase().replace(/[™®©+\-–—.,|]/g, ' ').replace(/\s+/g, ' ').trim();
                           const activeStore = stores.find(s => s.id === storeFilter);
-                          const isAdminUser = userRole === 'admin' || userRole === 'data_corrector';
-                          // Admin: see ALL products. Client: on-brand filter (store name in product title).
-                          const brandName = (!isAdminUser && activeStore?.name) ? norm(activeStore.name) : '';
+                          // Always filter to on-brand products (store name in product title)
+                          const brandName = activeStore?.name ? norm(activeStore.name) : '';
                           const allProducts = brandName
                             ? products.filter(p => norm(String(p.title || '')).includes(brandName))
                             : products;
