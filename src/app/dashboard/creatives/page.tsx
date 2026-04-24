@@ -261,6 +261,38 @@ const AVATAR_STYLES = [
   { key: 'faceless_product_only', label: 'Faceless / Product Only' },
 ] as const;
 
+// Seedance-native directions for each config option
+const CREATIVE_TYPE_DIRECTIONS: Record<string, string> = {
+  b_roll: 'B-roll montage: show the product from multiple angles, lifestyle shots, textures, and close-ups. Minimal face time.',
+  product_demo: 'Product demonstration: person shows how to use the product step by step — opening, applying, showing results.',
+  before_after: 'Before and after: show the problem first, then the transformation after using the product.',
+  problem_solution: 'Problem to solution: start with frustration or pain point, then reveal the product as the fix.',
+  founder_story: 'Founder story: person speaks passionately as if they created this product, sharing the why behind it.',
+  social_proof: 'Social proof: person references reviews, results, other people\'s experiences with the product.',
+  lifestyle: 'Lifestyle: person uses the product naturally in their daily routine, casual and aspirational setting.',
+  hook_viral: 'Viral hook: dramatic opening — unexpected action, reaction, or visual that grabs attention instantly.',
+  educational: 'Educational: person explains how the product works, ingredients or mechanism, in a teaching tone.',
+  podcast_style: 'Podcast style: person sits and talks directly to camera, casual conversational delivery, like a podcast clip.',
+  routine: 'Routine: person walks through their daily routine incorporating the product naturally.',
+  comparison: 'Comparison: person compares this product to alternatives, showing why this one is better.',
+  myth_busting: 'Myth busting: person calls out a common misconception, then reveals the truth using this product.',
+  pov_relatable: 'POV relatable: first-person perspective, person shares a relatable struggle and how this product helped.',
+};
+const HOOK_DIRECTIONS: Record<string, string> = {
+  pattern_interrupt: 'HOOK: Open with something unexpected — a surprising statement, dramatic gesture, or pattern-breaking visual.',
+  emotional: 'HOOK: Open with raw emotion — visible frustration, relief, or joy. Make the viewer feel something immediately.',
+  authority: 'HOOK: Open with confidence and authority — direct eye contact, bold claim, expert energy.',
+  relatable: 'HOOK: Open with a relatable moment — something the viewer has experienced, like struggling with a common problem.',
+};
+const PRESENTER_DESCRIPTIONS: Record<string, string> = {
+  female_ugc: 'Young woman, casual style, relatable.',
+  male_ugc: 'Young man, casual style, relatable.',
+  creator_influencer: 'Confident influencer, polished but authentic, ring light energy.',
+  expert_authority: 'Professional expert, clean background, authoritative presence.',
+  podcast_host: 'Podcast host, seated at desk, microphone visible, conversational.',
+  faceless_product_only: 'Faceless — hands only, product close-ups, no person\'s face visible.',
+};
+
 const GENERATION_GOALS = [
   { key: 'new_concept', label: 'New Concept' },
   { key: 'generate_variations', label: 'Generate Variations' },
@@ -2205,19 +2237,17 @@ function CreativesContent() {
       const parts: string[] = [];
       parts.push(`This is a ${dur}-second video. FAST-PACED speaking — people talk QUICKLY like an excited real TikTok creator, NOT slow, NOT calm, NOT meditative. High energy, rapid delivery, punchy sentences. Think fast-talking influencer selling something they love. Quick cuts between scenes. CTA in the last 2 seconds.`);
       parts.push(`CRITICAL PACING: This is a ${dur}-SECOND video. Use the FULL ${dur} seconds. Do NOT rush. Hold each shot for 2-4 seconds. Slow, natural pacing. The CTA must appear in the LAST 3 seconds and must NOT be cut off.`);
-      parts.push('RULES: Handheld iPhone camera, natural lighting. UGC native feel.');
+      const presenterDesc = PRESENTER_DESCRIPTIONS[genConfig.avatarStyle || 'female_ugc'] || PRESENTER_DESCRIPTIONS.female_ugc;
+      parts.push(`RULES: Handheld iPhone camera, natural lighting. ${presenterDesc} UGC native feel.`);
       if (productName) {
         const desc = (selectedProduct?.description || '').toString().substring(0, 400);
         parts.push(`PRODUCT REFERENCE (do not show as a still photo — depict the product naturally within the scene): "${productName}"${desc ? ` — ${desc}` : ''}. Match brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
       }
-      if (genConfig.creativeType && genConfig.creativeType !== 'testimonial') {
-        parts.push(`Creative style: ${genConfig.creativeType.replace(/_/g, ' ')}`);
+      if (genConfig.creativeType && CREATIVE_TYPE_DIRECTIONS[genConfig.creativeType]) {
+        parts.push(CREATIVE_TYPE_DIRECTIONS[genConfig.creativeType]);
       }
-      if (genConfig.hookStyle && genConfig.hookStyle !== 'curiosity') {
-        parts.push(`Hook approach: ${genConfig.hookStyle.replace(/_/g, ' ')}`);
-      }
-      if (genConfig.avatarStyle && genConfig.avatarStyle !== 'female_ugc') {
-        parts.push(`Presenter: ${genConfig.avatarStyle.replace(/_/g, ' ')}`);
+      if (genConfig.hookStyle && HOOK_DIRECTIONS[genConfig.hookStyle]) {
+        parts.push(HOOK_DIRECTIONS[genConfig.hookStyle]);
       }
       if (genConfig.funnelStage === 'bof') {
         parts.push(`Funnel stage: Bottom of funnel — urgency, direct CTA, social proof, offer-driven.`);
@@ -2226,6 +2256,9 @@ function CreativesContent() {
       }
       if (genConfig.offer) {
         parts.push(`Offer: ${genConfig.offer}`);
+      }
+      if (genConfig.platformTarget === 'tiktok') {
+        parts.push('TikTok native: vertical framing, fast energy, trending feel.');
       }
       if (pkg.visualDirection) parts.push(pkg.visualDirection);
       if (pkg.script) parts.push(`Script (MUST fit in ${dur}s — speak slowly and naturally): ${pkg.script}`);
@@ -2457,16 +2490,33 @@ function CreativesContent() {
     const parts: string[] = [];
     parts.push(`This is a ${dur}-second video. FAST-PACED speaking — people talk QUICKLY like an excited real TikTok creator, NOT slow, NOT calm, NOT meditative. High energy, rapid delivery, punchy sentences. Think fast-talking influencer selling something they love. Quick cuts between scenes. CTA in the last 2 seconds.`);
     parts.push(`CRITICAL PACING: This is a ${dur}-SECOND video. Use the FULL ${dur} seconds. Hold each shot for 2-4 seconds. Slow, natural pacing. CTA in the LAST 3 seconds — must NOT be cut off.`);
-    parts.push('RULES: Handheld iPhone camera, natural lighting, real environment. NO background music, NO soundtrack — voice and room tone only. UGC native feel.');
+    const presenterDesc2 = PRESENTER_DESCRIPTIONS[genConfig.avatarStyle || 'female_ugc'] || PRESENTER_DESCRIPTIONS.female_ugc;
+    parts.push(`RULES: Handheld iPhone camera, natural lighting, real environment. ${presenterDesc2} NO background music, NO soundtrack — voice and room tone only. UGC native feel.`);
     if (productName) {
       const desc = (selectedProduct?.description || '').toString().substring(0, 400);
       parts.push(`PRODUCT REFERENCE (depict naturally within the scene, NOT as a static product photo): "${productName}"${desc ? ` — ${desc}` : ''}. Match the brand name, packaging shape, and color palette. Use medium/wide shots for branding; avoid extreme label close-ups (AI mis-renders fine text).`);
+    }
+    if (genConfig.creativeType && CREATIVE_TYPE_DIRECTIONS[genConfig.creativeType]) {
+      parts.push(CREATIVE_TYPE_DIRECTIONS[genConfig.creativeType]);
+    }
+    if (genConfig.hookStyle && HOOK_DIRECTIONS[genConfig.hookStyle]) {
+      parts.push(HOOK_DIRECTIONS[genConfig.hookStyle]);
+    }
+    if (genConfig.funnelStage === 'bof') {
+      parts.push(`Funnel stage: Bottom of funnel — urgency, direct CTA, social proof, offer-driven.`);
+    } else if (genConfig.funnelStage === 'mof') {
+      parts.push(`Funnel stage: Middle of funnel — build trust, show proof, educate.`);
+    }
+    if (genConfig.offer) {
+      parts.push(`Offer: ${genConfig.offer}`);
+    }
+    if (genConfig.platformTarget === 'tiktok') {
+      parts.push('TikTok native: vertical framing, fast energy, trending feel.');
     }
     if (pkg.visualDirection) parts.push(pkg.visualDirection);
     if (pkg.script) parts.push(`Script (MUST fit in ${dur}s — speak slowly and naturally): ${pkg.script}`);
     if (pkg.sceneStructure) parts.push(`Scene timing (${dur}s total): ${pkg.sceneStructure}`);
     if (pkg.brollDirection) parts.push(`B-roll (hold each shot 2-4s): ${pkg.brollDirection}`);
-    if (pkg.avatarSuggestion || (pkg as any).presenterBehavior) parts.push(`Presenter: ${(pkg as any).presenterBehavior || pkg.avatarSuggestion}`);
     if (!isVideo) {
       if (pkg.visualComposition) parts.push(pkg.visualComposition);
       if (pkg.headline) parts.push(`Headline: ${pkg.headline}`);
