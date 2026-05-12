@@ -1,6 +1,6 @@
 import { getDb } from '@/lib/db';
 import { getClientBilling, getClientOrders } from '@/lib/shipsourced';
-import { getAdInsights, getAdCreatives, getBillingCharges, getFundingSource, getAccountPaymentMethods, getVideoSourceUrls, getPages } from '@/lib/facebook';
+import { getAdInsights, getAdCreatives, getBillingCharges, getAccountPaymentMethods, getVideoSourceUrls, getPages } from '@/lib/facebook';
 import crypto from 'crypto';
 
 /**
@@ -631,22 +631,10 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
           }
         }
 
-        // If there's only ONE payment method on the account, we know all charges used it
-        let singleCard = paymentMethods.length === 1 && paymentMethods[0].card_last4
-          ? { display_string: paymentMethods[0].display_string, card_last4: paymentMethods[0].card_last4 }
-          : null;
-
-        // Fallback: if getAccountPaymentMethods returned empty, use getFundingSource (current card)
-        // This is better than no card at all for single-card accounts
-        if (paymentMethods.length === 0) {
-          const fundingSource = await getFundingSource(profile.ad_account_id, profile.access_token);
-          if (fundingSource?.display_string) {
-            const cardMatch = fundingSource.display_string.match(/(\d{4})\s*$/);
-            if (cardMatch) {
-              singleCard = { display_string: fundingSource.display_string, card_last4: cardMatch[1] };
-            }
-          }
-        }
+        // DO NOT use singleCard fallback — FB may try one card (declines) then charge
+        // another, but the Activities API reports the original funding_source_id (the
+        // declined card). Only assign card when we have an explicit funding_source_id
+        // match. CSV import from FB Invoices corrects card attribution authoritatively.
 
         for (const charge of charges) {
           // Skip declined/non-paid charges — only import successful transactions
@@ -658,21 +646,16 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
           const existingPayment = db.prepare('SELECT id FROM ad_payments WHERE transaction_id = ?').get(charge.transaction_id);
           if (existingPayment) continue;
 
-          // Try to determine which card was used for this specific charge:
-          // 1. If the charge has a funding_source_id, match it to a payment method
-          // 2. If only one payment method exists on the account, use that
-          // 3. Otherwise, leave card as null (unknown) — CSV import can fill it later
+          // Only assign card when funding_source_id explicitly matches a known payment method.
+          // Leave card blank otherwise — CSV import will fill in the correct card.
           let chargePaymentMethod = '';
           let chargeCardLast4 = '';
           if (charge.funding_source_id && pmById.has(charge.funding_source_id)) {
             const pm = pmById.get(charge.funding_source_id)!;
             chargePaymentMethod = pm.display_string;
             chargeCardLast4 = pm.card_last4;
-          } else if (singleCard) {
-            chargePaymentMethod = singleCard.display_string;
-            chargeCardLast4 = singleCard.card_last4;
           }
-          // If neither condition met, card_last4 stays empty — much better than wrong card
+          // Card stays empty if no match — better than attributing to wrong card
 
           db.prepare(`
             INSERT INTO ad_payments (id, store_id, platform, date, transaction_id, payment_method, card_last4, amount_cents, currency, status, account_id)

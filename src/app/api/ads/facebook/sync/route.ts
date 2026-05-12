@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Advanced case with specific profile/date params — keep original logic
-  const { getAdInsights, getAdCreatives, getBillingCharges, getFundingSource, getVideoSourceUrls, getPages } = await import('@/lib/facebook');
+  const { getAdInsights, getAdCreatives, getBillingCharges, getVideoSourceUrls, getPages } = await import('@/lib/facebook');
 
   let profiles: any[];
   if (profileId) {
@@ -201,19 +201,35 @@ export async function POST(req: NextRequest) {
 
       try {
         const charges = await getBillingCharges(profile.ad_account_id, profile.access_token, from);
-        const fundingSource = await getFundingSource(profile.ad_account_id, profile.access_token);
-        const paymentMethod = fundingSource?.display_string || '';
-        const cardMatch = paymentMethod.match(/(\d{4})\s*$/);
-        const cardLast4 = cardMatch ? cardMatch[1] : '';
+        // Get all payment methods to match funding_source_id → card
+        const { getAccountPaymentMethods } = await import('@/lib/facebook');
+        const paymentMethods = await getAccountPaymentMethods(profile.ad_account_id, profile.access_token);
+        const pmById = new Map<string, { display_string: string; card_last4: string }>();
+        for (const pm of paymentMethods) {
+          if (pm.id && pm.card_last4) {
+            pmById.set(pm.id, { display_string: pm.display_string, card_last4: pm.card_last4 });
+          }
+        }
 
         for (const charge of charges) {
           const existing = db.prepare('SELECT id FROM ad_payments WHERE transaction_id = ?').get(charge.transaction_id);
           if (existing) continue;
+
+          // Only assign card when funding_source_id explicitly matches.
+          // FB may try one card (declines) then charge another — don't guess.
+          let chargePaymentMethod = '';
+          let chargeCardLast4 = '';
+          if (charge.funding_source_id && pmById.has(charge.funding_source_id)) {
+            const pm = pmById.get(charge.funding_source_id)!;
+            chargePaymentMethod = pm.display_string;
+            chargeCardLast4 = pm.card_last4;
+          }
+
           db.prepare(`
             INSERT INTO ad_payments (id, store_id, platform, date, transaction_id, payment_method, card_last4, amount_cents, currency, status, account_id)
             VALUES (?, ?, 'facebook', ?, ?, ?, ?, ?, ?, 'paid', ?)
           `).run(crypto.randomUUID(), profile.store_id, charge.date,
-            charge.transaction_id, paymentMethod, cardLast4,
+            charge.transaction_id, chargePaymentMethod || null, chargeCardLast4 || null,
             charge.amount_cents, charge.currency, profile.ad_account_id);
           invoicesImported++;
         }
