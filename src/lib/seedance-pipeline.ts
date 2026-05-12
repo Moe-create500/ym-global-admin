@@ -308,6 +308,7 @@ export async function renderScene(opts: {
   productDescription?: string;
   aspectRatio: string;
   resolution?: '480p' | '720p';
+  characterImageUrl?: string | null;
 }): Promise<SeedanceJob> {
   const { scene, productImageUrl, productDescription, aspectRatio } = opts;
 
