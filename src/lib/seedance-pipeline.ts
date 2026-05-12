@@ -97,6 +97,8 @@ export async function breakIntoScenes(opts: {
   productName: string;
   productDescription?: string;
   hasProductImage: boolean;
+  sceneCount?: number;
+  contentMode?: string;
 }): Promise<Scene[]> {
   const { script, totalDuration, productName, hasProductImage } = opts;
 
