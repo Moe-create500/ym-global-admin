@@ -266,13 +266,13 @@ export function parsePromptIntoScenes(
 export function validateScene(scene: Scene): string | null {
   const { spokenScript, visualPrompt } = scene;
 
-  // spokenScript must not contain visual directions
-  if (/\b(camera|lighting|frame|aspect ratio|resolution|iPhone|handheld|UGC|selfie|B-roll|close-up|wide shot|pan|zoom|depth of field)\b/i.test(spokenScript)) {
+  // spokenScript must not contain visual directions (skip if absent — non-UGC ad types)
+  if (spokenScript && /\b(camera|lighting|frame|aspect ratio|resolution|iPhone|handheld|UGC|selfie|B-roll|close-up|wide shot|pan|zoom|depth of field)\b/i.test(spokenScript)) {
     return `spokenScript contains visual direction: "${spokenScript.substring(0, 60)}..."`;
   }
 
   // spokenScript must not contain labels
-  if (/^(Hook|Line \d|CTA|Scene|Shot|OPENING|TECHNICAL|VISUAL|RULES):/im.test(spokenScript)) {
+  if (spokenScript && /^(Hook|Line \d|CTA|Scene|Shot|OPENING|TECHNICAL|VISUAL|RULES):/im.test(spokenScript)) {
     return `spokenScript contains labels: "${spokenScript.substring(0, 60)}..."`;
   }
 
@@ -287,8 +287,8 @@ export function validateScene(scene: Scene): string | null {
     }
   }
 
-  // spokenScript must not be empty
-  if (spokenScript.trim().length < 5) {
+  // spokenScript must not be empty (only check when present — non-UGC may omit)
+  if (spokenScript && spokenScript.trim().length < 5) {
     return 'spokenScript is empty or too short';
   }
 
@@ -339,14 +339,14 @@ export async function renderScene(opts: {
   }
 
   // Spoken dialogue — passed through as-is from the frontend prompt
-  promptParts.push(scene.spokenScript);
+  if (scene.spokenScript) promptParts.push(scene.spokenScript);
 
   const seedancePrompt = promptParts.join('\n\n');
 
   console.log(`[SEEDANCE-PIPELINE] Rendering scene ${scene.sceneIndex}: dur=${scene.duration}s, product=${scene.productVisible}, prompt=${seedancePrompt.length} chars`);
   console.log(`[SEEDANCE-PIPELINE] Visual: "${scene.visualPrompt.substring(0, 80)}..."`);
-  console.log(`[SEEDANCE-PIPELINE] Spoken: "${scene.spokenScript.substring(0, 80)}..."`);
-  console.log(`[SEEDANCE-PIPELINE] Product visible=${scene.productVisible}, inHand=${scene.productInHand}, nearFace=${scene.productNearFace}`);
+  console.log(`[SEEDANCE-PIPELINE] Spoken: "${(scene.spokenScript || '').substring(0, 80)}..."`);
+  console.log(`[SEEDANCE-PIPELINE] Product visible=${scene.productVisible}, inHand=${scene.productInHand ?? false}, nearFace=${scene.productNearFace ?? false}`);
 
   // Use I2V if product image available and scene has product visible, else T2V
   const seedanceRes = opts.resolution || '720p';
@@ -384,7 +384,7 @@ export async function renderAllScenes(opts: {
     if (error) {
       console.error(`[SEEDANCE-PIPELINE] Scene ${scene.sceneIndex} validation failed: ${error}`);
       // Auto-fix: strip visual content from spokenScript
-      scene.spokenScript = cleanScript(scene.spokenScript);
+      if (scene.spokenScript) scene.spokenScript = cleanScript(scene.spokenScript);
       const retryError = validateScene(scene);
       if (retryError) {
         throw new Error(`Scene ${scene.sceneIndex} invalid after cleanup: ${retryError}`);
@@ -414,7 +414,7 @@ export async function renderAllScenes(opts: {
 export function buildCaptions(scenes: Scene[]): string {
   return scenes
     .sort((a, b) => a.sceneIndex - b.sceneIndex)
-    .map(s => s.spokenScript)
+    .map(s => s.spokenScript || '')
     .join(' ')
     .trim();
 }
