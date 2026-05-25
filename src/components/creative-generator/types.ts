@@ -201,6 +201,12 @@ export interface ImagePackage {
 
 export type CreativePackage = VideoPackage | ImagePackage;
 
+export interface FailedScene {
+  sceneIndex: number;
+  reason: 'timeout' | 'content_policy_violation' | 'file_download_error' | 'submission_failed' | 'unknown';
+  message: string;
+}
+
 /**
  * Per-scene record persisted on completed animated renders.
  * Stage A of the unified-scene-system project (scene-aware package metadata).
