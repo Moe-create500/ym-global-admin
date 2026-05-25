@@ -22,6 +22,7 @@ import crypto from 'crypto';
 export interface GenerateUgcCharacterOptions {
   aspectRatio?: '9:16' | '1:1' | '16:9' | '4:5';
   size?: '1K' | '2K' | '4K';
+  animationStyle?: string;
 }
 
 export interface GenerateUgcCharacterResult {
