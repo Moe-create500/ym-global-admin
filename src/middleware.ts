@@ -84,7 +84,8 @@ export async function middleware(req: NextRequest) {
     pathname.startsWith('/favicon') ||
     pathname === '/logo.png' ||
     pathname === '/api/banking/webhook' ||
-    pathname.startsWith('/api/cron')
+    pathname.startsWith('/api/cron') ||
+    pathname === '/api/ads/facebook/auth'
   ) {
     return NextResponse.next();
   }
