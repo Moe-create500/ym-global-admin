@@ -25,12 +25,13 @@ import { normalizeScript, chunkScriptForSeedance, buildLanguageEnforcement } fro
 
 export interface Scene {
   sceneIndex: number;
-  spokenScript: string;       // ONLY natural dialogue — no labels, no directions
+  spokenScript?: string;      // ONLY natural dialogue — no labels, no directions
   visualPrompt: string;       // ONLY scene direction — no dialogue
   duration: number;           // seconds (4-8 per scene)
   productVisible: boolean;
-  productInHand: boolean;
-  productNearFace: boolean;
+  productInHand?: boolean;
+  productNearFace?: boolean;
+  cameraDirection?: string;   // animated styles use for camera-move hints
 }
 
 export interface SeedanceJob {
