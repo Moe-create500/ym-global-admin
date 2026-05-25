@@ -302,3 +302,23 @@ export async function waitForVideo(
 
   throw new Error('Seedance generation timed out');
 }
+
+// ── R2V (Reference-to-Video) aliases used by scene-pipeline ──
+
+/** Alias for waitForVideo — used by scene-pipeline for R2V renders */
+export const waitForR2VVideo = waitForVideo;
+
+/** Simple concurrency gate for R2V render slots (no-op for now) */
+let r2vSlots = 0;
+const R2V_MAX_SLOTS = 3;
+
+export async function acquireR2VRenderSlot(): Promise<void> {
+  while (r2vSlots >= R2V_MAX_SLOTS) {
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  r2vSlots++;
+}
+
+export function releaseR2VRenderSlot(): void {
+  if (r2vSlots > 0) r2vSlots--;
+}
