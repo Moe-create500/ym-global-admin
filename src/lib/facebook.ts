@@ -101,7 +101,6 @@ export function getOAuthUrl(redirectUri: string, state: string): string {
     'ads_read',
     'pages_show_list',
     'pages_read_engagement',
-    'instagram_basic',
     'business_management',
     'catalog_management',
   ].join(',');
