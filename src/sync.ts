@@ -190,8 +190,23 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
     // ss_charges_pending_cents = actual billed amount from ShipSourced (combinedPending)
     // ss_total_paid_cents = sum of all ss_payments (manual entries)
     // ss_net_owed_cents = ShipSourced's reported balance (netOwed)
-    const ssBilled = Math.round((billing.stats?.combinedPending || 0) * 100);
-    const ssNetOwed = Math.round((billing.stats?.netOwed || 0) * 100);
+    let ssBilled = Math.round((billing.stats?.combinedPending || 0) * 100);
+    let ssNetOwed = Math.round((billing.stats?.netOwed || 0) * 100);
+
+    // Merge billing from extra ShipSourced client IDs (e.g. old accounts for same client)
+    if (store.shipsourced_extra_client_ids) {
+      const extraIds = (store.shipsourced_extra_client_ids as string).split(',').map((s: string) => s.trim()).filter(Boolean);
+      for (const extraId of extraIds) {
+        try {
+          const extraBilling = await getClientBilling(extraId);
+          ssBilled += Math.round((extraBilling.stats?.combinedPending || 0) * 100);
+          ssNetOwed += Math.round((extraBilling.stats?.netOwed || 0) * 100);
+        } catch (err: any) {
+          console.error(`[sync] Extra SS client ${extraId} billing error: ${err.message}`);
+        }
+      }
+    }
+
     const totalPaidRow: any = db.prepare(
       'SELECT COALESCE(SUM(amount_cents), 0) as total FROM ss_payments WHERE store_id = ?'
     ).get(store.id);

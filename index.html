@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Y-M Global Admin</title>
+</head>
+<body>
+
+  <div id="loginSection">
+<h1>Admin Panel Login</h1>
+<input type="email" id="email" placeholder="Email" />
+<input type="password" id="password" placeholder="Password" />
+<button id="btnLogin">Login</button>
+<p id="status"></p>
+</div>
+
+
+  <hr />
+<div id="adminSection" style="display:none;">
+
+  <h2>Add New Team Member</h2>
+  <input type="text" id="fullName" placeholder="Full Name" />
+  <input type="email" id="newEmail" placeholder="Email" />
+  <input type="password" id="newPassword" placeholder="Password" />
+  <input type="text" id="role" placeholder="Role Title" />
+  <input type="text" id="brands" placeholder="Brands (comma separated)" />
+  <button id="btnAddUser">Add User</button>
+  <p id="addStatus"></p>
+  </div>
+
+  <hr>
+<h2>Team Members</h2>
+<table id="usersTable" border="1" cellpadding="8" cellspacing="0" style="width:100%; border-collapse: collapse; margin-top: 16px;">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Email</th>
+      <th>Role</th>
+      <th>Brands</th>
+      <th>Status</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    <!-- rows will be injected here -->
+  </tbody>
+</table>
+
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

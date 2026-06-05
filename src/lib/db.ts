@@ -23,6 +23,9 @@ export function getDb(): Database.Database {
     if (!cols.find((c: any) => c.name === 'dashboard_hidden')) {
       _db.exec("ALTER TABLE stores ADD COLUMN dashboard_hidden INTEGER DEFAULT 0");
     }
+    if (!cols.find((c: any) => c.name === 'shipsourced_extra_client_ids')) {
+      _db.exec("ALTER TABLE stores ADD COLUMN shipsourced_extra_client_ids TEXT DEFAULT NULL");
+    }
 
     // Migration: add is_global and credit_limit_cents to bank_accounts
     const baCols = _db.prepare("PRAGMA table_info(bank_accounts)").all() as any[];
