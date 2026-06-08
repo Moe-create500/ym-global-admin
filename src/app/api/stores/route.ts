@@ -52,6 +52,7 @@ export async function GET(req: NextRequest) {
       (SELECT SUM(dp.revenue_cents) FROM daily_pnl dp WHERE dp.store_id = s.id AND ${dateFilter}) as mtd_revenue,
       (SELECT SUM(dp.net_profit_cents) FROM daily_pnl dp WHERE dp.store_id = s.id AND ${dateFilter}) as mtd_profit,
       (SELECT SUM(dp.order_count) FROM daily_pnl dp WHERE dp.store_id = s.id AND ${dateFilter}) as mtd_orders,
+      (SELECT SUM(dp.ad_spend_cents) FROM daily_pnl dp WHERE dp.store_id = s.id AND ${dateFilter}) as mtd_ad_spend,
       (SELECT COUNT(*) FROM fb_profiles fp WHERE fp.store_id = s.id AND fp.is_active = 1 AND fp.ad_account_id IS NOT NULL) as fb_connected,
       CASE WHEN s.chargeflow_api_key IS NOT NULL AND s.chargeflow_api_key != '' THEN 1 ELSE 0 END as chargeflow_connected,
       COALESCE(s.invoices_verified, 0) as invoices_verified
@@ -59,6 +60,14 @@ export async function GET(req: NextRequest) {
     WHERE s.is_active = 1 ${storeFilter}
     ORDER BY s.name
   `;
+
+  // Sparkline data: last 7 days revenue per store
+  const sparklineQuery = db.prepare(`
+    SELECT store_id, date, revenue_cents, net_profit_cents
+    FROM daily_pnl
+    WHERE date >= date('${pacificNow}', '-6 days') AND date <= '${pacificNow}'
+    ORDER BY date ASC
+  `);
 
   const stores = isAdmin
     ? db.prepare(storeQuery).all()
@@ -85,7 +94,15 @@ export async function GET(req: NextRequest) {
     `).all(...accessibleIds);
   }
 
-  return NextResponse.json({ stores, alerts, session: { role, employeeId } });
+  // Build sparkline map
+  const sparklineRows: any[] = sparklineQuery.all();
+  const sparklines: Record<string, { date: string; rev: number; profit: number }[]> = {};
+  for (const r of sparklineRows) {
+    if (!sparklines[r.store_id]) sparklines[r.store_id] = [];
+    sparklines[r.store_id].push({ date: r.date, rev: r.revenue_cents || 0, profit: r.net_profit_cents || 0 });
+  }
+
+  return NextResponse.json({ stores, alerts, sparklines, session: { role, employeeId } });
 }
 
 export async function PATCH(req: NextRequest) {
