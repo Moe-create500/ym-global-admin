@@ -1,6 +1,6 @@
 import { getDb } from '@/lib/db';
-import { getClientBilling, getClientOrders, getAllClientProducts } from '@/lib/shipsourced';
-import { getAdInsights, getAdCreatives, getBillingCharges, getAccountPaymentMethods, getVideoSourceUrls, getPages } from '@/lib/facebook';
+import { getClientBilling, getClientOrders } from '@/lib/shipsourced';
+import { getAdInsights, getAdCreatives, getBillingCharges, getFundingSource, getAccountPaymentMethods, getVideoSourceUrls, getPages } from '@/lib/facebook';
 import crypto from 'crypto';
 
 /**
@@ -270,23 +270,8 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
     // ss_charges_pending_cents = actual billed amount from ShipSourced (combinedPending)
     // ss_total_paid_cents = sum of all ss_payments (manual entries)
     // ss_net_owed_cents = ShipSourced's reported balance (netOwed)
-    let ssBilled = Math.round((billing.stats?.combinedPending || 0) * 100);
-    let ssNetOwed = Math.round((billing.stats?.netOwed || 0) * 100);
-
-    // Merge billing from extra ShipSourced client IDs (e.g. old accounts for same client)
-    if (store.shipsourced_extra_client_ids) {
-      const extraIds = (store.shipsourced_extra_client_ids as string).split(',').map((s: string) => s.trim()).filter(Boolean);
-      for (const extraId of extraIds) {
-        try {
-          const extraBilling = await getClientBilling(extraId);
-          ssBilled += Math.round((extraBilling.stats?.combinedPending || 0) * 100);
-          ssNetOwed += Math.round((extraBilling.stats?.netOwed || 0) * 100);
-        } catch (err: any) {
-          console.error(`[sync] Extra SS client ${extraId} billing error: ${err.message}`);
-        }
-      }
-    }
-
+    const ssBilled = Math.round((billing.stats?.combinedPending || 0) * 100);
+    const ssNetOwed = Math.round((billing.stats?.netOwed || 0) * 100);
     const totalPaidRow: any = db.prepare(
       'SELECT COALESCE(SUM(amount_cents), 0) as total FROM ss_payments WHERE store_id = ?'
     ).get(store.id);
@@ -646,10 +631,22 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
           }
         }
 
-        // DO NOT use singleCard fallback — FB may try one card (declines) then charge
-        // another, but the Activities API reports the original funding_source_id (the
-        // declined card). Only assign card when we have an explicit funding_source_id
-        // match. CSV import from FB Invoices corrects card attribution authoritatively.
+        // If there's only ONE payment method on the account, we know all charges used it
+        let singleCard = paymentMethods.length === 1 && paymentMethods[0].card_last4
+          ? { display_string: paymentMethods[0].display_string, card_last4: paymentMethods[0].card_last4 }
+          : null;
+
+        // Fallback: if getAccountPaymentMethods returned empty, use getFundingSource (current card)
+        // This is better than no card at all for single-card accounts
+        if (paymentMethods.length === 0) {
+          const fundingSource = await getFundingSource(profile.ad_account_id, profile.access_token);
+          if (fundingSource?.display_string) {
+            const cardMatch = fundingSource.display_string.match(/(\d{4})\s*$/);
+            if (cardMatch) {
+              singleCard = { display_string: fundingSource.display_string, card_last4: cardMatch[1] };
+            }
+          }
+        }
 
         for (const charge of charges) {
           // Skip declined/non-paid charges — only import successful transactions
@@ -661,16 +658,21 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
           const existingPayment = db.prepare('SELECT id FROM ad_payments WHERE transaction_id = ?').get(charge.transaction_id);
           if (existingPayment) continue;
 
-          // Only assign card when funding_source_id explicitly matches a known payment method.
-          // Leave card blank otherwise — CSV import will fill in the correct card.
+          // Try to determine which card was used for this specific charge:
+          // 1. If the charge has a funding_source_id, match it to a payment method
+          // 2. If only one payment method exists on the account, use that
+          // 3. Otherwise, leave card as null (unknown) — CSV import can fill it later
           let chargePaymentMethod = '';
           let chargeCardLast4 = '';
           if (charge.funding_source_id && pmById.has(charge.funding_source_id)) {
             const pm = pmById.get(charge.funding_source_id)!;
             chargePaymentMethod = pm.display_string;
             chargeCardLast4 = pm.card_last4;
+          } else if (singleCard) {
+            chargePaymentMethod = singleCard.display_string;
+            chargeCardLast4 = singleCard.card_last4;
           }
-          // Card stays empty if no match — better than attributing to wrong card
+          // If neither condition met, card_last4 stays empty — much better than wrong card
 
           db.prepare(`
             INSERT INTO ad_payments (id, store_id, platform, date, transaction_id, payment_method, card_last4, amount_cents, currency, status, account_id)
@@ -713,75 +715,4 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
   }
 
   return { synced: totalSynced, invoicesImported, errors };
-}
-
-/**
- * Sync products for all active stores from ShipSourced.
- */
-export async function syncAllProducts(): Promise<{ synced: number; errors: string[] }> {
-  const db = getDb();
-  const stores: any[] = db.prepare(
-    'SELECT * FROM stores WHERE is_active = 1 AND shipsourced_client_id IS NOT NULL'
-  ).all();
-
-  let totalSynced = 0;
-  const errors: string[] = [];
-
-  for (const store of stores) {
-    try {
-      const products = await getAllClientProducts(store.shipsourced_client_id);
-
-      for (const p of products) {
-        let allImages: string[] = [];
-        if (p.images) {
-          try {
-            const imgs = JSON.parse(p.images);
-            if (Array.isArray(imgs)) allImages = imgs.filter((u: string) => typeof u === 'string' && u.length > 0);
-          } catch {}
-        }
-        if (p.imageUrl && !allImages.includes(p.imageUrl)) {
-          allImages.unshift(p.imageUrl);
-        }
-        const primaryImage = allImages[0] || null;
-        const imagesJson = allImages.length > 0 ? JSON.stringify(allImages) : null;
-
-        const sku = p.sku || null;
-        const priceCents = Math.round((p.price || 0) * 100);
-        const weightGrams = p.weightOz ? Math.round(p.weightOz * 28.3495) : 0;
-
-        let existing: any = db.prepare(
-          'SELECT id FROM products WHERE store_id = ? AND shopify_product_id = ?'
-        ).get(store.id, p.externalProductId);
-
-        if (!existing && sku) {
-          existing = db.prepare(
-            'SELECT id FROM products WHERE store_id = ? AND sku = ?'
-          ).get(store.id, sku);
-        }
-
-        if (existing) {
-          db.prepare(`
-            UPDATE products SET
-              title = ?, sku = ?, shopify_product_id = COALESCE(shopify_product_id, ?),
-              image_url = ?, images = ?, price_cents = ?, weight_grams = ?,
-              status = 'active', synced_at = datetime('now'), updated_at = datetime('now')
-            WHERE id = ?
-          `).run(p.name, sku, p.externalProductId, primaryImage, imagesJson, priceCents, weightGrams, existing.id);
-        } else {
-          db.prepare(`
-            INSERT INTO products (id, store_id, shopify_product_id, title, sku, image_url, images, price_cents, weight_grams, status, synced_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', datetime('now'))
-          `).run(crypto.randomUUID(), store.id, p.externalProductId, p.name, sku, primaryImage, imagesJson, priceCents, weightGrams);
-        }
-        totalSynced++;
-      }
-
-      const count: any = db.prepare('SELECT COUNT(*) as cnt FROM products WHERE store_id = ? AND status = ?').get(store.id, 'active');
-      db.prepare('UPDATE stores SET product_count = ? WHERE id = ?').run(count.cnt, store.id);
-    } catch (err: any) {
-      errors.push(`${store.name}: ${err.message}`);
-    }
-  }
-
-  return { synced: totalSynced, errors };
 }
