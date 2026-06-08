@@ -139,7 +139,7 @@ async function generateWithReference(
   formData.append('quality', options.quality || 'high');
 
   for (let i = 0; i < imageBuffers.length; i++) {
-    const blob = new Blob([imageBuffers[i]], { type: 'image/png' });
+    const blob = new Blob([new Uint8Array(imageBuffers[i])], { type: 'image/png' });
     formData.append('image[]', blob, `ref_${i}.png`);
   }
 
