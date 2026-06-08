@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
   // Build ZIP manually (no external dependency)
   const zipBuffer = buildZip(files);
 
-  return new NextResponse(zipBuffer, {
+  return new NextResponse(new Uint8Array(zipBuffer), {
     headers: {
       'Content-Type': 'application/zip',
       'Content-Disposition': `attachment; filename="static-ads-${Date.now()}.zip"`,
