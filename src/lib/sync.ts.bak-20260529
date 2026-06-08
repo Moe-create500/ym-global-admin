@@ -1,5 +1,5 @@
 import { getDb } from '@/lib/db';
-import { getClientBilling, getClientOrders, getAllClientProducts } from '@/lib/shipsourced';
+import { getClientBilling, getClientOrders } from '@/lib/shipsourced';
 import { getAdInsights, getAdCreatives, getBillingCharges, getAccountPaymentMethods, getVideoSourceUrls, getPages } from '@/lib/facebook';
 import crypto from 'crypto';
 
@@ -270,23 +270,8 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
     // ss_charges_pending_cents = actual billed amount from ShipSourced (combinedPending)
     // ss_total_paid_cents = sum of all ss_payments (manual entries)
     // ss_net_owed_cents = ShipSourced's reported balance (netOwed)
-    let ssBilled = Math.round((billing.stats?.combinedPending || 0) * 100);
-    let ssNetOwed = Math.round((billing.stats?.netOwed || 0) * 100);
-
-    // Merge billing from extra ShipSourced client IDs (e.g. old accounts for same client)
-    if (store.shipsourced_extra_client_ids) {
-      const extraIds = (store.shipsourced_extra_client_ids as string).split(',').map((s: string) => s.trim()).filter(Boolean);
-      for (const extraId of extraIds) {
-        try {
-          const extraBilling = await getClientBilling(extraId);
-          ssBilled += Math.round((extraBilling.stats?.combinedPending || 0) * 100);
-          ssNetOwed += Math.round((extraBilling.stats?.netOwed || 0) * 100);
-        } catch (err: any) {
-          console.error(`[sync] Extra SS client ${extraId} billing error: ${err.message}`);
-        }
-      }
-    }
-
+    const ssBilled = Math.round((billing.stats?.combinedPending || 0) * 100);
+    const ssNetOwed = Math.round((billing.stats?.netOwed || 0) * 100);
     const totalPaidRow: any = db.prepare(
       'SELECT COALESCE(SUM(amount_cents), 0) as total FROM ss_payments WHERE store_id = ?'
     ).get(store.id);
@@ -467,21 +452,20 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
       const fromDate = new Date(from);
       const toDate = new Date(to);
       const daySpan = (toDate.getTime() - fromDate.getTime()) / 86400000;
-      let allInsights: any[] = [];
+      const insightChunks: any[][] = [];
       if (daySpan > 30) {
         let chunkStart = new Date(fromDate);
         while (chunkStart < toDate) {
           const chunkEnd = new Date(Math.min(chunkStart.getTime() + 30 * 86400000, toDate.getTime()));
           const chunkFrom = chunkStart.toISOString().slice(0, 10);
           const chunkTo = chunkEnd.toISOString().slice(0, 10);
-          const chunk = await getAdInsights(profile.ad_account_id, profile.access_token, chunkFrom, chunkTo, 'ad');
-          allInsights = allInsights.concat(chunk);
+          insightChunks.push(await getAdInsights(profile.ad_account_id, profile.access_token, chunkFrom, chunkTo, 'ad'));
           chunkStart = new Date(chunkEnd.getTime() + 86400000);
         }
       } else {
-        allInsights = await getAdInsights(profile.ad_account_id, profile.access_token, from, to, 'ad');
+        insightChunks.push(await getAdInsights(profile.ad_account_id, profile.access_token, from, to, 'ad'));
       }
-      const insights = allInsights;
+      const insights = insightChunks.flat();
       const adIds = new Set<string>();
 
       for (const insight of insights) {
@@ -599,38 +583,6 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
       // Update last sync time
       db.prepare("UPDATE fb_profiles SET last_sync_at = datetime('now') WHERE id = ?").run(profile.id);
 
-      // Roll up into daily_pnl
-      const days = db.prepare(`
-        SELECT date, SUM(spend_cents) as total FROM ad_spend
-        WHERE store_id = ? AND date >= ? AND date <= ? AND platform = 'facebook'
-        GROUP BY date
-      `).all(profile.store_id, from, to);
-
-      for (const day of days as any[]) {
-        const existing: any = db.prepare(
-          'SELECT id, revenue_cents, cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
-        ).get(profile.store_id, day.date);
-        if (existing) {
-          const totalCosts = (existing.cogs_cents || 0) + (existing.shipping_cost_cents || 0) +
-            (existing.pick_pack_cents || 0) + (existing.packaging_cents || 0) +
-            day.total + (existing.shopify_fees_cents || 0) + (existing.other_costs_cents || 0) +
-            (existing.chargeback_cents || 0) + (existing.app_costs_cents || 0);
-          const netProfit = (existing.revenue_cents || 0) - totalCosts;
-          const margin = existing.revenue_cents > 0 ? (netProfit / existing.revenue_cents) * 100 : 0;
-          db.prepare('UPDATE daily_pnl SET ad_spend_cents = ?, net_profit_cents = ?, margin_pct = ?, updated_at = datetime(\'now\') WHERE id = ?')
-            .run(day.total, netProfit, margin, existing.id);
-        } else {
-          // Create PNL row with just ad spend if none exists
-          const id = require('crypto').randomUUID();
-          db.prepare(`
-            INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count, cogs_cents,
-              shipping_cost_cents, pick_pack_cents, packaging_cents, ad_spend_cents,
-              shopify_fees_cents, other_costs_cents, net_profit_cents, margin_pct, source)
-            VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, ?, 0, 0, ?, ?, 'fb_sync')
-          `).run(id, profile.store_id, day.date, day.total, -day.total, 0);
-        }
-      }
-
       // Sync billing charges from FB activities API
       try {
         const chargesFrom = profile.last_sync_at ? from : '2024-01-01';
@@ -645,11 +597,6 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
             pmById.set(pm.id, { display_string: pm.display_string, card_last4: pm.card_last4 });
           }
         }
-
-        // DO NOT use singleCard fallback — FB may try one card (declines) then charge
-        // another, but the Activities API reports the original funding_source_id (the
-        // declined card). Only assign card when we have an explicit funding_source_id
-        // match. CSV import from FB Invoices corrects card attribution authoritatively.
 
         for (const charge of charges) {
           // Skip declined/non-paid charges — only import successful transactions
@@ -670,7 +617,6 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
             chargePaymentMethod = pm.display_string;
             chargeCardLast4 = pm.card_last4;
           }
-          // Card stays empty if no match — better than attributing to wrong card
 
           db.prepare(`
             INSERT INTO ad_payments (id, store_id, platform, date, transaction_id, payment_method, card_last4, amount_cents, currency, status, account_id)
@@ -707,81 +653,17 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
           const margin = existing.revenue_cents > 0 ? (netProfit / existing.revenue_cents) * 100 : 0;
           db.prepare("UPDATE daily_pnl SET ad_spend_cents = ?, net_profit_cents = ?, margin_pct = ?, updated_at = datetime('now') WHERE id = ?")
             .run(day.total, netProfit, margin, existing.id);
+        } else {
+          db.prepare(`
+            INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count, cogs_cents,
+              shipping_cost_cents, pick_pack_cents, packaging_cents, ad_spend_cents,
+              shopify_fees_cents, other_costs_cents, net_profit_cents, margin_pct, source)
+            VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, ?, 0, 0, ?, ?, 'fb_sync')
+          `).run(crypto.randomUUID(), profile.store_id, day.date, day.total, -day.total, 0);
         }
       }
     } catch {}
   }
 
   return { synced: totalSynced, invoicesImported, errors };
-}
-
-/**
- * Sync products for all active stores from ShipSourced.
- */
-export async function syncAllProducts(): Promise<{ synced: number; errors: string[] }> {
-  const db = getDb();
-  const stores: any[] = db.prepare(
-    'SELECT * FROM stores WHERE is_active = 1 AND shipsourced_client_id IS NOT NULL'
-  ).all();
-
-  let totalSynced = 0;
-  const errors: string[] = [];
-
-  for (const store of stores) {
-    try {
-      const products = await getAllClientProducts(store.shipsourced_client_id);
-
-      for (const p of products) {
-        let allImages: string[] = [];
-        if (p.images) {
-          try {
-            const imgs = JSON.parse(p.images);
-            if (Array.isArray(imgs)) allImages = imgs.filter((u: string) => typeof u === 'string' && u.length > 0);
-          } catch {}
-        }
-        if (p.imageUrl && !allImages.includes(p.imageUrl)) {
-          allImages.unshift(p.imageUrl);
-        }
-        const primaryImage = allImages[0] || null;
-        const imagesJson = allImages.length > 0 ? JSON.stringify(allImages) : null;
-
-        const sku = p.sku || null;
-        const priceCents = Math.round((p.price || 0) * 100);
-        const weightGrams = p.weightOz ? Math.round(p.weightOz * 28.3495) : 0;
-
-        let existing: any = db.prepare(
-          'SELECT id FROM products WHERE store_id = ? AND shopify_product_id = ?'
-        ).get(store.id, p.externalProductId);
-
-        if (!existing && sku) {
-          existing = db.prepare(
-            'SELECT id FROM products WHERE store_id = ? AND sku = ?'
-          ).get(store.id, sku);
-        }
-
-        if (existing) {
-          db.prepare(`
-            UPDATE products SET
-              title = ?, sku = ?, shopify_product_id = COALESCE(shopify_product_id, ?),
-              image_url = ?, images = ?, price_cents = ?, weight_grams = ?,
-              status = 'active', synced_at = datetime('now'), updated_at = datetime('now')
-            WHERE id = ?
-          `).run(p.name, sku, p.externalProductId, primaryImage, imagesJson, priceCents, weightGrams, existing.id);
-        } else {
-          db.prepare(`
-            INSERT INTO products (id, store_id, shopify_product_id, title, sku, image_url, images, price_cents, weight_grams, status, synced_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', datetime('now'))
-          `).run(crypto.randomUUID(), store.id, p.externalProductId, p.name, sku, primaryImage, imagesJson, priceCents, weightGrams);
-        }
-        totalSynced++;
-      }
-
-      const count: any = db.prepare('SELECT COUNT(*) as cnt FROM products WHERE store_id = ? AND status = ?').get(store.id, 'active');
-      db.prepare('UPDATE stores SET product_count = ? WHERE id = ?').run(count.cnt, store.id);
-    } catch (err: any) {
-      errors.push(`${store.name}: ${err.message}`);
-    }
-  }
-
-  return { synced: totalSynced, errors };
 }
