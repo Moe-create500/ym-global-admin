@@ -2,9 +2,8 @@ module.exports = {
   apps: [{
     name: 'ym-global',
     cwd: '/home/ubuntu/ym-global',
-    script: 'npm',
-    args: 'start -- -p 3001',
-    interpreter: 'none',
+    script: 'node_modules/.bin/next',
+    args: 'start -p 3001',
     env: {
       NODE_ENV: 'production',
       NODE_OPTIONS: '--max-old-space-size=2048',
