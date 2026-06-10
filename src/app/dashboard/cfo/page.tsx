@@ -101,6 +101,23 @@ function CFOContent() {
   const [ccAmountInput, setCcAmountInput] = useState('');
   const [editingCCId, setEditingCCId] = useState<string | null>(null);
   const [savingCC, setSavingCC] = useState(false);
+  const [cfoOverrides, setCfoOverrides] = useState<Record<string, string>>({});
+  const [editingOverride, setEditingOverride] = useState<string | null>(null);
+  const [overrideInput, setOverrideInput] = useState('');
+
+  async function saveOverride(key: string, value: string) {
+    await fetch('/api/cfo', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeId, cfoOverride: { key, value } }),
+    });
+    setCfoOverrides(prev => {
+      const next = { ...prev };
+      if (value) next[key] = value; else delete next[key];
+      return next;
+    });
+    setEditingOverride(null);
+  }
 
   // Overview state
   const [overviewStores, setOverviewStores] = useState<OverviewStore[]>([]);
@@ -135,6 +152,7 @@ function CFOContent() {
     const res = await fetch(`/api/cfo?storeId=${storeId}`);
     const d = await res.json();
     setData(d);
+    setCfoOverrides(d.cfo_overrides || {});
     setShopifyInput(d.details?.shopify_balance_cents ? String(d.details.shopify_balance_cents / 100) : '');
     setPayoutInput(d.details?.shopify_payout_cents ? String(d.details.shopify_payout_cents / 100) : '');
     setSnapshots(d.snapshots || []);
@@ -588,7 +606,20 @@ function CFOContent() {
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">Inventory</td>
                     <td className="px-5 py-3 text-slate-400 text-xs">
-                      Unsold inventory at cost (cost basis: {cents(data.details.inventory.cost_basis_cents)})
+                      {editingOverride === 'inventory_details' ? (
+                        <div className="flex items-center gap-2">
+                          <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
+                            className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                            autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('inventory_details', overrideInput)} />
+                          <button onClick={() => saveOverride('inventory_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => saveOverride('inventory_details', '')} className="text-[10px] text-red-400">Clear</button>
+                          <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
+                        </div>
+                      ) : (
+                        <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('inventory_details'); setOverrideInput(cfoOverrides['inventory_details'] || ''); }}>
+                          {cfoOverrides['inventory_details'] || `Unsold inventory at cost (cost basis: ${cents(data.details.inventory.cost_basis_cents)})`}
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(data.assets.inventory_cents)}</td>
                   </tr>
@@ -634,7 +665,20 @@ function CFOContent() {
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">Current Unpaid Fulfillment Bill</td>
                     <td className="px-5 py-3 text-slate-400 text-xs">
-                      ShipSourced balance owed
+                      {editingOverride === 'fulfillment_details' ? (
+                        <div className="flex items-center gap-2">
+                          <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
+                            className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                            placeholder="Custom details text..." autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('fulfillment_details', overrideInput)} />
+                          <button onClick={() => saveOverride('fulfillment_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => saveOverride('fulfillment_details', '')} className="text-[10px] text-red-400">Clear</button>
+                          <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
+                        </div>
+                      ) : (
+                        <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('fulfillment_details'); setOverrideInput(cfoOverrides['fulfillment_details'] || ''); }}>
+                          {cfoOverrides['fulfillment_details'] || 'ShipSourced balance owed'}
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(data.details.fulfillment.balance_cents)}</td>
                   </tr>
@@ -642,13 +686,28 @@ function CFOContent() {
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">Unfulfilled Orders Est. Fulfillment Bill</td>
                     <td className="px-5 py-3 text-slate-400 text-xs">
-                      {data.details.fulfillment.total_unfulfilled} unfulfilled orders
-                      {data.details.fulfillment.total_unfulfilled > 0 && (
-                        <span className="ml-2 text-slate-500">
-                          ({data.details.fulfillment.unfulfilled_with_estimate} have estimate @ avg {cents((data.details.fulfillment as any).avg_per_order_cents || 0)}/order
-                          {(data.details.fulfillment as any).without_estimate > 0 && (
-                            <> + {(data.details.fulfillment as any).without_estimate} projected</>
-                          )})
+                      {editingOverride === 'unfulfilled_details' ? (
+                        <div className="flex items-center gap-2">
+                          <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
+                            className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                            placeholder="Custom details text..." autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('unfulfilled_details', overrideInput)} />
+                          <button onClick={() => saveOverride('unfulfilled_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => saveOverride('unfulfilled_details', '')} className="text-[10px] text-red-400">Clear</button>
+                          <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
+                        </div>
+                      ) : (
+                        <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('unfulfilled_details'); setOverrideInput(cfoOverrides['unfulfilled_details'] || ''); }}>
+                          {cfoOverrides['unfulfilled_details'] || (<>
+                            {data.details.fulfillment.total_unfulfilled} unfulfilled orders
+                            {data.details.fulfillment.total_unfulfilled > 0 && (
+                              <span className="ml-2 text-slate-500">
+                                ({data.details.fulfillment.unfulfilled_with_estimate} have estimate @ avg {cents((data.details.fulfillment as any).avg_per_order_cents || 0)}/order
+                                {(data.details.fulfillment as any).without_estimate > 0 && (
+                                  <> + {(data.details.fulfillment as any).without_estimate} projected</>
+                                )})
+                              </span>
+                            )}
+                          </>)}
                         </span>
                       )}
                     </td>
@@ -685,7 +744,20 @@ function CFOContent() {
                     <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                       <td className="px-5 py-3 text-white font-medium">FB Pending (Unbilled)</td>
                       <td className="px-5 py-3 text-slate-400 text-xs">
-                        Spend not yet charged to card — live from Facebook API
+                        {editingOverride === 'fb_pending_details' ? (
+                          <div className="flex items-center gap-2">
+                            <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
+                              className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                              autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('fb_pending_details', overrideInput)} />
+                            <button onClick={() => saveOverride('fb_pending_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                            <button onClick={() => saveOverride('fb_pending_details', '')} className="text-[10px] text-red-400">Clear</button>
+                            <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
+                          </div>
+                        ) : (
+                          <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('fb_pending_details'); setOverrideInput(cfoOverrides['fb_pending_details'] || ''); }}>
+                            {cfoOverrides['fb_pending_details'] || 'Spend not yet charged to card \u2014 live from Facebook API'}
+                          </span>
+                        )}
                       </td>
                       <td className="px-5 py-3 text-right text-orange-400 font-medium">{cents(data.liabilities.fb_pending_balance_cents)}</td>
                     </tr>
@@ -695,10 +767,25 @@ function CFOContent() {
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">App Invoices (Balance Due)</td>
                     <td className="px-5 py-3 text-slate-400 text-xs">
-                      Charged: {cents(data.details.appInvoices.total_charged_cents)} - Paid: {cents(data.details.appInvoices.total_paid_cents)}
-                      {data.details.appInvoices.last_invoice && (
-                        <span className="ml-2 text-slate-600">
-                          Last: #{data.details.appInvoices.last_invoice.bill_number} on {data.details.appInvoices.last_invoice.date} ({cents(data.details.appInvoices.last_invoice.total_cents)})
+                      {editingOverride === 'app_invoices_details' ? (
+                        <div className="flex items-center gap-2">
+                          <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
+                            className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                            autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('app_invoices_details', overrideInput)} />
+                          <button onClick={() => saveOverride('app_invoices_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => saveOverride('app_invoices_details', '')} className="text-[10px] text-red-400">Clear</button>
+                          <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
+                        </div>
+                      ) : (
+                        <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('app_invoices_details'); setOverrideInput(cfoOverrides['app_invoices_details'] || ''); }}>
+                          {cfoOverrides['app_invoices_details'] || (<>
+                            Charged: {cents(data.details.appInvoices.total_charged_cents)} - Paid: {cents(data.details.appInvoices.total_paid_cents)}
+                            {data.details.appInvoices.last_invoice && (
+                              <span className="ml-2 text-slate-600">
+                                Last: #{data.details.appInvoices.last_invoice.bill_number} on {data.details.appInvoices.last_invoice.date} ({cents(data.details.appInvoices.last_invoice.total_cents)})
+                              </span>
+                            )}
+                          </>)}
                         </span>
                       )}
                     </td>

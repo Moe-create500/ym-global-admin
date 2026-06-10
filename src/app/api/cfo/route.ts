@@ -283,8 +283,15 @@ export async function GET(req: NextRequest) {
 
   const equity = assets.total_cents - liabilities.total_cents;
 
+  // Parse CFO overrides
+  let cfoOverrides: Record<string, string> = {};
+  if (store.cfo_overrides) {
+    try { cfoOverrides = JSON.parse(store.cfo_overrides); } catch {}
+  }
+
   return NextResponse.json({
     store: { id: store.id, name: store.name },
+    cfo_overrides: cfoOverrides,
     assets,
     liabilities,
     equity_cents: equity,
@@ -325,7 +332,7 @@ export async function GET(req: NextRequest) {
 
 // PATCH: Update Shopify balance, reserves (manual input)
 export async function PATCH(req: NextRequest) {
-  const { storeId, shopifyBalanceCents, shopifyPayoutCents, reserve, deleteReserveId, manualCC, deleteManualCCId } = await req.json();
+  const { storeId, shopifyBalanceCents, shopifyPayoutCents, reserve, deleteReserveId, manualCC, deleteManualCCId, cfoOverride } = await req.json();
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
 
   const db = getDb();
@@ -366,6 +373,19 @@ export async function PATCH(req: NextRequest) {
       db.prepare('INSERT INTO manual_credit_cards (id, store_id, card_name, amount_owed_cents) VALUES (?, ?, ?, ?)')
         .run(id, storeId, manualCC.card_name, manualCC.amount_owed_cents);
     }
+  }
+
+  // Update CFO detail overrides
+  if (cfoOverride) {
+    const store: any = db.prepare('SELECT cfo_overrides FROM stores WHERE id = ?').get(storeId);
+    let existing: Record<string, string> = {};
+    if (store?.cfo_overrides) { try { existing = JSON.parse(store.cfo_overrides); } catch {} }
+    if (cfoOverride.value === '' || cfoOverride.value === null) {
+      delete existing[cfoOverride.key];
+    } else {
+      existing[cfoOverride.key] = cfoOverride.value;
+    }
+    db.prepare('UPDATE stores SET cfo_overrides = ? WHERE id = ?').run(JSON.stringify(existing), storeId);
   }
 
   // Delete a manual credit card
