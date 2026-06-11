@@ -91,19 +91,21 @@ export async function GET(req: NextRequest) {
     SELECT COALESCE(SUM(amount_cents), 0) as total FROM card_payments_log WHERE store_id = ? AND category = 'ad'
   `).get(storeId);
 
-  // Pull FB pending balance (unbilled spend) from API
+  // Pull FB pending balance (unbilled spend) from API — sum across ALL active ad accounts
   let fbPendingBalanceCents = 0;
   try {
-    const fbProfile: any = db.prepare(
-      "SELECT ad_account_id, access_token FROM fb_profiles WHERE store_id = ? AND is_active = 1 LIMIT 1"
-    ).get(storeId);
-    if (fbProfile?.ad_account_id && fbProfile?.access_token) {
-      const fbUrl = `https://graph.facebook.com/v21.0/${fbProfile.ad_account_id}?fields=balance&access_token=${fbProfile.access_token}`;
-      const fbRes = await fetch(fbUrl);
-      if (fbRes.ok) {
-        const fbData = await fbRes.json();
-        fbPendingBalanceCents = parseInt(fbData.balance || '0', 10);
-      }
+    const fbProfiles: any[] = db.prepare(
+      "SELECT ad_account_id, access_token FROM fb_profiles WHERE store_id = ? AND is_active = 1 AND ad_account_id IS NOT NULL AND access_token IS NOT NULL"
+    ).all(storeId);
+    for (const fbProfile of fbProfiles) {
+      try {
+        const fbUrl = `https://graph.facebook.com/v21.0/${fbProfile.ad_account_id}?fields=balance&access_token=${fbProfile.access_token}`;
+        const fbRes = await fetch(fbUrl);
+        if (fbRes.ok) {
+          const fbData = await fbRes.json();
+          fbPendingBalanceCents += parseInt(fbData.balance || '0', 10);
+        }
+      } catch {}
     }
   } catch {}
 
