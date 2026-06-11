@@ -298,7 +298,7 @@ function DashboardContent() {
     const chartParams = new URLSearchParams({ period: 'daily', from: chartFrom });
     if (storeId) chartParams.set('storeId', storeId); else chartParams.set('visibleOnly', '1');
 
-    const storesRange = (range === 'daily' || range === 'yesterday') ? 'daily' : range === 'yearly' ? 'yearly' : 'monthly';
+    const storesRange = range === 'daily' ? 'daily' : range === 'yesterday' ? 'yesterday' : range === 'yearly' ? 'yearly' : 'monthly';
 
     const [storesRes, pnlRes, prevPnlRes, chartRes] = await Promise.all([
       fetch(`/api/stores?range=${storesRange}`),
