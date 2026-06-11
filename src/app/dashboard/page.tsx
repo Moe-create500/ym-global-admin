@@ -282,15 +282,15 @@ function DashboardContent() {
     const from = getRangeFrom(range);
     const prev = getPrevRange(range);
     const pnlParams = new URLSearchParams({ period: 'daily', from });
-    if (storeId) pnlParams.set('storeId', storeId);
+    if (storeId) pnlParams.set('storeId', storeId); else pnlParams.set('visibleOnly', '1');
 
     const prevPnlParams = new URLSearchParams({ period: 'daily', from: prev.from, to: prev.to });
-    if (storeId) prevPnlParams.set('storeId', storeId);
+    if (storeId) prevPnlParams.set('storeId', storeId); else prevPnlParams.set('visibleOnly', '1');
 
     // Also fetch last 30 days for the chart
     const chartFrom = getPacificDate(-29);
     const chartParams = new URLSearchParams({ period: 'daily', from: chartFrom });
-    if (storeId) chartParams.set('storeId', storeId);
+    if (storeId) chartParams.set('storeId', storeId); else chartParams.set('visibleOnly', '1');
 
     const storesRange = range === 'daily' ? 'daily' : range === 'yearly' ? 'yearly' : 'monthly';
 
