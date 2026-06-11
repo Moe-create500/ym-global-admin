@@ -106,6 +106,24 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(new URL('/login', req.url));
   }
 
+  // ═══ EMPLOYEE LOCKDOWN ═══
+  // Employees have full access EXCEPT banking & credit cards
+  if (auth.role === 'employee') {
+    const blocked =
+      pathname.startsWith('/dashboard/banking') ||
+      pathname.startsWith('/dashboard/credit-cards') ||
+      pathname.startsWith('/api/banking') ||
+      pathname.startsWith('/api/credit-cards') ||
+      pathname.startsWith('/api/card-payments');
+    if (blocked) {
+      if (pathname.startsWith('/api/')) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+      }
+      return NextResponse.redirect(new URL('/dashboard', req.url));
+    }
+    return NextResponse.next();
+  }
+
   // ═══ CLIENT LOCKDOWN ═══
   // Non-admin users (viewer, manager) can only access whitelisted pages and APIs
   const isAdmin = auth.role === 'admin' || auth.role === 'data_corrector' || auth.role === '';
