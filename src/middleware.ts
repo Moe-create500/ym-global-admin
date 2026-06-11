@@ -113,8 +113,7 @@ export async function middleware(req: NextRequest) {
       pathname.startsWith('/dashboard/banking') ||
       pathname.startsWith('/dashboard/credit-cards') ||
       pathname.startsWith('/api/banking') ||
-      pathname.startsWith('/api/credit-cards') ||
-      pathname.startsWith('/api/card-payments');
+      pathname.startsWith('/api/credit-cards');
     if (blocked) {
       if (pathname.startsWith('/api/')) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
