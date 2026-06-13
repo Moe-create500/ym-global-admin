@@ -382,86 +382,117 @@ export async function syncShopifyRevenue(storeId: string): Promise<{ synced: num
 }
 
 /**
- * FAST PATH: sync ONLY today's Shopify revenue for one store.
- * Fetches a single-day window with a narrowed field set and upserts just today's
- * daily_pnl row. Used by the live dashboard for near-real-time revenue, decoupled
- * from the heavy 7-day/historical sync. Skips confirmed rows. Typically ~1-2 small
- * Shopify calls (~1s). Returns today's revenue + order count.
+ * FAST PATH: sync ONLY today's revenue for one store from ShipSourced.
+ * Calls getClientOrders with from=today (a light, server-side-filtered fetch returning
+ * today's pre-aggregated dailyRevenue) and upserts just today's daily_pnl row — instead
+ * of syncStore's full pull from 2020 + billing + payments. Mirrors syncStore's per-day
+ * write logic exactly (source/platform-fee/cost handling) so today's row is identical to
+ * what a full sync would produce. Skips confirmed rows. Returns today's revenue + orders.
  */
 export async function syncTodayRevenue(storeId: string): Promise<{ synced: number; revenue_cents: number; order_count: number; error?: string }> {
   const db = getDb();
-  const store: any = db.prepare(
-    'SELECT id, name, shopify_domain, shopify_access_token FROM stores WHERE id = ? AND is_active = 1'
-  ).get(storeId);
-  if (!store?.shopify_domain || !store?.shopify_access_token) {
+  const store: any = db.prepare('SELECT * FROM stores WHERE id = ? AND is_active = 1').get(storeId);
+  if (!store?.shipsourced_client_id) {
     return { synced: 0, revenue_cents: 0, order_count: 0 };
   }
 
   try {
-    const { getShopifyDailySales } = await import('@/lib/shopify');
     const today = pacificDate();
-    const sales = await getShopifyDailySales(store.shopify_domain, store.shopify_access_token, today, today, {
-      fields: 'created_at,total_price,refunds,financial_status',
-    });
-    const data = sales[today];
+    const ordersData = await getClientOrders(store.shipsourced_client_id, today).catch(() => null);
+    const d = ordersData?.dailyRevenue?.find((x: any) => x.day === today);
+    if (!d) {
+      return { synced: 0, revenue_cents: 0, order_count: 0 };
+    }
+
+    const revenueCents = Math.round((d.revenue || 0) * 100);
+    const orderCount = d.orderCount || 0;
+    const productCost = (d.usCogsCents || 0) + (d.chinaCogsCents || 0);
+    const fulfillmentCharges = d.chargesCents || 0;
 
     const existing: any = db.prepare(
-      'SELECT id, revenue_cents, is_confirmed, ad_spend_cents, shopify_fees_cents, other_costs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
-    ).get(storeId, today);
+      'SELECT id, revenue_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed, source FROM daily_pnl WHERE store_id = ? AND date = ?'
+    ).get(store.id, today);
 
     // Never overwrite a confirmed/locked day.
     if (existing?.is_confirmed) {
       return { synced: 0, revenue_cents: existing.revenue_cents || 0, order_count: 0 };
     }
-    // No orders today yet — nothing to write.
-    if (!data) {
-      return { synced: 0, revenue_cents: existing?.revenue_cents || 0, order_count: 0 };
-    }
+
+    const platformFeePct = store.platform_fee_pct || 0;
+    const storeCategory = store.amazon_category || null;
+    // Parity with syncStore: don't clobber Shopify-CSV revenue if a row was sourced that way.
+    const useShipSourcedRevenue = !existing || existing.source !== 'shopify';
 
     if (existing) {
-      const totalCosts = (existing.shipping_cost_cents || 0) + (existing.pick_pack_cents || 0) + (existing.packaging_cents || 0)
-        + (existing.ad_spend_cents || 0) + (existing.shopify_fees_cents || 0) + (existing.other_costs_cents || 0);
-      const netProfit = data.netSalesCents - totalCosts;
-      const margin = data.netSalesCents > 0 ? (netProfit / data.netSalesCents) * 100 : 0;
-      db.prepare(`
-        UPDATE daily_pnl SET
-          revenue_cents = ?, order_count = ?, net_profit_cents = ?, margin_pct = ?,
-          source = 'shopify', synced_at = datetime('now'), updated_at = datetime('now')
-        WHERE id = ?
-      `).run(data.netSalesCents, data.orderCount, netProfit, margin, existing.id);
+      const effectiveRevenue = useShipSourcedRevenue ? revenueCents : (existing.revenue_cents || 0);
+      const adSpend = existing.ad_spend_cents || 0;
+      const platformFees = (store.platform === 'amazon' || store.platform === 'ebay')
+        ? calculateDailyPlatformFees(db, store.id, today, store.platform, storeCategory, effectiveRevenue, platformFeePct)
+        : (existing.shopify_fees_cents || 0);
+      const otherCosts = existing.other_costs_cents || 0;
+      const chargebacks = existing.chargeback_cents || 0;
+      const appCosts = existing.app_costs_cents || 0;
+      const totalCosts = productCost + fulfillmentCharges + adSpend + platformFees + otherCosts + chargebacks + appCosts;
+      const netProfit = effectiveRevenue - totalCosts;
+      const margin = effectiveRevenue > 0 ? (netProfit / effectiveRevenue) * 100 : 0;
+
+      if (useShipSourcedRevenue) {
+        db.prepare(`
+          UPDATE daily_pnl SET
+            revenue_cents = ?, order_count = ?, cogs_cents = ?, us_cogs_cents = ?, china_cogs_cents = ?,
+            shipping_cost_cents = ?, pick_pack_cents = 0, packaging_cents = 0, shopify_fees_cents = ?,
+            net_profit_cents = ?, margin_pct = ?, source = 'shipsourced',
+            synced_at = datetime('now'), updated_at = datetime('now')
+          WHERE id = ?
+        `).run(revenueCents, orderCount, productCost, d.usCogsCents, d.chinaCogsCents, fulfillmentCharges,
+          platformFees, netProfit, margin, existing.id);
+      } else {
+        db.prepare(`
+          UPDATE daily_pnl SET
+            cogs_cents = ?, us_cogs_cents = ?, china_cogs_cents = ?,
+            shipping_cost_cents = ?, pick_pack_cents = 0, packaging_cents = 0, shopify_fees_cents = ?,
+            net_profit_cents = ?, margin_pct = ?, synced_at = datetime('now'), updated_at = datetime('now')
+          WHERE id = ?
+        `).run(productCost, d.usCogsCents, d.chinaCogsCents, fulfillmentCharges, platformFees, netProfit, margin, existing.id);
+      }
+      return { synced: 1, revenue_cents: effectiveRevenue, order_count: useShipSourcedRevenue ? orderCount : 0 };
     } else {
+      const platformFees = (store.platform === 'amazon' || store.platform === 'ebay')
+        ? calculateDailyPlatformFees(db, store.id, today, store.platform, storeCategory, revenueCents, platformFeePct)
+        : 0;
+      const totalCosts = productCost + fulfillmentCharges + platformFees;
+      const netProfit = revenueCents - totalCosts;
+      const margin = revenueCents > 0 ? (netProfit / revenueCents) * 100 : 0;
       db.prepare(`
-        INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count,
-          cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents,
-          ad_spend_cents, shopify_fees_cents, other_costs_cents,
-          net_profit_cents, margin_pct, source, synced_at)
-        VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, ?, ?, 'shopify', datetime('now'))
-      `).run(crypto.randomUUID(), storeId, today, data.netSalesCents, data.orderCount,
-        data.netSalesCents, data.netSalesCents > 0 ? 100 : 0);
+        INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count, cogs_cents,
+          us_cogs_cents, china_cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents,
+          shopify_fees_cents, net_profit_cents, margin_pct, source, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'sync', datetime('now'))
+      `).run(crypto.randomUUID(), store.id, today, revenueCents, orderCount, productCost,
+        d.usCogsCents, d.chinaCogsCents, fulfillmentCharges, platformFees, netProfit, margin);
+      return { synced: 1, revenue_cents: revenueCents, order_count: orderCount };
     }
-    return { synced: 1, revenue_cents: data.netSalesCents, order_count: data.orderCount };
   } catch (err: any) {
     console.error(`[today-sync] ${store.name}: ${err.message}`);
     return { synced: 0, revenue_cents: 0, order_count: 0, error: err.message };
   }
 }
 
-// In-memory throttle so rapid dashboard reloads/polls don't re-hit Shopify for the
+// In-memory throttle so rapid dashboard reloads/polls don't re-hit ShipSourced for the
 // same store. Per-store min interval; persists for the life of the PM2 process.
 const _todaySyncThrottle = new Map<string, number>();
 
 /**
- * Sync today's revenue for all visible Shopify stores IN PARALLEL.
- * Cross-store parallelism is safe — Shopify rate limits are per-shop, and each store
- * is a different shop. Throttled per-store to avoid redundant work on frequent polls.
+ * Sync today's revenue for all visible stores IN PARALLEL from ShipSourced.
+ * Each call is a light today-only fetch against the internal ShipSourced API; running
+ * them concurrently is safe (internal API key, no per-shop limits). Throttled per-store
+ * to avoid redundant work on frequent polls.
  */
 export async function syncTodayRevenueAll(throttleMs = 30000): Promise<{ stores: number; synced: number; revenue_cents: number }> {
   const db = getDb();
   const stores: any[] = db.prepare(
     `SELECT id FROM stores WHERE is_active = 1 AND COALESCE(dashboard_hidden, 0) = 0
-       AND COALESCE(platform, 'shopify') = 'shopify'
-       AND shopify_domain IS NOT NULL AND shopify_domain != ''
-       AND shopify_access_token IS NOT NULL AND shopify_access_token != ''`
+       AND shipsourced_client_id IS NOT NULL AND shipsourced_client_id != ''`
   ).all();
 
   const now = Date.now();
