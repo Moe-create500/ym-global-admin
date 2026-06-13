@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo, Suspense } from 'react';
+import { useEffect, useState, useMemo, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import StoreSelector from '@/components/StoreSelector';
@@ -282,9 +282,14 @@ function DashboardContent() {
     }
   }, [storeId, range]);
 
-  // Near-real-time revenue: fast today-only Shopify sync on load + every 90s while
-  // the dashboard is open. Decoupled from the heavy /api/sync/auto path so today's
-  // numbers stay fresh without waiting for the 30-min background sync.
+  // Always points at the latest loadData so the poll can reload with the current range
+  // without recreating its interval when the range changes.
+  const loadDataRef = useRef<(opts?: { silent?: boolean }) => void>(() => {});
+
+  // Near-real-time revenue: fast today-only ShipSourced sync on load + every 90s while
+  // the dashboard is open. Keyed on storeId only — today's revenue is range-independent,
+  // so switching Today/MTD/YTD never re-fires a sync. Decoupled from the heavy
+  // /api/sync/auto path so today's numbers stay fresh without the 30-min background sync.
   useEffect(() => {
     let cancelled = false;
     const url = storeId ? `/api/sync/today?storeId=${storeId}` : '/api/sync/today';
@@ -292,71 +297,93 @@ function DashboardContent() {
       try {
         const res = await fetch(url, { method: 'POST' });
         const d = await res.json();
-        if (!cancelled && d.synced > 0) loadData({ silent: true });
+        if (!cancelled && d.synced > 0) loadDataRef.current({ silent: true });
       } catch {}
     };
-    tick(); // immediate refresh on load / store / range change
+    tick(); // immediate refresh on load / store change
     const interval = setInterval(tick, 90000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [storeId, range]);
+  }, [storeId]);
+
+  // Monotonic load counter: only the most recent loadData call may commit its results,
+  // so a slow in-flight load can't overwrite fresher data (last-write-wins guard).
+  const loadGenRef = useRef(0);
 
   async function loadData(opts?: { silent?: boolean }) {
+    const gen = ++loadGenRef.current;
     if (!opts?.silent) setLoading(true);
-    const from = getRangeFrom(range);
-    const prev = getPrevRange(range);
-    const pnlParams = new URLSearchParams({ period: 'daily', from });
-    if (range === 'yesterday') pnlParams.set('to', from);
-    if (storeId) pnlParams.set('storeId', storeId); else pnlParams.set('visibleOnly', '1');
+    try {
+      const from = getRangeFrom(range);
+      const prev = getPrevRange(range);
+      const pnlParams = new URLSearchParams({ period: 'daily', from });
+      if (range === 'yesterday') pnlParams.set('to', from);
+      if (storeId) pnlParams.set('storeId', storeId); else pnlParams.set('visibleOnly', '1');
 
-    const prevPnlParams = new URLSearchParams({ period: 'daily', from: prev.from, to: prev.to });
-    if (storeId) prevPnlParams.set('storeId', storeId); else prevPnlParams.set('visibleOnly', '1');
+      const prevPnlParams = new URLSearchParams({ period: 'daily', from: prev.from, to: prev.to });
+      if (storeId) prevPnlParams.set('storeId', storeId); else prevPnlParams.set('visibleOnly', '1');
 
-    // Also fetch last 30 days for the chart
-    const chartFrom = getPacificDate(-29);
-    const chartParams = new URLSearchParams({ period: 'daily', from: chartFrom });
-    if (storeId) chartParams.set('storeId', storeId); else chartParams.set('visibleOnly', '1');
+      // Also fetch last 30 days for the chart
+      const chartFrom = getPacificDate(-29);
+      const chartParams = new URLSearchParams({ period: 'daily', from: chartFrom });
+      if (storeId) chartParams.set('storeId', storeId); else chartParams.set('visibleOnly', '1');
 
-    const storesRange = range === 'daily' ? 'daily' : range === 'yesterday' ? 'yesterday' : range === 'yearly' ? 'yearly' : 'monthly';
+      const storesRange = range === 'daily' ? 'daily' : range === 'yesterday' ? 'yesterday' : range === 'yearly' ? 'yearly' : 'monthly';
 
-    const [storesRes, pnlRes, prevPnlRes, chartRes] = await Promise.all([
-      fetch(`/api/stores?range=${storesRange}`),
-      fetch(`/api/pnl?${pnlParams}`),
-      fetch(`/api/pnl?${prevPnlParams}`),
-      fetch(`/api/pnl?${chartParams}`),
-    ]);
-    const storesData = await storesRes.json();
-    const pnlData = await pnlRes.json();
-    const prevPnlData = await prevPnlRes.json();
-    const chartData = await chartRes.json();
+      const [storesRes, pnlRes, prevPnlRes, chartRes] = await Promise.all([
+        fetch(`/api/stores?range=${storesRange}`),
+        fetch(`/api/pnl?${pnlParams}`),
+        fetch(`/api/pnl?${prevPnlParams}`),
+        fetch(`/api/pnl?${chartParams}`),
+      ]);
+      const storesData = await storesRes.json();
+      const pnlData = await pnlRes.json();
+      const prevPnlData = await prevPnlRes.json();
+      const chartData = await chartRes.json();
 
-    setStores(storesData.stores || []);
-    setAlerts(storesData.alerts || []);
-    setSparklines(storesData.sparklines || {});
-    setTotals(pnlData.totals || null);
-    setPrevTotals(prevPnlData.totals || null);
-    setRows((chartData.rows || []).slice(0, 30));
-    setLoading(false);
+      // A newer load started while we were fetching — discard these (stale) results.
+      if (gen !== loadGenRef.current) return;
+
+      setStores(storesData.stores || []);
+      setAlerts(storesData.alerts || []);
+      setSparklines(storesData.sparklines || {});
+      setTotals(pnlData.totals || null);
+      setPrevTotals(prevPnlData.totals || null);
+      setRows((chartData.rows || []).slice(0, 30));
+    } catch {
+      // Network/parse error — leave existing data in place.
+    } finally {
+      // Only the latest load clears the spinner, and only if it owned it.
+      if (gen === loadGenRef.current && !opts?.silent) setLoading(false);
+    }
   }
+
+  // Keep the poll's ref pointed at the freshest loadData (current range/storeId closure).
+  loadDataRef.current = loadData;
 
   async function handleSync() {
     setSyncing(true);
     setSyncResult(null);
-    const url = storeId ? `/api/sync/shipsourced?storeId=${storeId}` : '/api/sync/shipsourced';
-    const todayUrl = storeId ? `/api/sync/today?storeId=${storeId}` : '/api/sync/today';
-    // Refresh today's Shopify revenue in parallel — the ShipSourced sync above does not
-    // re-pull Shopify revenue for a single store, so this is what makes "Sync" update it.
-    const [res] = await Promise.all([
-      fetch(url, { method: 'POST' }),
-      fetch(todayUrl, { method: 'POST' }).catch(() => null),
-    ]);
-    const data = await res.json();
-    if (data.success || data.synced > 0) {
-      setSyncResult(`Synced ${data.synced} records${data.storesProcessed ? ` from ${data.storesProcessed} stores` : ''}`);
-      loadData();
-    } else {
-      setSyncResult(data.message || data.error || 'Sync completed');
+    try {
+      const url = storeId ? `/api/sync/shipsourced?storeId=${storeId}` : '/api/sync/shipsourced';
+      const todayUrl = storeId ? `/api/sync/today?storeId=${storeId}` : '/api/sync/today';
+      // Refresh today's revenue in parallel — the ShipSourced full sync does not re-pull
+      // revenue for a single store, so this is what makes "Sync" update today's number.
+      const [res] = await Promise.all([
+        fetch(url, { method: 'POST' }),
+        fetch(todayUrl, { method: 'POST' }).catch(() => null),
+      ]);
+      const data = await res.json();
+      if (data.success || data.synced > 0) {
+        setSyncResult(`Synced ${data.synced} records${data.storesProcessed ? ` from ${data.storesProcessed} stores` : ''}`);
+        loadData();
+      } else {
+        setSyncResult(data.message || data.error || 'Sync completed');
+      }
+    } catch {
+      setSyncResult('Sync failed — please try again');
+    } finally {
+      setSyncing(false);
     }
-    setSyncing(false);
   }
 
   // Sort & filter stores

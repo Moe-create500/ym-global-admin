@@ -406,7 +406,11 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
 
     const revenueCents = Math.round((d.revenue || 0) * 100);
     const orderCount = d.orderCount || 0;
-    const productCost = (d.usCogsCents || 0) + (d.chinaCogsCents || 0);
+    // Default COGS splits to 0 (parity with syncStore) — ShipSourced may omit them for a
+    // day, and binding undefined to SQLite throws.
+    const usCogs = d.usCogsCents || 0;
+    const chinaCogs = d.chinaCogsCents || 0;
+    const productCost = usCogs + chinaCogs;
     const fulfillmentCharges = d.chargesCents || 0;
 
     const existing: any = db.prepare(
@@ -444,7 +448,7 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
             net_profit_cents = ?, margin_pct = ?, source = 'shipsourced',
             synced_at = datetime('now'), updated_at = datetime('now')
           WHERE id = ?
-        `).run(revenueCents, orderCount, productCost, d.usCogsCents, d.chinaCogsCents, fulfillmentCharges,
+        `).run(revenueCents, orderCount, productCost, usCogs, chinaCogs, fulfillmentCharges,
           platformFees, netProfit, margin, existing.id);
       } else {
         db.prepare(`
@@ -453,7 +457,7 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
             shipping_cost_cents = ?, pick_pack_cents = 0, packaging_cents = 0, shopify_fees_cents = ?,
             net_profit_cents = ?, margin_pct = ?, synced_at = datetime('now'), updated_at = datetime('now')
           WHERE id = ?
-        `).run(productCost, d.usCogsCents, d.chinaCogsCents, fulfillmentCharges, platformFees, netProfit, margin, existing.id);
+        `).run(productCost, usCogs, chinaCogs, fulfillmentCharges, platformFees, netProfit, margin, existing.id);
       }
       return { synced: 1, revenue_cents: effectiveRevenue, order_count: useShipSourcedRevenue ? orderCount : 0 };
     } else {
@@ -469,7 +473,7 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
           shopify_fees_cents, net_profit_cents, margin_pct, source, synced_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'sync', datetime('now'))
       `).run(crypto.randomUUID(), store.id, today, revenueCents, orderCount, productCost,
-        d.usCogsCents, d.chinaCogsCents, fulfillmentCharges, platformFees, netProfit, margin);
+        usCogs, chinaCogs, fulfillmentCharges, platformFees, netProfit, margin);
       return { synced: 1, revenue_cents: revenueCents, order_count: orderCount };
     }
   } catch (err: any) {
