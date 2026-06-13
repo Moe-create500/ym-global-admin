@@ -56,11 +56,16 @@ export async function getShopifyDailySales(
   domain: string,
   token: string,
   from: string,
-  to: string
+  to: string,
+  opts?: { fields?: string }
 ): Promise<Record<string, DailySales>> {
+  // Narrow the payload to only the fields the revenue math needs, when requested.
+  // `refunds` returns the nested transactions/refund_line_items used below.
+  const fieldsParam = opts?.fields ? `&fields=${opts.fields}` : '';
+
   // Fetch orders created in the date range (includes their refunds)
   const orders = await fetchAllPages(domain, token,
-    `orders.json?created_at_min=${from}T00:00:00&created_at_max=${to}T23:59:59&status=any&limit=250`
+    `orders.json?created_at_min=${from}T00:00:00&created_at_max=${to}T23:59:59&status=any&limit=250${fieldsParam}`
   );
 
   // For short sync windows (<=30 days), also fetch recently-updated orders
@@ -68,7 +73,7 @@ export async function getShopifyDailySales(
   const daySpan = (new Date(to).getTime() - new Date(from).getTime()) / 86400000;
   if (daySpan <= 30) {
     const updatedOrders = await fetchAllPages(domain, token,
-      `orders.json?updated_at_min=${from}T00:00:00&updated_at_max=${to}T23:59:59&status=any&limit=250`
+      `orders.json?updated_at_min=${from}T00:00:00&updated_at_max=${to}T23:59:59&status=any&limit=250${fieldsParam}`
     );
     const existingIds = new Set(orders.map(o => o.id));
     for (const o of updatedOrders) {

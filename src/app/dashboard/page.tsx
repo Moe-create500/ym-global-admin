@@ -282,8 +282,26 @@ function DashboardContent() {
     }
   }, [storeId, range]);
 
-  async function loadData() {
-    setLoading(true);
+  // Near-real-time revenue: fast today-only Shopify sync on load + every 90s while
+  // the dashboard is open. Decoupled from the heavy /api/sync/auto path so today's
+  // numbers stay fresh without waiting for the 30-min background sync.
+  useEffect(() => {
+    let cancelled = false;
+    const url = storeId ? `/api/sync/today?storeId=${storeId}` : '/api/sync/today';
+    const tick = async () => {
+      try {
+        const res = await fetch(url, { method: 'POST' });
+        const d = await res.json();
+        if (!cancelled && d.synced > 0) loadData({ silent: true });
+      } catch {}
+    };
+    tick(); // immediate refresh on load / store / range change
+    const interval = setInterval(tick, 90000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [storeId, range]);
+
+  async function loadData(opts?: { silent?: boolean }) {
+    if (!opts?.silent) setLoading(true);
     const from = getRangeFrom(range);
     const prev = getPrevRange(range);
     const pnlParams = new URLSearchParams({ period: 'daily', from });
@@ -324,7 +342,13 @@ function DashboardContent() {
     setSyncing(true);
     setSyncResult(null);
     const url = storeId ? `/api/sync/shipsourced?storeId=${storeId}` : '/api/sync/shipsourced';
-    const res = await fetch(url, { method: 'POST' });
+    const todayUrl = storeId ? `/api/sync/today?storeId=${storeId}` : '/api/sync/today';
+    // Refresh today's Shopify revenue in parallel — the ShipSourced sync above does not
+    // re-pull Shopify revenue for a single store, so this is what makes "Sync" update it.
+    const [res] = await Promise.all([
+      fetch(url, { method: 'POST' }),
+      fetch(todayUrl, { method: 'POST' }).catch(() => null),
+    ]);
     const data = await res.json();
     if (data.success || data.synced > 0) {
       setSyncResult(`Synced ${data.synced} records${data.storesProcessed ? ` from ${data.storesProcessed} stores` : ''}`);

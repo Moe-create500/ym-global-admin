@@ -381,6 +381,101 @@ export async function syncShopifyRevenue(storeId: string): Promise<{ synced: num
   }
 }
 
+/**
+ * FAST PATH: sync ONLY today's Shopify revenue for one store.
+ * Fetches a single-day window with a narrowed field set and upserts just today's
+ * daily_pnl row. Used by the live dashboard for near-real-time revenue, decoupled
+ * from the heavy 7-day/historical sync. Skips confirmed rows. Typically ~1-2 small
+ * Shopify calls (~1s). Returns today's revenue + order count.
+ */
+export async function syncTodayRevenue(storeId: string): Promise<{ synced: number; revenue_cents: number; order_count: number; error?: string }> {
+  const db = getDb();
+  const store: any = db.prepare(
+    'SELECT id, name, shopify_domain, shopify_access_token FROM stores WHERE id = ? AND is_active = 1'
+  ).get(storeId);
+  if (!store?.shopify_domain || !store?.shopify_access_token) {
+    return { synced: 0, revenue_cents: 0, order_count: 0 };
+  }
+
+  try {
+    const { getShopifyDailySales } = await import('@/lib/shopify');
+    const today = pacificDate();
+    const sales = await getShopifyDailySales(store.shopify_domain, store.shopify_access_token, today, today, {
+      fields: 'created_at,total_price,refunds,financial_status',
+    });
+    const data = sales[today];
+
+    const existing: any = db.prepare(
+      'SELECT id, revenue_cents, is_confirmed, ad_spend_cents, shopify_fees_cents, other_costs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
+    ).get(storeId, today);
+
+    // Never overwrite a confirmed/locked day.
+    if (existing?.is_confirmed) {
+      return { synced: 0, revenue_cents: existing.revenue_cents || 0, order_count: 0 };
+    }
+    // No orders today yet — nothing to write.
+    if (!data) {
+      return { synced: 0, revenue_cents: existing?.revenue_cents || 0, order_count: 0 };
+    }
+
+    if (existing) {
+      const totalCosts = (existing.shipping_cost_cents || 0) + (existing.pick_pack_cents || 0) + (existing.packaging_cents || 0)
+        + (existing.ad_spend_cents || 0) + (existing.shopify_fees_cents || 0) + (existing.other_costs_cents || 0);
+      const netProfit = data.netSalesCents - totalCosts;
+      const margin = data.netSalesCents > 0 ? (netProfit / data.netSalesCents) * 100 : 0;
+      db.prepare(`
+        UPDATE daily_pnl SET
+          revenue_cents = ?, order_count = ?, net_profit_cents = ?, margin_pct = ?,
+          source = 'shopify', synced_at = datetime('now'), updated_at = datetime('now')
+        WHERE id = ?
+      `).run(data.netSalesCents, data.orderCount, netProfit, margin, existing.id);
+    } else {
+      db.prepare(`
+        INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count,
+          cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents,
+          ad_spend_cents, shopify_fees_cents, other_costs_cents,
+          net_profit_cents, margin_pct, source, synced_at)
+        VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, ?, ?, 'shopify', datetime('now'))
+      `).run(crypto.randomUUID(), storeId, today, data.netSalesCents, data.orderCount,
+        data.netSalesCents, data.netSalesCents > 0 ? 100 : 0);
+    }
+    return { synced: 1, revenue_cents: data.netSalesCents, order_count: data.orderCount };
+  } catch (err: any) {
+    console.error(`[today-sync] ${store.name}: ${err.message}`);
+    return { synced: 0, revenue_cents: 0, order_count: 0, error: err.message };
+  }
+}
+
+// In-memory throttle so rapid dashboard reloads/polls don't re-hit Shopify for the
+// same store. Per-store min interval; persists for the life of the PM2 process.
+const _todaySyncThrottle = new Map<string, number>();
+
+/**
+ * Sync today's revenue for all visible Shopify stores IN PARALLEL.
+ * Cross-store parallelism is safe — Shopify rate limits are per-shop, and each store
+ * is a different shop. Throttled per-store to avoid redundant work on frequent polls.
+ */
+export async function syncTodayRevenueAll(throttleMs = 30000): Promise<{ stores: number; synced: number; revenue_cents: number }> {
+  const db = getDb();
+  const stores: any[] = db.prepare(
+    `SELECT id FROM stores WHERE is_active = 1 AND COALESCE(dashboard_hidden, 0) = 0
+       AND COALESCE(platform, 'shopify') = 'shopify'
+       AND shopify_domain IS NOT NULL AND shopify_domain != ''
+       AND shopify_access_token IS NOT NULL AND shopify_access_token != ''`
+  ).all();
+
+  const now = Date.now();
+  const due = stores.filter(s => (now - (_todaySyncThrottle.get(s.id) || 0)) >= throttleMs);
+  for (const s of due) _todaySyncThrottle.set(s.id, now); // reserve before awaiting
+
+  const results = await Promise.all(due.map(s => syncTodayRevenue(s.id)));
+  return {
+    stores: due.length,
+    synced: results.reduce((a, r) => a + r.synced, 0),
+    revenue_cents: results.reduce((a, r) => a + r.revenue_cents, 0),
+  };
+}
+
 export async function syncAllStores(): Promise<{ results: SyncResult[]; logId: string }> {
   const db = getDb();
   const stores: any[] = db.prepare(
