@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { ensureReconcileTable } from '@/lib/cfo-reconcile';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,10 +47,23 @@ export async function GET() {
     prevMap[p.store_id] = p.equity_cents;
   }
 
+  // Latest reconciliation status per store (drift detection).
+  ensureReconcileTable(db);
+  const recons: any[] = db.prepare(`
+    SELECT r.store_id, r.status, r.residual_cents, r.tolerance_cents, r.period_end
+    FROM cfo_reconciliations r
+    INNER JOIN (
+      SELECT store_id, MAX(period_end) AS mpe FROM cfo_reconciliations GROUP BY store_id
+    ) latest ON r.store_id = latest.store_id AND r.period_end = latest.mpe
+  `).all();
+  const reconMap: Record<string, any> = {};
+  for (const r of recons) reconMap[r.store_id] = r;
+
   // Build result: all stores with their latest snapshot
   const storeData = stores.map(store => {
     const snap = snapshotMap[store.id];
     const prevEquity = prevMap[store.id];
+    const recon = reconMap[store.id];
     return {
       store_id: store.id,
       store_name: store.name,
@@ -60,6 +74,8 @@ export async function GET() {
       equity_cents: snap?.equity_cents || 0,
       created_at: snap?.created_at || null,
       equity_change_cents: snap && prevEquity !== undefined ? snap.equity_cents - prevEquity : null,
+      recon_status: recon?.status || null,
+      recon_residual_cents: recon?.residual_cents ?? null,
     };
   });
 

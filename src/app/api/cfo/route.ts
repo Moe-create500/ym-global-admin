@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { reconcileSnapshot } from '@/lib/cfo-reconcile';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -413,5 +414,14 @@ export async function POST(req: NextRequest) {
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(id, storeId, date, assets_cents || 0, liabilities_cents || 0, equity_cents || 0, data ? JSON.stringify(data) : null);
 
-  return NextResponse.json({ success: true, id, date });
+  // Auto-reconcile this snapshot against the prior one so the CFO can immediately see
+  // whether the new (more accurate) balances tie out to the P&L, and why if they don't.
+  let reconciliation = null;
+  try {
+    reconciliation = reconcileSnapshot(db, storeId, id);
+  } catch (err) {
+    console.error('[cfo] reconciliation failed:', (err as any)?.message);
+  }
+
+  return NextResponse.json({ success: true, id, date, reconciliation });
 }
