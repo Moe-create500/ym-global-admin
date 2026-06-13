@@ -69,10 +69,29 @@ interface OverviewStore {
   recon_residual_cents: number | null;
 }
 
-interface ReconItem { key: string; label: string; amount_cents: number; kind: string; note?: string }
+interface ReconItemDetail { id: string; date: string; amount_cents: number; description: string; card?: string; platform?: string; matched?: boolean }
+interface ReconItem { key: string; label: string; amount_cents: number; kind: string; note?: string; details?: { invoices?: ReconItemDetail[]; payments?: ReconItemDetail[]; bank_txns?: ReconItemDetail[] } }
+
+interface MoneyFlowSummary {
+  total_invoiced_cents: number;
+  total_paid_cents: number;
+  total_matched_cents: number;
+  total_unmatched_cents: number;
+  match_rate_pct: number;
+  ad_invoices: number;
+  ad_payments: number;
+  app_invoices: number;
+  app_payments: number;
+  ss_payments: number;
+  owner_draws_cents: number;
+  owner_contributions_cents: number;
+}
+
 interface ReconResult {
   period_start: string;
   period_end: string;
+  period_start_ts?: string;
+  period_end_ts?: string;
   delta_equity_cents: number;
   net_income_cents: number;
   gap_cents: number;
@@ -85,6 +104,7 @@ interface ReconResult {
   liability_deltas: { key: string; label: string; delta_cents: number }[];
   pnl: { revenue: number; fulfillment: number; ad: number; fees: number; app: number; other: number; chargeback: number; net: number };
   flows: { ss_paid: number; ad_paid: number; app_paid: number; owner_draws: number; owner_contributions: number };
+  flows_detail?: { summary: MoneyFlowSummary } | null;
   unmodeled_keys: string[];
   drivers: { label: string; amount_cents: number }[];
 }
@@ -101,7 +121,35 @@ function signed(amount: number): string {
   return amount < 0 ? `−${s}` : `+${s}`;
 }
 
+function formatTs(ts: string | undefined): string {
+  if (!ts) return '';
+  try {
+    const d = new Date(ts.includes('T') || ts.includes('Z') ? ts : ts + 'Z');
+    return d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric', timeZone: 'America/Los_Angeles' })
+      + ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' });
+  } catch { return ts || ''; }
+}
+
+function DetailRow({ d, type }: { d: ReconItemDetail; type: 'invoice' | 'payment' | 'bank_txn' }) {
+  const bgClass = d.matched ? 'bg-emerald-950/20 border-emerald-900/30' : 'bg-red-950/10 border-red-900/20';
+  const dotColor = d.matched ? 'bg-emerald-500' : 'bg-red-500';
+  return (
+    <div className={`flex items-center justify-between px-3 py-1.5 border rounded text-[11px] ${bgClass}`}>
+      <div className="flex items-center gap-2 min-w-0 flex-1">
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
+        <span className="text-slate-400 shrink-0">{d.date}</span>
+        <span className="text-slate-300 truncate">{d.description || (type === 'bank_txn' ? 'Bank transaction' : type === 'payment' ? 'Payment' : 'Invoice')}</span>
+        {d.card && <span className="text-slate-500 font-mono shrink-0">*{d.card}</span>}
+        {d.platform && <span className="text-blue-400/60 shrink-0">{d.platform}</span>}
+      </div>
+      <span className={`font-mono shrink-0 ml-2 ${d.amount_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{cents(Math.abs(d.amount_cents))}</span>
+    </div>
+  );
+}
+
 function ReconciliationPanel({ recon }: { recon: ReconResult | null }) {
+  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+
   if (!recon || recon.status === 'insufficient_data') {
     return (
       <div className="mt-8 bg-slate-900 border border-slate-800 rounded-xl p-5">
@@ -114,10 +162,20 @@ function ReconciliationPanel({ recon }: { recon: ReconResult | null }) {
   }
 
   const matched = recon.status === 'matched';
-  const accent = matched ? 'emerald' : 'amber';
-  // Bridge: start at Net Profit, apply each reconciling item, arrive at Expected ΔEquity,
-  // compare to Actual ΔEquity, the difference is the unexplained residual.
   const expected = recon.net_income_cents + recon.explained_cents;
+  const flowSummary = recon.flows_detail?.summary;
+
+  const toggleItem = (key: string) => {
+    setExpandedItems(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const periodLabel = recon.period_start_ts
+    ? `${formatTs(recon.period_start_ts)} → ${formatTs(recon.period_end_ts)}`
+    : `${recon.period_start} → ${recon.period_end}`;
 
   return (
     <div className={`mt-8 bg-slate-900 border rounded-xl overflow-hidden ${matched ? 'border-emerald-900/50' : 'border-amber-800/60'}`}>
@@ -130,7 +188,7 @@ function ReconciliationPanel({ recon }: { recon: ReconResult | null }) {
             </span>
           </h2>
           <p className="text-[11px] text-slate-400 mt-1">
-            {recon.period_start} → {recon.period_end} · tolerance {cents(recon.tolerance_cents)}
+            {periodLabel} · tolerance {cents(recon.tolerance_cents)}
           </p>
         </div>
         <div className="text-right">
@@ -152,6 +210,53 @@ function ReconciliationPanel({ recon }: { recon: ReconResult | null }) {
           </div>
         </div>
 
+        {/* Money Flow Summary */}
+        {flowSummary && (flowSummary.ad_invoices > 0 || flowSummary.app_invoices > 0 || flowSummary.ss_payments > 0) && (
+          <div className="bg-slate-800/30 rounded-lg p-3 mb-5 border border-slate-700/50">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-[11px] font-semibold text-white uppercase tracking-wider">Money Flow</h3>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                flowSummary.match_rate_pct >= 90 ? 'bg-emerald-900/40 text-emerald-300' :
+                flowSummary.match_rate_pct >= 50 ? 'bg-amber-900/40 text-amber-300' :
+                'bg-red-900/40 text-red-300'
+              }`}>{flowSummary.match_rate_pct}% matched</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-[11px]">
+              {flowSummary.ad_invoices > 0 && (
+                <div className="bg-slate-900/50 rounded p-2">
+                  <p className="text-blue-400 font-medium">Ad Spend</p>
+                  <p className="text-white font-mono">{cents(flowSummary.total_invoiced_cents)}</p>
+                  <p className="text-slate-500">{flowSummary.ad_invoices} invoices · {flowSummary.ad_payments} payments</p>
+                </div>
+              )}
+              {flowSummary.app_invoices > 0 && (
+                <div className="bg-slate-900/50 rounded p-2">
+                  <p className="text-emerald-400 font-medium">App Costs</p>
+                  <p className="text-white font-mono">{cents(flowSummary.total_invoiced_cents - (flowSummary.ad_invoices > 0 ? flowSummary.total_invoiced_cents : 0))}</p>
+                  <p className="text-slate-500">{flowSummary.app_invoices} invoices · {flowSummary.app_payments} payments</p>
+                </div>
+              )}
+              {flowSummary.ss_payments > 0 && (
+                <div className="bg-slate-900/50 rounded p-2">
+                  <p className="text-orange-400 font-medium">Fulfillment</p>
+                  <p className="text-white font-mono">{cents(Math.abs(flowSummary.owner_draws_cents || 0))}</p>
+                  <p className="text-slate-500">{flowSummary.ss_payments} payments</p>
+                </div>
+              )}
+            </div>
+            {(flowSummary.owner_draws_cents !== 0 || flowSummary.owner_contributions_cents !== 0) && (
+              <div className="mt-2 flex gap-3 text-[11px]">
+                {flowSummary.owner_draws_cents !== 0 && (
+                  <span className="text-purple-400">Owner draws: <span className="font-mono text-red-400">{cents(Math.abs(flowSummary.owner_draws_cents))}</span></span>
+                )}
+                {flowSummary.owner_contributions_cents !== 0 && (
+                  <span className="text-purple-400">Owner contributions: <span className="font-mono text-emerald-400">{cents(flowSummary.owner_contributions_cents)}</span></span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Bridge waterfall */}
         <div className="space-y-1.5 text-sm">
           <div className="flex items-center justify-between py-1.5 border-b border-slate-800">
@@ -161,20 +266,67 @@ function ReconciliationPanel({ recon }: { recon: ReconResult | null }) {
           {recon.items.length === 0 && (
             <div className="py-1.5 text-xs text-slate-500 italic">No reconciling items — equity should equal profit exactly.</div>
           )}
-          {recon.items.map(item => (
-            <div key={item.key} className="flex items-start justify-between py-1.5 group">
-              <div className="flex-1 pr-3">
-                <span className="text-slate-300">{item.label}</span>
-                <span className={`ml-2 text-[9px] uppercase px-1.5 py-0.5 rounded ${
-                  item.kind === 'capital' ? 'bg-purple-900/40 text-purple-300'
-                  : item.kind === 'timing' ? 'bg-blue-900/40 text-blue-300'
-                  : 'bg-slate-700/50 text-slate-400'
-                }`}>{item.kind}</span>
-                {item.note && <p className="text-[10px] text-slate-500 mt-0.5 leading-tight">{item.note}</p>}
+          {recon.items.map(item => {
+            const hasDetails = item.details && (
+              (item.details.invoices && item.details.invoices.length > 0) ||
+              (item.details.payments && item.details.payments.length > 0) ||
+              (item.details.bank_txns && item.details.bank_txns.length > 0)
+            );
+            const isExpanded = expandedItems.has(item.key);
+
+            return (
+              <div key={item.key}>
+                <div
+                  className={`flex items-start justify-between py-1.5 group ${hasDetails ? 'cursor-pointer hover:bg-slate-800/30 rounded px-1 -mx-1' : ''}`}
+                  onClick={() => hasDetails && toggleItem(item.key)}
+                >
+                  <div className="flex-1 pr-3">
+                    <span className="text-slate-300">{item.label}</span>
+                    {hasDetails && (
+                      <span className="ml-1.5 text-[9px] text-slate-500">{isExpanded ? '▼' : '▶'}</span>
+                    )}
+                    <span className={`ml-2 text-[9px] uppercase px-1.5 py-0.5 rounded ${
+                      item.kind === 'capital' ? 'bg-purple-900/40 text-purple-300'
+                      : item.kind === 'timing' ? 'bg-blue-900/40 text-blue-300'
+                      : 'bg-slate-700/50 text-slate-400'
+                    }`}>{item.kind}</span>
+                    {item.note && <p className="text-[10px] text-slate-500 mt-0.5 leading-tight">{item.note}</p>}
+                  </div>
+                  <span className={`font-mono ${item.amount_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{signed(item.amount_cents)}</span>
+                </div>
+
+                {/* Expanded detail panel */}
+                {isExpanded && item.details && (
+                  <div className="ml-4 mb-2 space-y-1">
+                    {item.details.invoices && item.details.invoices.length > 0 && (
+                      <div>
+                        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1 mt-1">Invoices</p>
+                        <div className="space-y-0.5">
+                          {item.details.invoices.map((d, i) => <DetailRow key={i} d={d} type="invoice" />)}
+                        </div>
+                      </div>
+                    )}
+                    {item.details.payments && item.details.payments.length > 0 && (
+                      <div>
+                        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1 mt-1">Payments</p>
+                        <div className="space-y-0.5">
+                          {item.details.payments.map((d, i) => <DetailRow key={i} d={d} type="payment" />)}
+                        </div>
+                      </div>
+                    )}
+                    {item.details.bank_txns && item.details.bank_txns.length > 0 && (
+                      <div>
+                        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1 mt-1">Bank Transactions</p>
+                        <div className="space-y-0.5">
+                          {item.details.bank_txns.map((d, i) => <DetailRow key={i} d={d} type="bank_txn" />)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-              <span className={`font-mono ${item.amount_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{signed(item.amount_cents)}</span>
-            </div>
-          ))}
+            );
+          })}
           <div className="flex items-center justify-between py-1.5 border-t border-slate-800">
             <span className="text-slate-400">= Expected equity move</span>
             <span className="font-mono text-slate-300">{signed(expected)}</span>
@@ -206,7 +358,7 @@ function ReconciliationPanel({ recon }: { recon: ReconResult | null }) {
             </div>
             {recon.flows.owner_draws === 0 && recon.flows.owner_contributions === 0 && (
               <p className="text-[10px] text-slate-500 mt-2">
-                Tip: if money was taken out or put in this period, categorize those bank transactions as “Owner Draw” / “Owner Contribution” and they’ll move out of the residual.
+                Tip: if money was taken out or put in this period, categorize those bank transactions as "Owner Draw" / "Owner Contribution" and they'll move out of the residual.
               </p>
             )}
           </div>

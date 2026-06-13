@@ -18,6 +18,7 @@
  */
 
 import type BetterSqlite3 from 'better-sqlite3';
+import { matchTransactions, type MoneyFlow } from './transaction-matcher';
 
 type DB = BetterSqlite3.Database;
 
@@ -46,12 +47,27 @@ export const LIABILITY_KEYS = [
 const OWNER_DRAW_PATTERNS = ['owner draw', 'owner withdraw', 'withdrawal', 'distribution', 'dividend'];
 const OWNER_CONTRIB_PATTERNS = ['owner contribution', 'owner deposit', 'owner invest', 'capital injection', 'capital contribution', 'owner funding'];
 
+export interface ReconItemDetail {
+  id: string;
+  date: string;
+  amount_cents: number;
+  description: string;
+  card?: string;
+  platform?: string;
+  matched?: boolean;
+}
+
 export interface ReconItem {
   key: string;
   label: string;
   amount_cents: number; // contribution to (ΔEquity − NetProfit)
   kind: 'capital' | 'timing' | 'manual' | 'noncash';
   note?: string;
+  details?: {
+    invoices?: ReconItemDetail[];
+    payments?: ReconItemDetail[];
+    bank_txns?: ReconItemDetail[];
+  };
 }
 
 export interface ComponentDelta {
@@ -68,6 +84,8 @@ export interface ReconResult {
   t2_snapshot_id: string;
   period_start: string; // first P&L date included
   period_end: string;   // last P&L date included
+  period_start_ts: string; // exact snapshot timestamp (t1.created_at)
+  period_end_ts: string;   // exact snapshot timestamp (t2.created_at)
   equity_t1_cents: number;
   equity_t2_cents: number;
   delta_equity_cents: number;
@@ -82,6 +100,7 @@ export interface ReconResult {
   liability_deltas: ComponentDelta[];
   pnl: { revenue: number; fulfillment: number; ad: number; fees: number; app: number; other: number; chargeback: number; net: number };
   flows: { ss_paid: number; ad_paid: number; app_paid: number; owner_draws: number; owner_contributions: number };
+  flows_detail: MoneyFlow | null;
   unmodeled_keys: string[];
   drivers: { label: string; amount_cents: number }[]; // largest residual-bearing component moves
 }
@@ -132,6 +151,7 @@ interface SnapshotRow {
   snapshot_date: string;
   equity_cents: number;
   data: string | null;
+  created_at: string;
 }
 
 /** Flatten a snapshot's stored data JSON into asset/liability component maps. */
@@ -172,7 +192,13 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
   const c1 = components(t1);
   const c2 = components(t2);
 
-  const periodStart = nextDay(t1.snapshot_date);
+  // Use exact snapshot timestamps for period boundaries
+  const periodStartTs = t1.created_at || t1.snapshot_date;
+  const periodEndTs = t2.created_at || t2.snapshot_date;
+
+  // For date-only tables (daily_pnl), use snapshot dates
+  // Include t1's date since transactions after the snapshot are real changes
+  const periodStart = t1.snapshot_date;
   const periodEnd = t2.snapshot_date;
 
   const base: ReconResult = {
@@ -181,6 +207,8 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
     t2_snapshot_id: t2.id,
     period_start: periodStart,
     period_end: periodEnd,
+    period_start_ts: periodStartTs,
+    period_end_ts: periodEndTs,
     equity_t1_cents: t1.equity_cents,
     equity_t2_cents: t2.equity_cents,
     delta_equity_cents: t2.equity_cents - t1.equity_cents,
@@ -195,6 +223,7 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
     liability_deltas: [],
     pnl: { revenue: 0, fulfillment: 0, ad: 0, fees: 0, app: 0, other: 0, chargeback: 0, net: 0 },
     flows: { ss_paid: 0, ad_paid: 0, app_paid: 0, owner_draws: 0, owner_contributions: 0 },
+    flows_detail: null,
     unmodeled_keys: [],
     drivers: [],
   };
@@ -234,11 +263,11 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
 
   // ── Owner capital movements from categorized bank transactions in the window ──
   const ownerRows = db.prepare(`
-    SELECT bt.amount_cents AS amount_cents, COALESCE(bt.custom_category, bt.category, '') AS cat
+    SELECT bt.id, bt.date, bt.amount_cents AS amount_cents, COALESCE(bt.custom_category, bt.category, '') AS cat
     FROM bank_transactions bt
     JOIN bank_accounts ba ON ba.id = bt.bank_account_id
-    WHERE ba.store_id = ? AND bt.date >= ? AND bt.date <= ?
-  `).all(storeId, periodStart, periodEnd) as { amount_cents: number; cat: string }[];
+    WHERE ba.store_id = ? AND bt.date >= ? AND bt.date <= ? AND bt.date != 'N/A'
+  `).all(storeId, periodStart, periodEnd) as { id: string; date: string; amount_cents: number; cat: string }[];
   const owner = sumOwner(ownerRows);
 
   base.flows = { ss_paid: ssPaid, ad_paid: adPaid, app_paid: appPaid, owner_draws: owner.draws, owner_contributions: owner.contributions };
@@ -260,21 +289,74 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
   const items: ReconItem[] = [];
 
   if (owner.draws !== 0) {
+    const drawDetails: ReconItem['details'] = {};
+    // Owner draw details come from bank transactions with matching categories
+    const drawTxns = ownerRows.filter(r => {
+      const c = (r.cat || '').toLowerCase();
+      return OWNER_DRAW_PATTERNS.some(p => c.includes(p));
+    });
+    if (drawTxns.length > 0) {
+      drawDetails.bank_txns = drawTxns.map((t: any) => ({
+        id: t.id || '', date: t.date || '', amount_cents: t.amount_cents,
+        description: t.cat || 'Owner draw', matched: true,
+      }));
+    }
     items.push({ key: 'owner_draws', label: 'Owner draws', amount_cents: owner.draws, kind: 'capital',
-      note: 'Cash withdrawn by owner — reduces equity, never a P&L expense.' });
+      note: 'Cash withdrawn by owner — reduces equity, never a P&L expense.',
+      details: drawDetails.bank_txns?.length ? drawDetails : undefined });
   }
   if (owner.contributions !== 0) {
+    const contribDetails: ReconItem['details'] = {};
+    const contribTxns = ownerRows.filter(r => {
+      const c = (r.cat || '').toLowerCase();
+      return OWNER_CONTRIB_PATTERNS.some(p => c.includes(p));
+    });
+    if (contribTxns.length > 0) {
+      contribDetails.bank_txns = contribTxns.map((t: any) => ({
+        id: t.id || '', date: t.date || '', amount_cents: t.amount_cents,
+        description: t.cat || 'Owner contribution', matched: true,
+      }));
+    }
     items.push({ key: 'owner_contributions', label: 'Owner contributions', amount_cents: owner.contributions, kind: 'capital',
-      note: 'Capital injected by owner — raises equity, not P&L income.' });
+      note: 'Capital injected by owner — raises equity, not P&L income.',
+      details: contribDetails.bank_txns?.length ? contribDetails : undefined });
   }
+
+  // ── Run transaction matcher for drill-down details ──
+  let flowsDetail: MoneyFlow | null = null;
+  try {
+    flowsDetail = matchTransactions(db, storeId, periodStart, periodEnd);
+  } catch {}
 
   // Ad billing timing: P&L books spend from FB insights; the balance sheet records spend as
   // (Δ ad invoices unpaid + Δ FB unbilled balance + ad payments made). Any difference is timing.
   const bsAdSpend = dL('ad_spend_pending_cents') + dL('fb_pending_balance_cents') + adPaid;
   const adTiming = pnl.ad - bsAdSpend;
   if (adTiming !== 0) {
+    const adDetails: ReconItem['details'] = {};
+    if (flowsDetail) {
+      const adFlows = flowsDetail.matched.filter(f => f.type === 'ad');
+      const adUnmatched = flowsDetail.unmatched_invoices.filter(i => i.type === 'ad');
+      adDetails.invoices = [
+        ...adFlows.filter(f => f.invoice).map(f => ({
+          id: f.invoice!.id, date: f.invoice!.date, amount_cents: f.invoice!.amount_cents,
+          description: f.invoice!.description, platform: f.invoice!.platform,
+          card: f.invoice!.card_last4 || '', matched: true,
+        })),
+        ...adUnmatched.map(i => ({
+          id: i.id, date: i.date, amount_cents: i.amount_cents,
+          description: i.description, platform: i.platform,
+          card: i.card_last4 || '', matched: false,
+        })),
+      ];
+      adDetails.payments = adFlows.filter(f => f.payment && 'card_last4' in f.payment).map(f => {
+        const p = f.payment as any;
+        return { id: p.id, date: p.date, amount_cents: p.amount_cents, description: p.method || '', card: p.card_last4 || '', matched: true };
+      });
+    }
     items.push({ key: 'ad_timing', label: 'Ad billing timing', amount_cents: adTiming, kind: 'timing',
-      note: `P&L ad spend ${fmt(pnl.ad)} vs balance-sheet recorded ${fmt(bsAdSpend)} (invoices + unbilled + payments).` });
+      note: `P&L ad spend ${fmt(pnl.ad)} vs balance-sheet recorded ${fmt(bsAdSpend)} (invoices + unbilled + payments).`,
+      details: adDetails.invoices?.length ? adDetails : undefined });
   }
 
   // Fulfillment billing timing: P&L COGS+shipping+pick/pack+packaging vs ShipSourced charges
@@ -282,16 +364,51 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
   const bsFf = dL('fulfillment_owed_cents') + dL('fulfillment_estimated_cents') + ssPaid;
   const ffTiming = pnl.fulfillment - bsFf;
   if (ffTiming !== 0) {
+    const ffDetails: ReconItem['details'] = {};
+    if (flowsDetail) {
+      const ffFlows = flowsDetail.matched.filter(f => f.type === 'fulfillment');
+      ffDetails.payments = ffFlows.filter(f => f.payment).map(f => ({
+        id: f.payment!.id, date: f.payment!.date, amount_cents: f.payment!.amount_cents,
+        description: 'note' in f.payment! ? (f.payment as any).note : '', matched: !!f.bank_txn,
+      }));
+      ffDetails.bank_txns = ffFlows.filter(f => f.bank_txn).map(f => ({
+        id: f.bank_txn!.id, date: f.bank_txn!.date, amount_cents: f.bank_txn!.amount_cents,
+        description: f.bank_txn!.description, matched: true,
+      }));
+    }
     items.push({ key: 'fulfillment_timing', label: 'Fulfillment billing timing', amount_cents: ffTiming, kind: 'timing',
-      note: `P&L fulfillment ${fmt(pnl.fulfillment)} vs ShipSourced charges ${fmt(bsFf)} (billed + estimated + payments).` });
+      note: `P&L fulfillment ${fmt(pnl.fulfillment)} vs ShipSourced charges ${fmt(bsFf)} (billed + estimated + payments).`,
+      details: ffDetails.payments?.length ? ffDetails : undefined });
   }
 
   // App / Shopify-app billing timing.
   const bsApp = dL('app_invoices_due_cents') + appPaid;
   const appTiming = pnl.app - bsApp;
   if (appTiming !== 0) {
+    const appDetails: ReconItem['details'] = {};
+    if (flowsDetail) {
+      const appFlows = flowsDetail.matched.filter(f => f.type === 'app');
+      const appUnmatched = flowsDetail.unmatched_invoices.filter(i => i.type === 'app');
+      appDetails.invoices = [
+        ...appFlows.filter(f => f.invoice).map(f => ({
+          id: f.invoice!.id, date: f.invoice!.date, amount_cents: f.invoice!.amount_cents,
+          description: f.invoice!.description, platform: f.invoice!.platform,
+          card: f.invoice!.card_last4 || '', matched: true,
+        })),
+        ...appUnmatched.map(i => ({
+          id: i.id, date: i.date, amount_cents: i.amount_cents,
+          description: i.description, platform: i.platform,
+          card: i.card_last4 || '', matched: false,
+        })),
+      ];
+      appDetails.payments = appFlows.filter(f => f.payment && 'card_last4' in f.payment).map(f => {
+        const p = f.payment as any;
+        return { id: p.id, date: p.date, amount_cents: p.amount_cents, description: p.method || '', card: p.card_last4 || '', matched: true };
+      });
+    }
     items.push({ key: 'app_timing', label: 'App / Shopify billing timing', amount_cents: appTiming, kind: 'timing',
-      note: `P&L app costs ${fmt(pnl.app)} vs app charges ${fmt(bsApp)} (invoices + payments).` });
+      note: `P&L app costs ${fmt(pnl.app)} vs app charges ${fmt(bsApp)} (invoices + payments).`,
+      details: appDetails.invoices?.length ? appDetails : undefined });
   }
 
   // Manual ledger adjustments — reserves (asset) and manual credit cards (liability) are hand-entered.
@@ -306,7 +423,16 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
       note: 'Manually-entered credit-card balance change.' });
   }
 
+  // Add owner draw/contribution details from the transaction matcher
+  if (flowsDetail && owner.draws !== 0) {
+    const drawTxns = flowsDetail.owner_movements.filter(m => m.type === 'draw');
+    if (drawTxns.length > 0) {
+      // Will be attached to the owner_draws item below
+    }
+  }
+
   base.items = items;
+  base.flows_detail = flowsDetail;
   base.gap_cents = base.delta_equity_cents - base.net_income_cents;
   base.explained_cents = items.reduce((s, it) => s + it.amount_cents, 0);
   base.residual_cents = base.gap_cents - base.explained_cents;
@@ -364,7 +490,7 @@ export function saveReconciliation(db: DB, r: ReconResult): void {
 /** Find the snapshot immediately before the given one (by created_at) for a store. */
 export function priorSnapshot(db: DB, storeId: string, beforeCreatedAt: string): SnapshotRow | undefined {
   return db.prepare(`
-    SELECT id, store_id, snapshot_date, equity_cents, data
+    SELECT id, store_id, snapshot_date, equity_cents, data, created_at
     FROM cfo_snapshots
     WHERE store_id = ? AND created_at < ?
     ORDER BY created_at DESC LIMIT 1
@@ -375,7 +501,7 @@ export function priorSnapshot(db: DB, storeId: string, beforeCreatedAt: string):
 export function reconcileSnapshot(db: DB, storeId: string, snapshotId: string): ReconResult | null {
   const t2 = db.prepare(
     `SELECT id, store_id, snapshot_date, equity_cents, data, created_at FROM cfo_snapshots WHERE id = ?`
-  ).get(snapshotId) as (SnapshotRow & { created_at: string }) | undefined;
+  ).get(snapshotId) as SnapshotRow | undefined;
   if (!t2) return null;
   const t1 = priorSnapshot(db, storeId, t2.created_at);
   if (!t1) return null;
