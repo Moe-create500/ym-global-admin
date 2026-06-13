@@ -24,10 +24,15 @@ export async function GET(req: NextRequest) {
   const pacificMonth = pacificNow.slice(0, 7) + '-01';
   const pacificYear = pacificNow.slice(0, 4) + '-01-01';
 
+  const pacificYesterday = new Date(Date.now() - 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+
   let dateFilter: string;
   switch (range) {
     case 'daily':
       dateFilter = `dp.date = '${pacificNow}'`;
+      break;
+    case 'yesterday':
+      dateFilter = `dp.date = '${pacificYesterday}'`;
       break;
     case 'yearly':
       dateFilter = `dp.date >= '${pacificYear}'`;

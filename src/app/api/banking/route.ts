@@ -44,8 +44,16 @@ export async function POST(req: NextRequest) {
     console.log('[banking] Got accounts:', accounts.length);
 
     for (const account of accounts) {
-      const existing = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(account.id);
-      if (existing) continue;
+      const existing: any = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(account.id);
+      if (existing) {
+        // Reconnect: refresh the access token + enrollment on the existing row
+        db.prepare(`
+          UPDATE bank_accounts SET access_token = ?, teller_enrollment_id = ?, status = 'active', updated_at = datetime('now')
+          WHERE id = ?
+        `).run(accessToken, enrollmentId || account.enrollment_id, existing.id);
+        imported++;
+        continue;
+      }
 
       // Get balance
       let balanceAvailable = 0;

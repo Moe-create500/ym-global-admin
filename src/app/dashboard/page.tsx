@@ -213,7 +213,7 @@ function DashboardContent() {
   const [syncResult, setSyncResult] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [autoSynced, setAutoSynced] = useState(false);
-  const [range, setRange] = useState<'daily' | 'monthly' | 'yearly'>('monthly');
+  const [range, setRange] = useState<'daily' | 'yesterday' | 'monthly' | 'yearly'>('monthly');
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<SortKey>('revenue');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -233,6 +233,7 @@ function DashboardContent() {
     const y = today.slice(0, 4);
     const m = today.slice(5, 7);
     if (r === 'daily') return today;
+    if (r === 'yesterday') return getPacificDate(-1);
     if (r === 'yearly') return `${y}-01-01`;
     return `${y}-${m}-01`;
   }
@@ -246,6 +247,10 @@ function DashboardContent() {
       const prev = getPacificDate(-1);
       return { from: prev, to: prev };
     }
+    if (r === 'yesterday') {
+      const dayBefore = getPacificDate(-2);
+      return { from: dayBefore, to: dayBefore };
+    }
     if (r === 'yearly') {
       return { from: `${y - 1}-01-01`, to: `${y - 1}-12-31` };
     }
@@ -258,8 +263,8 @@ function DashboardContent() {
     return { from: `${py}-${pmStr}-01`, to: `${py}-${pmStr}-${String(prevDay).padStart(2, '0')}` };
   }
 
-  const rangeLabel = range === 'daily' ? 'Today' : range === 'monthly' ? 'MTD' : 'YTD';
-  const prevLabel = range === 'daily' ? 'yesterday' : range === 'monthly' ? 'last month' : 'last year';
+  const rangeLabel = range === 'daily' ? 'Today' : range === 'yesterday' ? 'Yesterday' : range === 'monthly' ? 'MTD' : 'YTD';
+  const prevLabel = range === 'daily' ? 'yesterday' : range === 'yesterday' ? '2 days ago' : range === 'monthly' ? 'last month' : 'last year';
 
   useEffect(() => {
     loadData();
@@ -282,17 +287,18 @@ function DashboardContent() {
     const from = getRangeFrom(range);
     const prev = getPrevRange(range);
     const pnlParams = new URLSearchParams({ period: 'daily', from });
-    if (storeId) pnlParams.set('storeId', storeId);
+    if (range === 'yesterday') pnlParams.set('to', from);
+    if (storeId) pnlParams.set('storeId', storeId); else pnlParams.set('visibleOnly', '1');
 
     const prevPnlParams = new URLSearchParams({ period: 'daily', from: prev.from, to: prev.to });
-    if (storeId) prevPnlParams.set('storeId', storeId);
+    if (storeId) prevPnlParams.set('storeId', storeId); else prevPnlParams.set('visibleOnly', '1');
 
     // Also fetch last 30 days for the chart
     const chartFrom = getPacificDate(-29);
     const chartParams = new URLSearchParams({ period: 'daily', from: chartFrom });
-    if (storeId) chartParams.set('storeId', storeId);
+    if (storeId) chartParams.set('storeId', storeId); else chartParams.set('visibleOnly', '1');
 
-    const storesRange = range === 'daily' ? 'daily' : range === 'yearly' ? 'yearly' : 'monthly';
+    const storesRange = range === 'daily' ? 'daily' : range === 'yesterday' ? 'yesterday' : range === 'yearly' ? 'yearly' : 'monthly';
 
     const [storesRes, pnlRes, prevPnlRes, chartRes] = await Promise.all([
       fetch(`/api/stores?range=${storesRange}`),
@@ -420,7 +426,7 @@ function DashboardContent() {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex bg-slate-800 rounded-lg p-0.5">
-            {(['daily', 'monthly', 'yearly'] as const).map((r) => (
+            {(['daily', 'yesterday', 'monthly', 'yearly'] as const).map((r) => (
               <button
                 key={r}
                 onClick={() => setRange(r)}
@@ -428,7 +434,7 @@ function DashboardContent() {
                   range === r ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                {r === 'daily' ? 'Today' : r === 'monthly' ? 'MTD' : 'YTD'}
+                {r === 'daily' ? 'Today' : r === 'yesterday' ? 'Yesterday' : r === 'monthly' ? 'MTD' : 'YTD'}
               </button>
             ))}
           </div>
@@ -643,7 +649,7 @@ function DashboardContent() {
                     </div>
                     <div className="mt-2 flex items-center justify-between">
                       <span className="text-[10px] text-slate-500">
-                        {(store.mtd_orders || 0).toLocaleString()} orders {range === 'daily' ? 'today' : range === 'monthly' ? 'this month' : 'this year'}
+                        {(store.mtd_orders || 0).toLocaleString()} orders {range === 'daily' ? 'today' : range === 'yesterday' ? 'yesterday' : range === 'monthly' ? 'this month' : 'this year'}
                         {(store.mtd_ad_spend || 0) > 0 && <> &middot; {centsCompact(store.mtd_ad_spend || 0)} ad spend</>}
                       </span>
                     </div>
