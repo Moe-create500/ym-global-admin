@@ -156,7 +156,7 @@ export async function POST(req: NextRequest) {
   // Roll up ss_charge_cents into daily_pnl.shipping_cost_cents
   if (updated > 0) {
     const dailyCharges: any[] = db.prepare(`
-      SELECT order_date as date, SUM(ss_charge_cents) as total_charges
+      SELECT order_date as date, SUM(ss_charge_cents) as total_charges, COUNT(*) as order_count
       FROM orders WHERE store_id = ? AND ss_charge_cents > 0
       GROUP BY order_date
     `).all(storeId);
@@ -166,7 +166,7 @@ export async function POST(req: NextRequest) {
         'SELECT id, revenue_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents, pick_pack_cents, packaging_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
       ).get(storeId, day.date);
       if (pnlRow) {
-        const shopifyFee = Math.round((pnlRow.revenue_cents || 0) * 0.025);
+        const shopifyFee = Math.round((pnlRow.revenue_cents || 0) * 0.026) + ((day.order_count || 0) * 30);
         const totalCosts = day.total_charges + (pnlRow.pick_pack_cents || 0) +
           (pnlRow.packaging_cents || 0) + (pnlRow.ad_spend_cents || 0) +
           shopifyFee + (pnlRow.other_costs_cents || 0);

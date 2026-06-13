@@ -217,8 +217,8 @@ export async function POST(req: NextRequest) {
         WHERE id = ?
       `).run(day.revenue, day.orders, netProfit, margin, existing.id);
     } else {
-      // New row: calculate 2.5% Shopify fee
-      const shopifyFee = Math.round(day.revenue * 0.025);
+      // New row: calculate Shopify fee (2.6% + $0.30/txn)
+      const shopifyFee = Math.round(day.revenue * 0.026) + ((day.orders || 0) * 30);
       const netProfit = day.revenue - shopifyFee;
       const margin = day.revenue > 0 ? (netProfit / day.revenue) * 100 : 0;
       db.prepare(`
@@ -254,12 +254,12 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Re-calculate 2.5% Shopify fees from revenue
+  // Re-calculate Shopify fees from revenue (2.6% + $0.30/txn)
   const pnlDays: any[] = db.prepare(
-    'SELECT id, date, revenue_cents, ad_spend_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ?'
+    'SELECT id, date, revenue_cents, order_count, ad_spend_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ?'
   ).all(storeId);
   for (const row of pnlDays) {
-    const shopifyFee = Math.round((row.revenue_cents || 0) * 0.025);
+    const shopifyFee = Math.round((row.revenue_cents || 0) * 0.026) + ((row.order_count || 0) * 30);
     const totalCosts = shopifyFee + (row.ad_spend_cents || 0) + (row.shipping_cost_cents || 0) +
       (row.pick_pack_cents || 0) + (row.packaging_cents || 0) + (row.other_costs_cents || 0) + (row.chargeback_cents || 0) + (row.app_costs_cents || 0);
     const netProfit = (row.revenue_cents || 0) - totalCosts;

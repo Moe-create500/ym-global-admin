@@ -13,7 +13,7 @@ const CATEGORIES: { key: FileCategory; label: string; color: string; endpoint: s
   { key: 'fb_invoice', label: 'FB Invoice', color: 'text-blue-400', endpoint: '/api/ads/import', platform: 'facebook' },
   { key: 'google_invoice', label: 'Google Invoice', color: 'text-green-400', endpoint: '/api/ads/import', platform: 'google' },
   { key: 'shopify_billing', label: 'Shopify Billing', color: 'text-emerald-400', endpoint: '/api/shopify-invoices' },
-  { key: 'chargeflow', label: 'Chargeflow', color: 'text-violet-400', endpoint: '/api/chargebacks/sync' },
+  { key: 'chargeflow', label: 'Chargeflow', color: 'text-violet-400', endpoint: '/api/shopify-invoices' },
 ];
 
 function FileSlot({ storeId, category, results, onUpload }: {

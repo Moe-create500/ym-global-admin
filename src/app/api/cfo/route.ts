@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { reconcileSnapshot } from '@/lib/cfo-reconcile';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -91,19 +92,21 @@ export async function GET(req: NextRequest) {
     SELECT COALESCE(SUM(amount_cents), 0) as total FROM card_payments_log WHERE store_id = ? AND category = 'ad'
   `).get(storeId);
 
-  // Pull FB pending balance (unbilled spend) from API
+  // Pull FB pending balance (unbilled spend) from API — sum across ALL active ad accounts
   let fbPendingBalanceCents = 0;
   try {
-    const fbProfile: any = db.prepare(
-      "SELECT ad_account_id, access_token FROM fb_profiles WHERE store_id = ? AND is_active = 1 LIMIT 1"
-    ).get(storeId);
-    if (fbProfile?.ad_account_id && fbProfile?.access_token) {
-      const fbUrl = `https://graph.facebook.com/v21.0/${fbProfile.ad_account_id}?fields=balance&access_token=${fbProfile.access_token}`;
-      const fbRes = await fetch(fbUrl);
-      if (fbRes.ok) {
-        const fbData = await fbRes.json();
-        fbPendingBalanceCents = parseInt(fbData.balance || '0', 10);
-      }
+    const fbProfiles: any[] = db.prepare(
+      "SELECT ad_account_id, access_token FROM fb_profiles WHERE store_id = ? AND is_active = 1 AND ad_account_id IS NOT NULL AND access_token IS NOT NULL"
+    ).all(storeId);
+    for (const fbProfile of fbProfiles) {
+      try {
+        const fbUrl = `https://graph.facebook.com/v21.0/${fbProfile.ad_account_id}?fields=balance&access_token=${fbProfile.access_token}`;
+        const fbRes = await fetch(fbUrl);
+        if (fbRes.ok) {
+          const fbData = await fbRes.json();
+          fbPendingBalanceCents += parseInt(fbData.balance || '0', 10);
+        }
+      } catch {}
     }
   } catch {}
 
@@ -283,8 +286,15 @@ export async function GET(req: NextRequest) {
 
   const equity = assets.total_cents - liabilities.total_cents;
 
+  // Parse CFO overrides
+  let cfoOverrides: Record<string, string> = {};
+  if (store.cfo_overrides) {
+    try { cfoOverrides = JSON.parse(store.cfo_overrides); } catch {}
+  }
+
   return NextResponse.json({
     store: { id: store.id, name: store.name },
+    cfo_overrides: cfoOverrides,
     assets,
     liabilities,
     equity_cents: equity,
@@ -325,7 +335,7 @@ export async function GET(req: NextRequest) {
 
 // PATCH: Update Shopify balance, reserves (manual input)
 export async function PATCH(req: NextRequest) {
-  const { storeId, shopifyBalanceCents, shopifyPayoutCents, reserve, deleteReserveId, manualCC, deleteManualCCId } = await req.json();
+  const { storeId, shopifyBalanceCents, shopifyPayoutCents, reserve, deleteReserveId, manualCC, deleteManualCCId, cfoOverride } = await req.json();
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
 
   const db = getDb();
@@ -368,6 +378,19 @@ export async function PATCH(req: NextRequest) {
     }
   }
 
+  // Update CFO detail overrides
+  if (cfoOverride) {
+    const store: any = db.prepare('SELECT cfo_overrides FROM stores WHERE id = ?').get(storeId);
+    let existing: Record<string, string> = {};
+    if (store?.cfo_overrides) { try { existing = JSON.parse(store.cfo_overrides); } catch {} }
+    if (cfoOverride.value === '' || cfoOverride.value === null) {
+      delete existing[cfoOverride.key];
+    } else {
+      existing[cfoOverride.key] = cfoOverride.value;
+    }
+    db.prepare('UPDATE stores SET cfo_overrides = ? WHERE id = ?').run(JSON.stringify(existing), storeId);
+  }
+
   // Delete a manual credit card
   if (deleteManualCCId) {
     db.prepare('DELETE FROM manual_credit_cards WHERE id = ? AND store_id = ?').run(deleteManualCCId, storeId);
@@ -391,5 +414,14 @@ export async function POST(req: NextRequest) {
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(id, storeId, date, assets_cents || 0, liabilities_cents || 0, equity_cents || 0, data ? JSON.stringify(data) : null);
 
-  return NextResponse.json({ success: true, id, date });
+  // Auto-reconcile this snapshot against the prior one so the CFO can immediately see
+  // whether the new (more accurate) balances tie out to the P&L, and why if they don't.
+  let reconciliation = null;
+  try {
+    reconciliation = reconcileSnapshot(db, storeId, id);
+  } catch (err) {
+    console.error('[cfo] reconciliation failed:', (err as any)?.message);
+  }
+
+  return NextResponse.json({ success: true, id, date, reconciliation });
 }

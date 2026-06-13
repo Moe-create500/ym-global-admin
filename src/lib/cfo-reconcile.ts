@@ -1,0 +1,385 @@
+/**
+ * CFO ↔ P&L Reconciliation Engine
+ * ================================
+ * The CFO dashboard reports EQUITY as a point-in-time balance sheet (Assets − Liabilities).
+ * The P&L reports NET PROFIT as a flow over a date range. These two views articulate:
+ *
+ *     ΔEquity(t1→t2)  ==  NetProfit(t1→t2)  +  CapitalMovements  +  ReconcilingItems  +  Residual
+ *
+ * When a store's equity moves by a different amount than its P&L profit, the difference is
+ * NOT necessarily an error — most of it is explainable: owner draws, ad/fulfillment billing
+ * that lags the P&L accrual, manual balance corrections, etc. This engine peels every
+ * *explainable* cause off the gap so the leftover "residual" is small, honest, and points at
+ * the real problem when numbers don't tie.
+ *
+ * Sign convention: every reconciling item is expressed as its CONTRIBUTION to (ΔEquity − NetProfit).
+ *   residual = (ΔEquity − NetProfit) − Σ(items)
+ * A residual of ~0 means the balance sheet and P&L fully agree.
+ */
+
+import type BetterSqlite3 from 'better-sqlite3';
+
+type DB = BetterSqlite3.Database;
+
+// ── Known snapshot component keys. Anything outside these lists is surfaced as "unmodeled"
+//    so a future balance-sheet line can never be silently dropped from the reconciliation. ──
+export const ASSET_KEYS = [
+  'cash_bank_cents',
+  'cash_shopify_cents',
+  'shopify_payout_cents',
+  'reserves_cents',
+  'inventory_cents',
+  'loans_receivable_cents',
+] as const;
+
+export const LIABILITY_KEYS = [
+  'fulfillment_owed_cents',
+  'fulfillment_estimated_cents',
+  'ad_spend_pending_cents',
+  'fb_pending_balance_cents',
+  'app_invoices_due_cents',
+  'loans_payable_cents',
+  'manual_cc_cents',
+] as const;
+
+// Bank-transaction category patterns that represent owner capital movements (not P&L events).
+const OWNER_DRAW_PATTERNS = ['owner draw', 'owner withdraw', 'withdrawal', 'distribution', 'dividend'];
+const OWNER_CONTRIB_PATTERNS = ['owner contribution', 'owner deposit', 'owner invest', 'capital injection', 'capital contribution', 'owner funding'];
+
+export interface ReconItem {
+  key: string;
+  label: string;
+  amount_cents: number; // contribution to (ΔEquity − NetProfit)
+  kind: 'capital' | 'timing' | 'manual' | 'noncash';
+  note?: string;
+}
+
+export interface ComponentDelta {
+  key: string;
+  label: string;
+  t1_cents: number;
+  t2_cents: number;
+  delta_cents: number;
+}
+
+export interface ReconResult {
+  store_id: string;
+  t1_snapshot_id: string;
+  t2_snapshot_id: string;
+  period_start: string; // first P&L date included
+  period_end: string;   // last P&L date included
+  equity_t1_cents: number;
+  equity_t2_cents: number;
+  delta_equity_cents: number;
+  net_income_cents: number;
+  gap_cents: number;         // ΔEquity − NetProfit (the thing we explain)
+  explained_cents: number;   // Σ items
+  residual_cents: number;    // gap − explained (should be ~0)
+  tolerance_cents: number;
+  status: 'matched' | 'flagged' | 'insufficient_data';
+  items: ReconItem[];
+  asset_deltas: ComponentDelta[];
+  liability_deltas: ComponentDelta[];
+  pnl: { revenue: number; fulfillment: number; ad: number; fees: number; app: number; other: number; chargeback: number; net: number };
+  flows: { ss_paid: number; ad_paid: number; app_paid: number; owner_draws: number; owner_contributions: number };
+  unmodeled_keys: string[];
+  drivers: { label: string; amount_cents: number }[]; // largest residual-bearing component moves
+}
+
+const HUMAN_LABEL: Record<string, string> = {
+  cash_bank_cents: 'Bank cash',
+  cash_shopify_cents: 'Shopify balance',
+  shopify_payout_cents: 'Shopify payout (in transit)',
+  reserves_cents: 'Reserves',
+  inventory_cents: 'Inventory',
+  loans_receivable_cents: 'Loans receivable',
+  fulfillment_owed_cents: 'Fulfillment owed',
+  fulfillment_estimated_cents: 'Fulfillment (estimated)',
+  ad_spend_pending_cents: 'Ad invoices unpaid',
+  fb_pending_balance_cents: 'FB unbilled balance',
+  app_invoices_due_cents: 'App invoices due',
+  loans_payable_cents: 'Loans payable',
+  manual_cc_cents: 'Manual credit cards',
+};
+
+export function ensureReconcileTable(db: DB): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cfo_reconciliations (
+      id TEXT PRIMARY KEY,
+      store_id TEXT NOT NULL,
+      t1_snapshot_id TEXT NOT NULL,
+      t2_snapshot_id TEXT NOT NULL,
+      period_start TEXT,
+      period_end TEXT,
+      delta_equity_cents INTEGER NOT NULL DEFAULT 0,
+      net_income_cents INTEGER NOT NULL DEFAULT 0,
+      gap_cents INTEGER NOT NULL DEFAULT 0,
+      explained_cents INTEGER NOT NULL DEFAULT 0,
+      residual_cents INTEGER NOT NULL DEFAULT 0,
+      tolerance_cents INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'matched',
+      result TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(t2_snapshot_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cfo_recon_store ON cfo_reconciliations(store_id, period_end);
+  `);
+}
+
+interface SnapshotRow {
+  id: string;
+  store_id: string;
+  snapshot_date: string;
+  equity_cents: number;
+  data: string | null;
+}
+
+/** Flatten a snapshot's stored data JSON into asset/liability component maps. */
+function components(snap: SnapshotRow): { assets: Record<string, number>; liabilities: Record<string, number>; ok: boolean } {
+  if (!snap.data) return { assets: {}, liabilities: {}, ok: false };
+  try {
+    const d = JSON.parse(snap.data);
+    return { assets: d.assets || {}, liabilities: d.liabilities || {}, ok: !!(d.assets && d.liabilities) };
+  } catch {
+    return { assets: {}, liabilities: {}, ok: false };
+  }
+}
+
+/** Day after a YYYY-MM-DD date (UTC-safe string math). */
+function nextDay(date: string): string {
+  const [y, m, d] = date.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + 1);
+  return dt.toISOString().slice(0, 10);
+}
+
+function sumOwner(rows: { amount_cents: number; cat: string }[]): { draws: number; contributions: number } {
+  let draws = 0;
+  let contributions = 0;
+  for (const r of rows) {
+    const c = (r.cat || '').toLowerCase();
+    if (OWNER_DRAW_PATTERNS.some(p => c.includes(p))) draws += r.amount_cents;
+    else if (OWNER_CONTRIB_PATTERNS.some(p => c.includes(p))) contributions += r.amount_cents;
+  }
+  return { draws, contributions }; // draws are negative cents, contributions positive
+}
+
+/**
+ * Reconcile two consecutive snapshots. t1 is the earlier snapshot, t2 the later.
+ * Returns the full bridge. Does not write to the DB (see saveReconciliation).
+ */
+export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: SnapshotRow): ReconResult {
+  const c1 = components(t1);
+  const c2 = components(t2);
+
+  const periodStart = nextDay(t1.snapshot_date);
+  const periodEnd = t2.snapshot_date;
+
+  const base: ReconResult = {
+    store_id: storeId,
+    t1_snapshot_id: t1.id,
+    t2_snapshot_id: t2.id,
+    period_start: periodStart,
+    period_end: periodEnd,
+    equity_t1_cents: t1.equity_cents,
+    equity_t2_cents: t2.equity_cents,
+    delta_equity_cents: t2.equity_cents - t1.equity_cents,
+    net_income_cents: 0,
+    gap_cents: 0,
+    explained_cents: 0,
+    residual_cents: 0,
+    tolerance_cents: 0,
+    status: 'insufficient_data',
+    items: [],
+    asset_deltas: [],
+    liability_deltas: [],
+    pnl: { revenue: 0, fulfillment: 0, ad: 0, fees: 0, app: 0, other: 0, chargeback: 0, net: 0 },
+    flows: { ss_paid: 0, ad_paid: 0, app_paid: 0, owner_draws: 0, owner_contributions: 0 },
+    unmodeled_keys: [],
+    drivers: [],
+  };
+
+  // Need both snapshots to carry full component data to reconcile component-by-component.
+  if (!c1.ok || !c2.ok || periodEnd < periodStart) {
+    return base;
+  }
+
+  // ── P&L over the window (dates strictly after t1's snapshot date, through t2's) ──
+  const pnl: any = db.prepare(`
+    SELECT
+      COALESCE(SUM(revenue_cents),0) AS revenue,
+      COALESCE(SUM(cogs_cents + shipping_cost_cents + pick_pack_cents + packaging_cents),0) AS fulfillment,
+      COALESCE(SUM(ad_spend_cents),0) AS ad,
+      COALESCE(SUM(shopify_fees_cents),0) AS fees,
+      COALESCE(SUM(app_costs_cents),0) AS app,
+      COALESCE(SUM(other_costs_cents),0) AS other,
+      COALESCE(SUM(chargeback_cents),0) AS chargeback,
+      COALESCE(SUM(net_profit_cents),0) AS net
+    FROM daily_pnl WHERE store_id = ? AND date >= ? AND date <= ?
+  `).get(storeId, periodStart, periodEnd);
+
+  base.pnl = pnl;
+  base.net_income_cents = pnl.net;
+
+  // ── Cash payments made within the window (reduce liabilities, leave bank) ──
+  const ssPaid = (db.prepare(
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM ss_payments WHERE store_id = ? AND date >= ? AND date <= ?`
+  ).get(storeId, periodStart, periodEnd) as any).t;
+  const adPaid = (db.prepare(
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'ad' AND date >= ? AND date <= ?`
+  ).get(storeId, periodStart, periodEnd) as any).t;
+  const appPaid = (db.prepare(
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'app' AND date >= ? AND date <= ?`
+  ).get(storeId, periodStart, periodEnd) as any).t;
+
+  // ── Owner capital movements from categorized bank transactions in the window ──
+  const ownerRows = db.prepare(`
+    SELECT bt.amount_cents AS amount_cents, COALESCE(bt.custom_category, bt.category, '') AS cat
+    FROM bank_transactions bt
+    JOIN bank_accounts ba ON ba.id = bt.bank_account_id
+    WHERE ba.store_id = ? AND bt.date >= ? AND bt.date <= ?
+  `).all(storeId, periodStart, periodEnd) as { amount_cents: number; cat: string }[];
+  const owner = sumOwner(ownerRows);
+
+  base.flows = { ss_paid: ssPaid, ad_paid: adPaid, app_paid: appPaid, owner_draws: owner.draws, owner_contributions: owner.contributions };
+
+  // ── Component deltas (exact, from snapshot JSON) ──
+  const dA = (k: string) => (c2.assets[k] || 0) - (c1.assets[k] || 0);
+  const dL = (k: string) => (c2.liabilities[k] || 0) - (c1.liabilities[k] || 0);
+
+  base.asset_deltas = ASSET_KEYS.map(k => ({ key: k, label: HUMAN_LABEL[k] || k, t1_cents: c1.assets[k] || 0, t2_cents: c2.assets[k] || 0, delta_cents: dA(k) }));
+  base.liability_deltas = LIABILITY_KEYS.map(k => ({ key: k, label: HUMAN_LABEL[k] || k, t1_cents: c1.liabilities[k] || 0, t2_cents: c2.liabilities[k] || 0, delta_cents: dL(k) }));
+
+  // Detect any unmodeled keys so nothing is silently ignored.
+  const known = new Set<string>([...ASSET_KEYS, ...LIABILITY_KEYS, 'total_cents']);
+  for (const k of Object.keys({ ...c2.assets, ...c2.liabilities })) {
+    if (!known.has(k)) base.unmodeled_keys.push(k);
+  }
+
+  // ── Build reconciling items (each = contribution to ΔEquity − NetProfit) ──
+  const items: ReconItem[] = [];
+
+  if (owner.draws !== 0) {
+    items.push({ key: 'owner_draws', label: 'Owner draws', amount_cents: owner.draws, kind: 'capital',
+      note: 'Cash withdrawn by owner — reduces equity, never a P&L expense.' });
+  }
+  if (owner.contributions !== 0) {
+    items.push({ key: 'owner_contributions', label: 'Owner contributions', amount_cents: owner.contributions, kind: 'capital',
+      note: 'Capital injected by owner — raises equity, not P&L income.' });
+  }
+
+  // Ad billing timing: P&L books spend from FB insights; the balance sheet records spend as
+  // (Δ ad invoices unpaid + Δ FB unbilled balance + ad payments made). Any difference is timing.
+  const bsAdSpend = dL('ad_spend_pending_cents') + dL('fb_pending_balance_cents') + adPaid;
+  const adTiming = pnl.ad - bsAdSpend;
+  if (adTiming !== 0) {
+    items.push({ key: 'ad_timing', label: 'Ad billing timing', amount_cents: adTiming, kind: 'timing',
+      note: `P&L ad spend ${fmt(pnl.ad)} vs balance-sheet recorded ${fmt(bsAdSpend)} (invoices + unbilled + payments).` });
+  }
+
+  // Fulfillment billing timing: P&L COGS+shipping+pick/pack+packaging vs ShipSourced charges
+  // recorded = (Δ fulfillment owed + Δ fulfillment estimated + SS payments made).
+  const bsFf = dL('fulfillment_owed_cents') + dL('fulfillment_estimated_cents') + ssPaid;
+  const ffTiming = pnl.fulfillment - bsFf;
+  if (ffTiming !== 0) {
+    items.push({ key: 'fulfillment_timing', label: 'Fulfillment billing timing', amount_cents: ffTiming, kind: 'timing',
+      note: `P&L fulfillment ${fmt(pnl.fulfillment)} vs ShipSourced charges ${fmt(bsFf)} (billed + estimated + payments).` });
+  }
+
+  // App / Shopify-app billing timing.
+  const bsApp = dL('app_invoices_due_cents') + appPaid;
+  const appTiming = pnl.app - bsApp;
+  if (appTiming !== 0) {
+    items.push({ key: 'app_timing', label: 'App / Shopify billing timing', amount_cents: appTiming, kind: 'timing',
+      note: `P&L app costs ${fmt(pnl.app)} vs app charges ${fmt(bsApp)} (invoices + payments).` });
+  }
+
+  // Manual ledger adjustments — reserves (asset) and manual credit cards (liability) are hand-entered.
+  const dReserves = dA('reserves_cents');
+  if (dReserves !== 0) {
+    items.push({ key: 'reserves_adj', label: 'Reserves adjustment', amount_cents: dReserves, kind: 'manual',
+      note: 'Manually-tracked reserve cash held outside connected accounts.' });
+  }
+  const dManualCC = dL('manual_cc_cents');
+  if (dManualCC !== 0) {
+    items.push({ key: 'manual_cc_adj', label: 'Manual credit-card adjustment', amount_cents: -dManualCC, kind: 'manual',
+      note: 'Manually-entered credit-card balance change.' });
+  }
+
+  base.items = items;
+  base.gap_cents = base.delta_equity_cents - base.net_income_cents;
+  base.explained_cents = items.reduce((s, it) => s + it.amount_cents, 0);
+  base.residual_cents = base.gap_cents - base.explained_cents;
+
+  // Tolerance: the larger of $50 or 2% of |net income|.
+  base.tolerance_cents = Math.max(5000, Math.round(Math.abs(base.net_income_cents) * 0.02));
+  base.status = Math.abs(base.residual_cents) <= base.tolerance_cents ? 'matched' : 'flagged';
+
+  // Drivers: the component moves most likely to contain an unexplained residual — the manual /
+  // Teller-updated balances (bank, shopify balance, payout) plus any unmodeled key. Shown so the
+  // user can eyeball where a flagged residual is hiding.
+  if (base.status === 'flagged') {
+    const candidates: { label: string; amount_cents: number }[] = [
+      { label: 'Bank cash move', amount_cents: dA('cash_bank_cents') },
+      { label: 'Shopify balance move', amount_cents: dA('cash_shopify_cents') },
+      { label: 'Shopify payout move', amount_cents: dA('shopify_payout_cents') },
+      { label: 'Inventory move', amount_cents: dA('inventory_cents') },
+      { label: 'Loans payable move', amount_cents: -dL('loans_payable_cents') },
+      { label: 'Loans receivable move', amount_cents: dA('loans_receivable_cents') },
+    ];
+    base.drivers = candidates.filter(c => c.amount_cents !== 0).sort((a, b) => Math.abs(b.amount_cents) - Math.abs(a.amount_cents)).slice(0, 4);
+  }
+
+  return base;
+}
+
+function fmt(cents: number): string {
+  return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+}
+
+import crypto from 'crypto';
+
+/** Persist a reconciliation result (one row per t2 snapshot; re-running replaces it). */
+export function saveReconciliation(db: DB, r: ReconResult): void {
+  ensureReconcileTable(db);
+  db.prepare(`
+    INSERT INTO cfo_reconciliations
+      (id, store_id, t1_snapshot_id, t2_snapshot_id, period_start, period_end,
+       delta_equity_cents, net_income_cents, gap_cents, explained_cents, residual_cents,
+       tolerance_cents, status, result)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(t2_snapshot_id) DO UPDATE SET
+      t1_snapshot_id=excluded.t1_snapshot_id, period_start=excluded.period_start, period_end=excluded.period_end,
+      delta_equity_cents=excluded.delta_equity_cents, net_income_cents=excluded.net_income_cents,
+      gap_cents=excluded.gap_cents, explained_cents=excluded.explained_cents, residual_cents=excluded.residual_cents,
+      tolerance_cents=excluded.tolerance_cents, status=excluded.status, result=excluded.result,
+      created_at=datetime('now')
+  `).run(
+    crypto.randomUUID(), r.store_id, r.t1_snapshot_id, r.t2_snapshot_id, r.period_start, r.period_end,
+    r.delta_equity_cents, r.net_income_cents, r.gap_cents, r.explained_cents, r.residual_cents,
+    r.tolerance_cents, r.status, JSON.stringify(r)
+  );
+}
+
+/** Find the snapshot immediately before the given one (by created_at) for a store. */
+export function priorSnapshot(db: DB, storeId: string, beforeCreatedAt: string): SnapshotRow | undefined {
+  return db.prepare(`
+    SELECT id, store_id, snapshot_date, equity_cents, data
+    FROM cfo_snapshots
+    WHERE store_id = ? AND created_at < ?
+    ORDER BY created_at DESC LIMIT 1
+  `).get(storeId, beforeCreatedAt) as SnapshotRow | undefined;
+}
+
+/** Reconcile a snapshot against its immediate predecessor and persist. Returns the result or null. */
+export function reconcileSnapshot(db: DB, storeId: string, snapshotId: string): ReconResult | null {
+  const t2 = db.prepare(
+    `SELECT id, store_id, snapshot_date, equity_cents, data, created_at FROM cfo_snapshots WHERE id = ?`
+  ).get(snapshotId) as (SnapshotRow & { created_at: string }) | undefined;
+  if (!t2) return null;
+  const t1 = priorSnapshot(db, storeId, t2.created_at);
+  if (!t1) return null;
+  const result = reconcile(db, storeId, t1, t2);
+  if (result.status !== 'insufficient_data') saveReconciliation(db, result);
+  return result;
+}

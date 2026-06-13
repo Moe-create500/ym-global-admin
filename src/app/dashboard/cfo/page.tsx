@@ -65,6 +65,28 @@ interface OverviewStore {
   equity_cents: number;
   created_at: string | null;
   equity_change_cents: number | null;
+  recon_status: 'matched' | 'flagged' | 'insufficient_data' | null;
+  recon_residual_cents: number | null;
+}
+
+interface ReconItem { key: string; label: string; amount_cents: number; kind: string; note?: string }
+interface ReconResult {
+  period_start: string;
+  period_end: string;
+  delta_equity_cents: number;
+  net_income_cents: number;
+  gap_cents: number;
+  explained_cents: number;
+  residual_cents: number;
+  tolerance_cents: number;
+  status: 'matched' | 'flagged' | 'insufficient_data';
+  items: ReconItem[];
+  asset_deltas: { key: string; label: string; delta_cents: number }[];
+  liability_deltas: { key: string; label: string; delta_cents: number }[];
+  pnl: { revenue: number; fulfillment: number; ad: number; fees: number; app: number; other: number; chargeback: number; net: number };
+  flows: { ss_paid: number; ad_paid: number; app_paid: number; owner_draws: number; owner_contributions: number };
+  unmodeled_keys: string[];
+  drivers: { label: string; amount_cents: number }[];
 }
 
 interface OverviewTotals {
@@ -72,6 +94,132 @@ interface OverviewTotals {
   total_liabilities_cents: number;
   total_equity_cents: number;
   store_count: number;
+}
+
+function signed(amount: number): string {
+  const s = cents(Math.abs(amount));
+  return amount < 0 ? `−${s}` : `+${s}`;
+}
+
+function ReconciliationPanel({ recon }: { recon: ReconResult | null }) {
+  if (!recon || recon.status === 'insufficient_data') {
+    return (
+      <div className="mt-8 bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <h2 className="text-sm font-semibold text-white mb-1">CFO ↔ P&amp;L Reconciliation</h2>
+        <p className="text-xs text-slate-500">
+          Save at least two snapshots (with full balance detail) to reconcile equity movement against P&amp;L profit.
+        </p>
+      </div>
+    );
+  }
+
+  const matched = recon.status === 'matched';
+  const accent = matched ? 'emerald' : 'amber';
+  // Bridge: start at Net Profit, apply each reconciling item, arrive at Expected ΔEquity,
+  // compare to Actual ΔEquity, the difference is the unexplained residual.
+  const expected = recon.net_income_cents + recon.explained_cents;
+
+  return (
+    <div className={`mt-8 bg-slate-900 border rounded-xl overflow-hidden ${matched ? 'border-emerald-900/50' : 'border-amber-800/60'}`}>
+      <div className={`px-5 py-4 border-b flex items-center justify-between ${matched ? 'border-emerald-900/40 bg-emerald-950/20' : 'border-amber-900/40 bg-amber-950/20'}`}>
+        <div>
+          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+            CFO ↔ P&amp;L Reconciliation
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wide ${matched ? 'bg-emerald-900/50 text-emerald-300' : 'bg-amber-900/50 text-amber-300'}`}>
+              {matched ? 'Matched' : 'Drift detected'}
+            </span>
+          </h2>
+          <p className="text-[11px] text-slate-400 mt-1">
+            {recon.period_start} → {recon.period_end} · tolerance {cents(recon.tolerance_cents)}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Unexplained</p>
+          <p className={`text-xl font-bold ${matched ? 'text-emerald-400' : 'text-amber-400'}`}>{signed(recon.residual_cents)}</p>
+        </div>
+      </div>
+
+      <div className="p-5">
+        {/* Headline comparison */}
+        <div className="grid grid-cols-2 gap-3 mb-5">
+          <div className="bg-slate-800/40 rounded-lg p-3">
+            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Equity moved</p>
+            <p className="text-lg font-bold text-white">{signed(recon.delta_equity_cents)}</p>
+          </div>
+          <div className="bg-slate-800/40 rounded-lg p-3">
+            <p className="text-[10px] text-slate-500 uppercase tracking-wider">P&amp;L net profit</p>
+            <p className="text-lg font-bold text-white">{signed(recon.net_income_cents)}</p>
+          </div>
+        </div>
+
+        {/* Bridge waterfall */}
+        <div className="space-y-1.5 text-sm">
+          <div className="flex items-center justify-between py-1.5 border-b border-slate-800">
+            <span className="text-slate-300">P&amp;L net profit</span>
+            <span className="font-mono text-white">{signed(recon.net_income_cents)}</span>
+          </div>
+          {recon.items.length === 0 && (
+            <div className="py-1.5 text-xs text-slate-500 italic">No reconciling items — equity should equal profit exactly.</div>
+          )}
+          {recon.items.map(item => (
+            <div key={item.key} className="flex items-start justify-between py-1.5 group">
+              <div className="flex-1 pr-3">
+                <span className="text-slate-300">{item.label}</span>
+                <span className={`ml-2 text-[9px] uppercase px-1.5 py-0.5 rounded ${
+                  item.kind === 'capital' ? 'bg-purple-900/40 text-purple-300'
+                  : item.kind === 'timing' ? 'bg-blue-900/40 text-blue-300'
+                  : 'bg-slate-700/50 text-slate-400'
+                }`}>{item.kind}</span>
+                {item.note && <p className="text-[10px] text-slate-500 mt-0.5 leading-tight">{item.note}</p>}
+              </div>
+              <span className={`font-mono ${item.amount_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{signed(item.amount_cents)}</span>
+            </div>
+          ))}
+          <div className="flex items-center justify-between py-1.5 border-t border-slate-800">
+            <span className="text-slate-400">= Expected equity move</span>
+            <span className="font-mono text-slate-300">{signed(expected)}</span>
+          </div>
+          <div className="flex items-center justify-between py-1.5">
+            <span className="text-slate-400">Actual equity move</span>
+            <span className="font-mono text-slate-300">{signed(recon.delta_equity_cents)}</span>
+          </div>
+          <div className={`flex items-center justify-between py-2 px-3 rounded-lg mt-1 ${matched ? 'bg-emerald-950/30' : 'bg-amber-950/30'}`}>
+            <span className={`font-semibold ${matched ? 'text-emerald-300' : 'text-amber-300'}`}>
+              {matched ? 'Unexplained (within tolerance)' : 'Unexplained residual'}
+            </span>
+            <span className={`font-mono font-bold ${matched ? 'text-emerald-400' : 'text-amber-400'}`}>{signed(recon.residual_cents)}</span>
+          </div>
+        </div>
+
+        {/* Where to look, when flagged */}
+        {!matched && recon.drivers.length > 0 && (
+          <div className="mt-4 pt-4 border-t border-slate-800">
+            <p className="text-[11px] text-slate-400 mb-2">
+              The residual likely lives in these balances (manual / bank-fed lines this period). Verify them against reality:
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {recon.drivers.map((d, i) => (
+                <span key={i} className="text-[11px] bg-slate-800 rounded px-2 py-1 text-slate-300 font-mono">
+                  {d.label} {signed(d.amount_cents)}
+                </span>
+              ))}
+            </div>
+            {recon.flows.owner_draws === 0 && recon.flows.owner_contributions === 0 && (
+              <p className="text-[10px] text-slate-500 mt-2">
+                Tip: if money was taken out or put in this period, categorize those bank transactions as “Owner Draw” / “Owner Contribution” and they’ll move out of the residual.
+              </p>
+            )}
+          </div>
+        )}
+
+        {recon.unmodeled_keys.length > 0 && (
+          <p className="mt-3 text-[10px] text-amber-500/80">
+            New balance lines not yet modeled: {recon.unmodeled_keys.join(', ')} — counted in residual.
+          </p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function CFOContent() {
@@ -101,6 +249,24 @@ function CFOContent() {
   const [ccAmountInput, setCcAmountInput] = useState('');
   const [editingCCId, setEditingCCId] = useState<string | null>(null);
   const [savingCC, setSavingCC] = useState(false);
+  const [cfoOverrides, setCfoOverrides] = useState<Record<string, string>>({});
+  const [editingOverride, setEditingOverride] = useState<string | null>(null);
+  const [overrideInput, setOverrideInput] = useState('');
+  const [recon, setRecon] = useState<ReconResult | null>(null);
+
+  async function saveOverride(key: string, value: string) {
+    await fetch('/api/cfo', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeId, cfoOverride: { key, value } }),
+    });
+    setCfoOverrides(prev => {
+      const next = { ...prev };
+      if (value) next[key] = value; else delete next[key];
+      return next;
+    });
+    setEditingOverride(null);
+  }
 
   // Overview state
   const [overviewStores, setOverviewStores] = useState<OverviewStore[]>([]);
@@ -135,10 +301,17 @@ function CFOContent() {
     const res = await fetch(`/api/cfo?storeId=${storeId}`);
     const d = await res.json();
     setData(d);
+    setCfoOverrides(d.cfo_overrides || {});
     setShopifyInput(d.details?.shopify_balance_cents ? String(d.details.shopify_balance_cents / 100) : '');
     setPayoutInput(d.details?.shopify_payout_cents ? String(d.details.shopify_payout_cents / 100) : '');
     setSnapshots(d.snapshots || []);
     setLoading(false);
+    // Load the latest reconciliation (recompute against the most recent snapshot so it reflects
+    // any balances edited since it was last saved).
+    fetch(`/api/cfo/reconcile?storeId=${storeId}&recompute=1`)
+      .then(r => r.json())
+      .then(rd => setRecon(rd.latest || null))
+      .catch(() => setRecon(null));
   }
 
   async function saveShopifyBalance() {
@@ -246,6 +419,7 @@ function CFOContent() {
     setSavingSnapshot(false);
     if (result.success) {
       setSnapshotSaved(result.date);
+      if (result.reconciliation) setRecon(result.reconciliation);
       loadData();
     }
   }
@@ -365,7 +539,20 @@ function CFOContent() {
                           window.location.href = `/dashboard/cfo?storeId=${s.store_id}`;
                         }}
                       >
-                        <td className="px-5 py-3 text-white font-medium">{s.store_name}</td>
+                        <td className="px-5 py-3 text-white font-medium">
+                          <span className="inline-flex items-center gap-2">
+                            {s.store_name}
+                            {s.recon_status === 'flagged' && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-900/50 text-amber-300 uppercase tracking-wide"
+                                title={s.recon_residual_cents !== null ? `Unexplained ${cents(s.recon_residual_cents)}` : 'Drift detected'}>
+                                ⚠ Drift {s.recon_residual_cents !== null ? signed(s.recon_residual_cents) : ''}
+                              </span>
+                            )}
+                            {s.recon_status === 'matched' && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-400 uppercase tracking-wide" title="CFO ties out to P&L">✓ Tied</span>
+                            )}
+                          </span>
+                        </td>
                         <td className="px-5 py-3 text-slate-400 text-xs">
                           {s.snapshot_date}
                           {s.created_at && <span className="text-slate-600 ml-2">{s.created_at.slice(11, 16)}</span>}
@@ -588,7 +775,20 @@ function CFOContent() {
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">Inventory</td>
                     <td className="px-5 py-3 text-slate-400 text-xs">
-                      Unsold inventory at cost (cost basis: {cents(data.details.inventory.cost_basis_cents)})
+                      {editingOverride === 'inventory_details' ? (
+                        <div className="flex items-center gap-2">
+                          <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
+                            className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                            autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('inventory_details', overrideInput)} />
+                          <button onClick={() => saveOverride('inventory_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => saveOverride('inventory_details', '')} className="text-[10px] text-red-400">Clear</button>
+                          <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
+                        </div>
+                      ) : (
+                        <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('inventory_details'); setOverrideInput(cfoOverrides['inventory_details'] || ''); }}>
+                          {cfoOverrides['inventory_details'] || `Unsold inventory at cost (cost basis: ${cents(data.details.inventory.cost_basis_cents)})`}
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(data.assets.inventory_cents)}</td>
                   </tr>
@@ -634,7 +834,20 @@ function CFOContent() {
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">Current Unpaid Fulfillment Bill</td>
                     <td className="px-5 py-3 text-slate-400 text-xs">
-                      ShipSourced balance owed
+                      {editingOverride === 'fulfillment_details' ? (
+                        <div className="flex items-center gap-2">
+                          <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
+                            className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                            placeholder="Custom details text..." autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('fulfillment_details', overrideInput)} />
+                          <button onClick={() => saveOverride('fulfillment_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => saveOverride('fulfillment_details', '')} className="text-[10px] text-red-400">Clear</button>
+                          <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
+                        </div>
+                      ) : (
+                        <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('fulfillment_details'); setOverrideInput(cfoOverrides['fulfillment_details'] || ''); }}>
+                          {cfoOverrides['fulfillment_details'] || 'ShipSourced balance owed'}
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(data.details.fulfillment.balance_cents)}</td>
                   </tr>
@@ -642,13 +855,28 @@ function CFOContent() {
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">Unfulfilled Orders Est. Fulfillment Bill</td>
                     <td className="px-5 py-3 text-slate-400 text-xs">
-                      {data.details.fulfillment.total_unfulfilled} unfulfilled orders
-                      {data.details.fulfillment.total_unfulfilled > 0 && (
-                        <span className="ml-2 text-slate-500">
-                          ({data.details.fulfillment.unfulfilled_with_estimate} have estimate @ avg {cents((data.details.fulfillment as any).avg_per_order_cents || 0)}/order
-                          {(data.details.fulfillment as any).without_estimate > 0 && (
-                            <> + {(data.details.fulfillment as any).without_estimate} projected</>
-                          )})
+                      {editingOverride === 'unfulfilled_details' ? (
+                        <div className="flex items-center gap-2">
+                          <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
+                            className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                            placeholder="Custom details text..." autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('unfulfilled_details', overrideInput)} />
+                          <button onClick={() => saveOverride('unfulfilled_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => saveOverride('unfulfilled_details', '')} className="text-[10px] text-red-400">Clear</button>
+                          <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
+                        </div>
+                      ) : (
+                        <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('unfulfilled_details'); setOverrideInput(cfoOverrides['unfulfilled_details'] || ''); }}>
+                          {cfoOverrides['unfulfilled_details'] || (<>
+                            {data.details.fulfillment.total_unfulfilled} unfulfilled orders
+                            {data.details.fulfillment.total_unfulfilled > 0 && (
+                              <span className="ml-2 text-slate-500">
+                                ({data.details.fulfillment.unfulfilled_with_estimate} have estimate @ avg {cents((data.details.fulfillment as any).avg_per_order_cents || 0)}/order
+                                {(data.details.fulfillment as any).without_estimate > 0 && (
+                                  <> + {(data.details.fulfillment as any).without_estimate} projected</>
+                                )})
+                              </span>
+                            )}
+                          </>)}
                         </span>
                       )}
                     </td>
@@ -685,7 +913,20 @@ function CFOContent() {
                     <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                       <td className="px-5 py-3 text-white font-medium">FB Pending (Unbilled)</td>
                       <td className="px-5 py-3 text-slate-400 text-xs">
-                        Spend not yet charged to card — live from Facebook API
+                        {editingOverride === 'fb_pending_details' ? (
+                          <div className="flex items-center gap-2">
+                            <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
+                              className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                              autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('fb_pending_details', overrideInput)} />
+                            <button onClick={() => saveOverride('fb_pending_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                            <button onClick={() => saveOverride('fb_pending_details', '')} className="text-[10px] text-red-400">Clear</button>
+                            <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
+                          </div>
+                        ) : (
+                          <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('fb_pending_details'); setOverrideInput(cfoOverrides['fb_pending_details'] || ''); }}>
+                            {cfoOverrides['fb_pending_details'] || 'Spend not yet charged to card \u2014 live from Facebook API'}
+                          </span>
+                        )}
                       </td>
                       <td className="px-5 py-3 text-right text-orange-400 font-medium">{cents(data.liabilities.fb_pending_balance_cents)}</td>
                     </tr>
@@ -695,10 +936,25 @@ function CFOContent() {
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">App Invoices (Balance Due)</td>
                     <td className="px-5 py-3 text-slate-400 text-xs">
-                      Charged: {cents(data.details.appInvoices.total_charged_cents)} - Paid: {cents(data.details.appInvoices.total_paid_cents)}
-                      {data.details.appInvoices.last_invoice && (
-                        <span className="ml-2 text-slate-600">
-                          Last: #{data.details.appInvoices.last_invoice.bill_number} on {data.details.appInvoices.last_invoice.date} ({cents(data.details.appInvoices.last_invoice.total_cents)})
+                      {editingOverride === 'app_invoices_details' ? (
+                        <div className="flex items-center gap-2">
+                          <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
+                            className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                            autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('app_invoices_details', overrideInput)} />
+                          <button onClick={() => saveOverride('app_invoices_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => saveOverride('app_invoices_details', '')} className="text-[10px] text-red-400">Clear</button>
+                          <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
+                        </div>
+                      ) : (
+                        <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('app_invoices_details'); setOverrideInput(cfoOverrides['app_invoices_details'] || ''); }}>
+                          {cfoOverrides['app_invoices_details'] || (<>
+                            Charged: {cents(data.details.appInvoices.total_charged_cents)} - Paid: {cents(data.details.appInvoices.total_paid_cents)}
+                            {data.details.appInvoices.last_invoice && (
+                              <span className="ml-2 text-slate-600">
+                                Last: #{data.details.appInvoices.last_invoice.bill_number} on {data.details.appInvoices.last_invoice.date} ({cents(data.details.appInvoices.last_invoice.total_cents)})
+                              </span>
+                            )}
+                          </>)}
                         </span>
                       )}
                     </td>
@@ -805,6 +1061,9 @@ function CFOContent() {
               </p>
             </div>
           </div>
+
+          {/* RECONCILIATION — does the balance sheet tie out to the P&L? */}
+          <ReconciliationPanel recon={recon} />
 
           {/* SNAPSHOT HISTORY */}
           {snapshots.length > 0 && (

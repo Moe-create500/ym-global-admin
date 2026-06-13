@@ -52,8 +52,9 @@ export async function POST(req: NextRequest) {
     const adSpend = adSpendCents !== undefined ? adSpendCents : existing.ad_spend_cents;
     const shopifyFees = shopifyFeesCents !== undefined ? shopifyFeesCents : existing.shopify_fees_cents;
     const otherCosts = otherCostsCents !== undefined ? otherCostsCents : existing.other_costs_cents;
-    const totalCosts = (existing.shipping_cost_cents || 0) +
-      (existing.pick_pack_cents || 0) + (existing.packaging_cents || 0) + adSpend + shopifyFees + otherCosts;
+    const totalCosts = (existing.cogs_cents || 0) + (existing.shipping_cost_cents || 0) +
+      (existing.pick_pack_cents || 0) + (existing.packaging_cents || 0) + adSpend + shopifyFees + otherCosts +
+      (existing.chargeback_cents || 0) + (existing.app_costs_cents || 0);
     const netProfit = (existing.revenue_cents || 0) - totalCosts;
     const margin = existing.revenue_cents > 0 ? (netProfit / existing.revenue_cents) * 100 : 0;
     const isConfirmed = confirm !== undefined ? (confirm ? 1 : 0) : existing.is_confirmed;

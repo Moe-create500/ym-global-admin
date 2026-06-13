@@ -26,6 +26,9 @@ export function getDb(): Database.Database {
     if (!cols.find((c: any) => c.name === 'shipsourced_extra_client_ids')) {
       _db.exec("ALTER TABLE stores ADD COLUMN shipsourced_extra_client_ids TEXT DEFAULT NULL");
     }
+    if (!cols.find((c: any) => c.name === 'cfo_overrides')) {
+      _db.exec("ALTER TABLE stores ADD COLUMN cfo_overrides TEXT DEFAULT NULL");
+    }
 
     // Migration: add is_global and credit_limit_cents to bank_accounts
     const baCols = _db.prepare("PRAGMA table_info(bank_accounts)").all() as any[];

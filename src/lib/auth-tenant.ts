@@ -38,7 +38,7 @@ function verifySessionToken(token: string): { employeeId: string; role: string }
  */
 export function getAccessibleStoreIds(employeeId: string, role: string): string[] {
   const db = getDb();
-  if (role === 'admin' || role === 'data_corrector') {
+  if (role === 'admin' || role === 'data_corrector' || role === 'employee') {
     const rows: any[] = db.prepare('SELECT id FROM stores WHERE is_active = 1').all();
     return rows.map(r => r.id);
   }
@@ -52,7 +52,7 @@ export function getAccessibleStoreIds(employeeId: string, role: string): string[
  * Check if an employee can access a specific store.
  */
 export function canAccessStore(employeeId: string, role: string, storeId: string): boolean {
-  if (role === 'admin' || role === 'data_corrector') return true;
+  if (role === 'admin' || role === 'data_corrector' || role === 'employee') return true;
   const db = getDb();
   const row = db.prepare(
     'SELECT 1 FROM employee_store_access WHERE employee_id = ? AND store_id = ?'

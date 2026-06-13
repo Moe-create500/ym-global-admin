@@ -61,6 +61,11 @@ export async function GET(req: NextRequest) {
   if (from) { where += ' AND dp.date >= ?'; params.push(from); }
   if (to) { where += ' AND dp.date <= ?'; params.push(to); }
 
+  // visibleOnly: only count stores shown on the dashboard (active, not hidden, shopify platform)
+  if (searchParams.get('visibleOnly') === '1' && !storeId) {
+    where += ` AND dp.store_id IN (SELECT id FROM stores WHERE is_active = 1 AND COALESCE(dashboard_hidden, 0) = 0 AND COALESCE(platform, 'shopify') = 'shopify')`;
+  }
+
   const rows = db.prepare(`
     SELECT
       ${dateGroup} as period,
