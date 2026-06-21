@@ -124,6 +124,13 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
       }
     }
 
+    // Check if this store has skip_product_cost override (e.g. Magvita US — stock is free)
+    let skipProductCost = false;
+    try {
+      const overrides = store.cfo_overrides ? JSON.parse(store.cfo_overrides) : {};
+      skipProductCost = !!overrides.skip_product_cost;
+    } catch { /* ignore bad JSON */ }
+
     // Primary sync from orders endpoint dailyRevenue
     // shipping_cost_cents = ShipSourced fulfillment charges (per-order Charge)
     // cogs_cents = product cost only (usCogs + chinaCogs)
@@ -133,7 +140,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
 
       const revenueCents = rev.revenue;
       const orderCount = rev.orders;
-      const productCost = (rev.usCogs || 0) + (rev.chinaCogs || 0);
+      const productCost = skipProductCost ? 0 : ((rev.usCogs || 0) + (rev.chinaCogs || 0));
       const fulfillmentCharges = rev.charges || 0;
 
       const existing: any = db.prepare(
@@ -170,7 +177,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
               net_profit_cents = ?, margin_pct = ?, source = 'shipsourced',
               synced_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
-          `).run(revenueCents, orderCount, productCost, rev.usCogs, rev.chinaCogs, fulfillmentCharges,
+          `).run(revenueCents, orderCount, productCost, skipProductCost ? 0 : rev.usCogs, skipProductCost ? 0 : rev.chinaCogs, fulfillmentCharges,
             platformFees, netProfit, margin, existing.id);
         } else {
           db.prepare(`
@@ -181,7 +188,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
               net_profit_cents = ?, margin_pct = ?,
               synced_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
-          `).run(productCost, rev.usCogs, rev.chinaCogs, fulfillmentCharges,
+          `).run(productCost, skipProductCost ? 0 : rev.usCogs, skipProductCost ? 0 : rev.chinaCogs, fulfillmentCharges,
             platformFees, netProfit, margin, existing.id);
         }
       } else {
@@ -198,7 +205,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
             shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, net_profit_cents, margin_pct, source, synced_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'sync', datetime('now'))
         `).run(crypto.randomUUID(), store.id, day, revenueCents, orderCount,
-          productCost, rev.usCogs, rev.chinaCogs, fulfillmentCharges,
+          productCost, skipProductCost ? 0 : rev.usCogs, skipProductCost ? 0 : rev.chinaCogs, fulfillmentCharges,
           platformFees, netProfit, margin);
       }
       synced++;
@@ -212,7 +219,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
         if (dailyRevMap[day.date]) continue;
 
         // For billing-only days, use totalCharge as COGS (per-SKU total)
-        const cogsCents = Math.round((day.totalCharge || 0) * 100);
+        const cogsCents = skipProductCost ? 0 : Math.round((day.totalCharge || 0) * 100);
         const orderCount = day.labelCount || 0;
 
         const existing: any = db.prepare(
@@ -406,10 +413,16 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
 
     const revenueCents = Math.round((d.revenue || 0) * 100);
     const orderCount = d.orderCount || 0;
+    // Check skip_product_cost override (e.g. Magvita US — stock is free)
+    let skipCost = false;
+    try {
+      const ov = store.cfo_overrides ? JSON.parse(store.cfo_overrides) : {};
+      skipCost = !!ov.skip_product_cost;
+    } catch { /* ignore */ }
     // Default COGS splits to 0 (parity with syncStore) — ShipSourced may omit them for a
     // day, and binding undefined to SQLite throws.
-    const usCogs = d.usCogsCents || 0;
-    const chinaCogs = d.chinaCogsCents || 0;
+    const usCogs = skipCost ? 0 : (d.usCogsCents || 0);
+    const chinaCogs = skipCost ? 0 : (d.chinaCogsCents || 0);
     const productCost = usCogs + chinaCogs;
     const fulfillmentCharges = d.chargesCents || 0;
 
