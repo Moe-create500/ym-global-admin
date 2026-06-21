@@ -27,8 +27,14 @@ interface Totals {
   revenue_cents: number; refund_cents: number; cogs_cents: number; fulfillment_cents: number;
   fee_cents: number; total_cost_cents: number; net_profit_cents: number; margin_pct: number; order_count: number;
 }
+interface FeeModel {
+  store_category: string;
+  categories: { value: string; label: string }[];
+  products_with_category: number;
+  products_total: number;
+}
 interface Breakdown {
-  cogs_available: boolean; totals: Totals; orders: OrderRow[];
+  cogs_available: boolean; totals: Totals; orders: OrderRow[]; fee_model?: FeeModel;
   page: number; totalPages: number; total: number;
 }
 
@@ -88,6 +94,18 @@ export default function ZenEssentialPage() {
   useEffect(() => { if (store) loadBreakdown(store.id, range, page); }, [store, range, page, loadBreakdown]);
   // Reset to page 1 when range changes.
   useEffect(() => { setPage(1); }, [range]);
+
+  const [savingCat, setSavingCat] = useState(false);
+  async function setCategory(cat: string) {
+    if (!store) return;
+    setSavingCat(true);
+    await fetch(`/api/stores/${store.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amazonCategory: cat }),
+    }).catch(() => {});
+    setSavingCat(false);
+    loadBreakdown(store.id, range, page);
+  }
 
   if (loading) return <div className="text-slate-500 py-12 text-center">Loading...</div>;
 
@@ -154,6 +172,30 @@ export default function ZenEssentialPage() {
               ))}
             </div>
           </div>
+
+          {/* Amazon fee category (drives referral-fee %) */}
+          {store.platform === 'amazon' && bd?.fee_model && (
+            <div className="mb-4 bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center gap-3">
+              <span className="text-xs text-slate-500">Amazon fee category</span>
+              <select
+                value={bd.fee_model.store_category}
+                onChange={e => setCategory(e.target.value)}
+                disabled={savingCat}
+                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-violet-500"
+              >
+                {bd.fee_model.categories.map(c => (
+                  <option key={c.value} value={c.value}>{c.label}</option>
+                ))}
+              </select>
+              {savingCat && <span className="text-xs text-slate-500">saving…</span>}
+              <span className="text-[11px] text-slate-500">
+                Referral fee = per item, by category, $0.30 min.
+                {bd.fee_model.products_with_category > 0
+                  ? ` ${bd.fee_model.products_with_category}/${bd.fee_model.products_total} products have their own category (override this).`
+                  : ' Set per-product categories for full Sellerboard accuracy.'}
+              </span>
+            </div>
+          )}
 
           {/* COGS warning */}
           {bd && !bd.cogs_available && (
