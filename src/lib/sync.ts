@@ -132,6 +132,12 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
       const overrides = store.cfo_overrides ? JSON.parse(store.cfo_overrides) : {};
       skipProductCost = !!overrides.skip_product_cost;
     } catch { /* ignore bad JSON */ }
+    // Shopify stores are billed a bundled per-SKU price by ShipSourced (product cost
+    // included in the fulfillment charge) — counting COGS separately double-counts it.
+    // Amazon/eBay stores still track product cost separately. Billing-only days keep
+    // totalCharge (that IS the bundled billing), so this flag stays separate from
+    // skipProductCost.
+    const noSeparateCogs = skipProductCost || (store.platform !== 'amazon' && store.platform !== 'ebay');
 
     // Estimate fulfillment for recent orders ShipSourced hasn't billed yet, from
     // recent invoiced prices for the same exact products. Recomputed every sync,
@@ -152,7 +158,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
 
       const revenueCents = rev.revenue;
       const orderCount = rev.orders;
-      const productCost = skipProductCost ? 0 : ((rev.usCogs || 0) + (rev.chinaCogs || 0));
+      const productCost = noSeparateCogs ? 0 : ((rev.usCogs || 0) + (rev.chinaCogs || 0));
       const fulfillmentEst = estByDay[day] || 0;
       const fulfillmentCharges = (rev.charges || 0) + fulfillmentEst;
 
@@ -190,7 +196,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
               net_profit_cents = ?, margin_pct = ?, source = 'shipsourced',
               synced_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
-          `).run(revenueCents, orderCount, productCost, skipProductCost ? 0 : rev.usCogs, skipProductCost ? 0 : rev.chinaCogs, fulfillmentCharges, fulfillmentEst,
+          `).run(revenueCents, orderCount, productCost, noSeparateCogs ? 0 : rev.usCogs, noSeparateCogs ? 0 : rev.chinaCogs, fulfillmentCharges, fulfillmentEst,
             platformFees, netProfit, margin, existing.id);
         } else {
           db.prepare(`
@@ -201,7 +207,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
               net_profit_cents = ?, margin_pct = ?,
               synced_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
-          `).run(productCost, skipProductCost ? 0 : rev.usCogs, skipProductCost ? 0 : rev.chinaCogs, fulfillmentCharges, fulfillmentEst,
+          `).run(productCost, noSeparateCogs ? 0 : rev.usCogs, noSeparateCogs ? 0 : rev.chinaCogs, fulfillmentCharges, fulfillmentEst,
             platformFees, netProfit, margin, existing.id);
         }
       } else {
@@ -218,7 +224,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
             shipping_cost_cents, fulfillment_est_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, net_profit_cents, margin_pct, source, synced_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'sync', datetime('now'))
         `).run(crypto.randomUUID(), store.id, day, revenueCents, orderCount,
-          productCost, skipProductCost ? 0 : rev.usCogs, skipProductCost ? 0 : rev.chinaCogs, fulfillmentCharges, fulfillmentEst,
+          productCost, noSeparateCogs ? 0 : rev.usCogs, noSeparateCogs ? 0 : rev.chinaCogs, fulfillmentCharges, fulfillmentEst,
           platformFees, netProfit, margin);
       }
       synced++;
@@ -432,6 +438,9 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
       const ov = store.cfo_overrides ? JSON.parse(store.cfo_overrides) : {};
       skipCost = !!ov.skip_product_cost;
     } catch { /* ignore */ }
+    // Shopify stores: ShipSourced billing bundles product cost into the fulfillment
+    // charge — no separate COGS (see syncStore).
+    if (store.platform !== 'amazon' && store.platform !== 'ebay') skipCost = true;
     // Default COGS splits to 0 (parity with syncStore) — ShipSourced may omit them for a
     // day, and binding undefined to SQLite throws.
     const usCogs = skipCost ? 0 : (d.usCogsCents || 0);
