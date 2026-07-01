@@ -1,6 +1,7 @@
 import { getDb } from '@/lib/db';
 import { getClientBilling, getClientOrders, getAllClientProducts } from '@/lib/shipsourced';
 import { computeFulfillmentEstimates } from '@/lib/fulfillment-estimate';
+import { calculateShopifyFees } from '@/lib/recalc-pnl';
 import { getAdInsights, getAdCreatives, getBillingCharges, getAccountPaymentMethods, getVideoSourceUrls, getPages } from '@/lib/facebook';
 import crypto from 'crypto';
 
@@ -156,7 +157,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
       const fulfillmentCharges = (rev.charges || 0) + fulfillmentEst;
 
       const existing: any = db.prepare(
-        'SELECT id, revenue_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed, source FROM daily_pnl WHERE store_id = ? AND date = ?'
+        'SELECT id, revenue_cents, order_count, ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed, source FROM daily_pnl WHERE store_id = ? AND date = ?'
       ).get(store.id, day);
 
       // Auto-calculate platform fees (Amazon/eBay) per-order or flat fallback
@@ -171,7 +172,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
         const adSpend = existing.ad_spend_cents || 0;
         const platformFees = (store.platform === 'amazon' || store.platform === 'ebay')
           ? calculateDailyPlatformFees(db, store.id, day, store.platform, storeCategory, effectiveRevenue, platformFeePct)
-          : (existing.shopify_fees_cents || 0);
+          : calculateShopifyFees(effectiveRevenue, useShipSourcedRevenue ? orderCount : (existing.order_count || 0));
         const otherCosts = existing.other_costs_cents || 0;
         const chargebacks = existing.chargeback_cents || 0;
         const appCosts = existing.app_costs_cents || 0;
@@ -206,7 +207,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
       } else {
         const platformFees = (store.platform === 'amazon' || store.platform === 'ebay')
           ? calculateDailyPlatformFees(db, store.id, day, store.platform, storeCategory, revenueCents, platformFeePct)
-          : 0;
+          : calculateShopifyFees(revenueCents, orderCount);
         const totalCosts = productCost + fulfillmentCharges + platformFees;
         const netProfit = revenueCents - totalCosts;
         const margin = revenueCents > 0 ? (netProfit / revenueCents) * 100 : 0;
@@ -446,7 +447,7 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
     const fulfillmentCharges = (d.chargesCents || 0) + fulfillmentEst;
 
     const existing: any = db.prepare(
-      'SELECT id, revenue_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed, source FROM daily_pnl WHERE store_id = ? AND date = ?'
+      'SELECT id, revenue_cents, order_count, ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed, source FROM daily_pnl WHERE store_id = ? AND date = ?'
     ).get(store.id, today);
 
     // Never overwrite a confirmed/locked day.
@@ -464,7 +465,7 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
       const adSpend = existing.ad_spend_cents || 0;
       const platformFees = (store.platform === 'amazon' || store.platform === 'ebay')
         ? calculateDailyPlatformFees(db, store.id, today, store.platform, storeCategory, effectiveRevenue, platformFeePct)
-        : (existing.shopify_fees_cents || 0);
+        : calculateShopifyFees(effectiveRevenue, useShipSourcedRevenue ? orderCount : (existing.order_count || 0));
       const otherCosts = existing.other_costs_cents || 0;
       const chargebacks = existing.chargeback_cents || 0;
       const appCosts = existing.app_costs_cents || 0;
@@ -495,7 +496,7 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
     } else {
       const platformFees = (store.platform === 'amazon' || store.platform === 'ebay')
         ? calculateDailyPlatformFees(db, store.id, today, store.platform, storeCategory, revenueCents, platformFeePct)
-        : 0;
+        : calculateShopifyFees(revenueCents, orderCount);
       const totalCosts = productCost + fulfillmentCharges + platformFees;
       const netProfit = revenueCents - totalCosts;
       const margin = revenueCents > 0 ? (netProfit / revenueCents) * 100 : 0;

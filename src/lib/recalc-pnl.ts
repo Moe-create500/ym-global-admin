@@ -5,6 +5,12 @@ import crypto from 'crypto';
 const SHOPIFY_FEE_RATE = 0.026;
 const SHOPIFY_FEE_PER_TXN_CENTS = 30;
 
+/** Standard Shopify payment-processing fee for a day: 2.6% of revenue + 30c per order. */
+export function calculateShopifyFees(revenueCents: number, orderCount: number): number {
+  if (revenueCents <= 0) return 0;
+  return Math.round(revenueCents * SHOPIFY_FEE_RATE) + (orderCount || 0) * SHOPIFY_FEE_PER_TXN_CENTS;
+}
+
 /**
  * Single source of truth for daily P&L recalculation.
  * Derives:
