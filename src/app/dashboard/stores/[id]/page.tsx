@@ -855,6 +855,7 @@ export default function StoreDetailPage() {
             { label: 'Revenue', value: cents(totals.revenue_cents || 0), color: 'text-white' },
             ...((totals.cogs_cents || 0) > 0 ? [{ label: 'Product Cost', value: cents(totals.cogs_cents || 0), color: 'text-cyan-400' }] : []),
             { label: (totals.fulfillment_est_cents || 0) > 0 ? `Fulfillment (~${cents(totals.fulfillment_est_cents || 0)} est.)` : 'Fulfillment', value: cents(totals.shipping_cents || 0), color: 'text-slate-300' },
+            { label: 'Cost/Order', value: (totals.order_count || 0) > 0 ? cents(Math.round((totals.shipping_cents || 0) / totals.order_count)) : '-', color: 'text-teal-400' },
             { label: 'Ad Spend', value: cents(totals.ad_spend_cents || 0), color: 'text-orange-400', link: `/dashboard/ads/payments?storeId=${store.id}` },
             { label: 'Shopify Fees', value: cents(totals.shopify_fees_cents || 0), color: 'text-purple-400' },
             { label: 'App Costs', value: cents(totals.app_costs_cents || 0), color: 'text-violet-400', link: `/dashboard/app-invoices?storeId=${store.id}` },
@@ -1045,6 +1046,7 @@ export default function StoreDetailPage() {
                       <th className="text-right px-4 py-3">Revenue</th>
                       {(totals?.cogs_cents || 0) > 0 && <th className="text-right px-4 py-3">Product Cost</th>}
                       <th className="text-right px-4 py-3">Fulfillment</th>
+                      <th className="text-right px-4 py-3">Cost/Order</th>
                       <th className="text-right px-4 py-3">Ad Spend</th>
                       <th className="text-right px-4 py-3">Shopify Fees</th>
                       <th className="text-right px-4 py-3">App Costs</th>
@@ -1065,6 +1067,9 @@ export default function StoreDetailPage() {
                           {(row.fulfillment_est_cents || 0) > 0 && (
                             <span className="text-amber-400 cursor-help" title={`includes ${cents(row.fulfillment_est_cents || 0)} estimated — not yet priced by ShipSourced`}>~</span>
                           )}
+                        </td>
+                        <td className="px-4 py-3 text-right text-teal-400">
+                          {(row.order_count || 0) > 0 ? cents(Math.round((row.shipping_cents || 0) / row.order_count)) : '-'}
                         </td>
                         <td className="px-4 py-3 text-right text-orange-400">{cents(row.ad_spend_cents || 0)}</td>
                         <td className="px-4 py-3 text-right text-purple-400">{cents(row.shopify_fees_cents || 0)}</td>
