@@ -48,6 +48,12 @@ export function getDb(): Database.Database {
       _db.exec("ALTER TABLE card_payments_log ADD COLUMN platform TEXT DEFAULT 'facebook'");
     }
 
+    // Migration: estimated fulfillment portion of shipping_cost_cents (un-billed orders)
+    const dpCols = _db.prepare("PRAGMA table_info(daily_pnl)").all() as any[];
+    if (!dpCols.find((c: any) => c.name === 'fulfillment_est_cents')) {
+      _db.exec("ALTER TABLE daily_pnl ADD COLUMN fulfillment_est_cents INTEGER DEFAULT 0");
+    }
+
     // Migration: cfo_snapshots table
     _db.exec(`CREATE TABLE IF NOT EXISTS cfo_snapshots (
       id TEXT PRIMARY KEY,

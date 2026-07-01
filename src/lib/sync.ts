@@ -1,5 +1,6 @@
 import { getDb } from '@/lib/db';
 import { getClientBilling, getClientOrders, getAllClientProducts } from '@/lib/shipsourced';
+import { computeFulfillmentEstimates } from '@/lib/fulfillment-estimate';
 import { getAdInsights, getAdCreatives, getBillingCharges, getAccountPaymentMethods, getVideoSourceUrls, getPages } from '@/lib/facebook';
 import crypto from 'crypto';
 
@@ -131,6 +132,16 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
       skipProductCost = !!overrides.skip_product_cost;
     } catch { /* ignore bad JSON */ }
 
+    // Estimate fulfillment for recent orders ShipSourced hasn't billed yet, from
+    // recent invoiced prices for the same exact products. Recomputed every sync,
+    // so actual charges replace estimates as soon as ShipSourced prices the order.
+    let estByDay: Record<string, number> = {};
+    try {
+      estByDay = (await computeFulfillmentEstimates(db, store, { full: true })).estByDay;
+    } catch (err: any) {
+      console.error(`[sync] ${store.name}: fulfillment estimate failed: ${err.message}`);
+    }
+
     // Primary sync from orders endpoint dailyRevenue
     // shipping_cost_cents = ShipSourced fulfillment charges (per-order Charge)
     // cogs_cents = product cost only (usCogs + chinaCogs)
@@ -141,7 +152,8 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
       const revenueCents = rev.revenue;
       const orderCount = rev.orders;
       const productCost = skipProductCost ? 0 : ((rev.usCogs || 0) + (rev.chinaCogs || 0));
-      const fulfillmentCharges = rev.charges || 0;
+      const fulfillmentEst = estByDay[day] || 0;
+      const fulfillmentCharges = (rev.charges || 0) + fulfillmentEst;
 
       const existing: any = db.prepare(
         'SELECT id, revenue_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed, source FROM daily_pnl WHERE store_id = ? AND date = ?'
@@ -172,23 +184,23 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
             UPDATE daily_pnl SET
               revenue_cents = ?, order_count = ?,
               cogs_cents = ?, us_cogs_cents = ?, china_cogs_cents = ?,
-              shipping_cost_cents = ?, pick_pack_cents = 0, packaging_cents = 0,
+              shipping_cost_cents = ?, fulfillment_est_cents = ?, pick_pack_cents = 0, packaging_cents = 0,
               shopify_fees_cents = ?,
               net_profit_cents = ?, margin_pct = ?, source = 'shipsourced',
               synced_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
-          `).run(revenueCents, orderCount, productCost, skipProductCost ? 0 : rev.usCogs, skipProductCost ? 0 : rev.chinaCogs, fulfillmentCharges,
+          `).run(revenueCents, orderCount, productCost, skipProductCost ? 0 : rev.usCogs, skipProductCost ? 0 : rev.chinaCogs, fulfillmentCharges, fulfillmentEst,
             platformFees, netProfit, margin, existing.id);
         } else {
           db.prepare(`
             UPDATE daily_pnl SET
               cogs_cents = ?, us_cogs_cents = ?, china_cogs_cents = ?,
-              shipping_cost_cents = ?, pick_pack_cents = 0, packaging_cents = 0,
+              shipping_cost_cents = ?, fulfillment_est_cents = ?, pick_pack_cents = 0, packaging_cents = 0,
               shopify_fees_cents = ?,
               net_profit_cents = ?, margin_pct = ?,
               synced_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
-          `).run(productCost, skipProductCost ? 0 : rev.usCogs, skipProductCost ? 0 : rev.chinaCogs, fulfillmentCharges,
+          `).run(productCost, skipProductCost ? 0 : rev.usCogs, skipProductCost ? 0 : rev.chinaCogs, fulfillmentCharges, fulfillmentEst,
             platformFees, netProfit, margin, existing.id);
         }
       } else {
@@ -202,10 +214,10 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
         db.prepare(`
           INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count, cogs_cents,
             us_cogs_cents, china_cogs_cents,
-            shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, net_profit_cents, margin_pct, source, synced_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'sync', datetime('now'))
+            shipping_cost_cents, fulfillment_est_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, net_profit_cents, margin_pct, source, synced_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'sync', datetime('now'))
         `).run(crypto.randomUUID(), store.id, day, revenueCents, orderCount,
-          productCost, skipProductCost ? 0 : rev.usCogs, skipProductCost ? 0 : rev.chinaCogs, fulfillmentCharges,
+          productCost, skipProductCost ? 0 : rev.usCogs, skipProductCost ? 0 : rev.chinaCogs, fulfillmentCharges, fulfillmentEst,
           platformFees, netProfit, margin);
       }
       synced++;
@@ -424,7 +436,14 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
     const usCogs = skipCost ? 0 : (d.usCogsCents || 0);
     const chinaCogs = skipCost ? 0 : (d.chinaCogsCents || 0);
     const productCost = usCogs + chinaCogs;
-    const fulfillmentCharges = d.chargesCents || 0;
+    // Add estimated fulfillment for today's not-yet-billed orders (cached rates,
+    // single orders-list page — cheap). Actuals replace estimates on later syncs.
+    let fulfillmentEst = 0;
+    try {
+      const est = await computeFulfillmentEstimates(db, store, { full: false });
+      fulfillmentEst = est.estByDay[today] || 0;
+    } catch { /* estimate is best-effort */ }
+    const fulfillmentCharges = (d.chargesCents || 0) + fulfillmentEst;
 
     const existing: any = db.prepare(
       'SELECT id, revenue_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed, source FROM daily_pnl WHERE store_id = ? AND date = ?'
@@ -457,20 +476,20 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
         db.prepare(`
           UPDATE daily_pnl SET
             revenue_cents = ?, order_count = ?, cogs_cents = ?, us_cogs_cents = ?, china_cogs_cents = ?,
-            shipping_cost_cents = ?, pick_pack_cents = 0, packaging_cents = 0, shopify_fees_cents = ?,
+            shipping_cost_cents = ?, fulfillment_est_cents = ?, pick_pack_cents = 0, packaging_cents = 0, shopify_fees_cents = ?,
             net_profit_cents = ?, margin_pct = ?, source = 'shipsourced',
             synced_at = datetime('now'), updated_at = datetime('now')
           WHERE id = ?
-        `).run(revenueCents, orderCount, productCost, usCogs, chinaCogs, fulfillmentCharges,
+        `).run(revenueCents, orderCount, productCost, usCogs, chinaCogs, fulfillmentCharges, fulfillmentEst,
           platformFees, netProfit, margin, existing.id);
       } else {
         db.prepare(`
           UPDATE daily_pnl SET
             cogs_cents = ?, us_cogs_cents = ?, china_cogs_cents = ?,
-            shipping_cost_cents = ?, pick_pack_cents = 0, packaging_cents = 0, shopify_fees_cents = ?,
+            shipping_cost_cents = ?, fulfillment_est_cents = ?, pick_pack_cents = 0, packaging_cents = 0, shopify_fees_cents = ?,
             net_profit_cents = ?, margin_pct = ?, synced_at = datetime('now'), updated_at = datetime('now')
           WHERE id = ?
-        `).run(productCost, usCogs, chinaCogs, fulfillmentCharges, platformFees, netProfit, margin, existing.id);
+        `).run(productCost, usCogs, chinaCogs, fulfillmentCharges, fulfillmentEst, platformFees, netProfit, margin, existing.id);
       }
       return { synced: 1, revenue_cents: effectiveRevenue, order_count: useShipSourcedRevenue ? orderCount : 0 };
     } else {
@@ -482,11 +501,11 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
       const margin = revenueCents > 0 ? (netProfit / revenueCents) * 100 : 0;
       db.prepare(`
         INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count, cogs_cents,
-          us_cogs_cents, china_cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents,
+          us_cogs_cents, china_cogs_cents, shipping_cost_cents, fulfillment_est_cents, pick_pack_cents, packaging_cents,
           shopify_fees_cents, net_profit_cents, margin_pct, source, synced_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'sync', datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'sync', datetime('now'))
       `).run(crypto.randomUUID(), store.id, today, revenueCents, orderCount, productCost,
-        usCogs, chinaCogs, fulfillmentCharges, platformFees, netProfit, margin);
+        usCogs, chinaCogs, fulfillmentCharges, fulfillmentEst, platformFees, netProfit, margin);
       return { synced: 1, revenue_cents: revenueCents, order_count: orderCount };
     }
   } catch (err: any) {

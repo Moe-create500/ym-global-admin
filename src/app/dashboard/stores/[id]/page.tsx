@@ -22,6 +22,7 @@ interface PnlRow {
   revenue_cents: number;
   cogs_cents: number;
   shipping_cents: number;
+  fulfillment_est_cents?: number;
   pick_pack_cents: number;
   packaging_cents: number;
   ad_spend_cents: number;
@@ -38,6 +39,7 @@ interface Totals {
   revenue_cents: number;
   cogs_cents: number;
   shipping_cents: number;
+  fulfillment_est_cents?: number;
   pick_pack_cents: number;
   packaging_cents: number;
   ad_spend_cents: number;
@@ -851,7 +853,7 @@ export default function StoreDetailPage() {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
           {[
             { label: 'Revenue', value: cents(totals.revenue_cents || 0), color: 'text-white' },
-            { label: 'Fulfillment', value: cents(totals.shipping_cents || 0), color: 'text-slate-300' },
+            { label: (totals.fulfillment_est_cents || 0) > 0 ? `Fulfillment (~${cents(totals.fulfillment_est_cents || 0)} est.)` : 'Fulfillment', value: cents(totals.shipping_cents || 0), color: 'text-slate-300' },
             { label: 'Ad Spend', value: cents(totals.ad_spend_cents || 0), color: 'text-orange-400', link: `/dashboard/ads/payments?storeId=${store.id}` },
             { label: 'Shopify Fees', value: cents(totals.shopify_fees_cents || 0), color: 'text-purple-400' },
             { label: 'App Costs', value: cents(totals.app_costs_cents || 0), color: 'text-violet-400', link: `/dashboard/app-invoices?storeId=${store.id}` },
@@ -1055,7 +1057,12 @@ export default function StoreDetailPage() {
                       <tr key={row.period} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                         <td className="px-4 py-3 text-slate-300">{row.period}</td>
                         <td className="px-4 py-3 text-right text-white font-medium">{cents(row.revenue_cents || 0)}</td>
-                        <td className="px-4 py-3 text-right text-slate-400">{cents(row.shipping_cents || 0)}</td>
+                        <td className="px-4 py-3 text-right text-slate-400">
+                          {cents(row.shipping_cents || 0)}
+                          {(row.fulfillment_est_cents || 0) > 0 && (
+                            <span className="text-amber-400 cursor-help" title={`includes ${cents(row.fulfillment_est_cents || 0)} estimated — not yet priced by ShipSourced`}>~</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-right text-orange-400">{cents(row.ad_spend_cents || 0)}</td>
                         <td className="px-4 py-3 text-right text-purple-400">{cents(row.shopify_fees_cents || 0)}</td>
                         <td className="px-4 py-3 text-right text-violet-400">{(row.app_costs_cents || 0) > 0 ? cents(row.app_costs_cents) : '-'}</td>
