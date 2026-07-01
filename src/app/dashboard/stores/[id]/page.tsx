@@ -853,6 +853,7 @@ export default function StoreDetailPage() {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
           {[
             { label: 'Revenue', value: cents(totals.revenue_cents || 0), color: 'text-white' },
+            { label: 'Product Cost', value: cents(totals.cogs_cents || 0), color: 'text-cyan-400' },
             { label: (totals.fulfillment_est_cents || 0) > 0 ? `Fulfillment (~${cents(totals.fulfillment_est_cents || 0)} est.)` : 'Fulfillment', value: cents(totals.shipping_cents || 0), color: 'text-slate-300' },
             { label: 'Ad Spend', value: cents(totals.ad_spend_cents || 0), color: 'text-orange-400', link: `/dashboard/ads/payments?storeId=${store.id}` },
             { label: 'Shopify Fees', value: cents(totals.shopify_fees_cents || 0), color: 'text-purple-400' },
@@ -1042,6 +1043,7 @@ export default function StoreDetailPage() {
                     <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
                       <th className="text-left px-4 py-3">Period</th>
                       <th className="text-right px-4 py-3">Revenue</th>
+                      <th className="text-right px-4 py-3">Product Cost</th>
                       <th className="text-right px-4 py-3">Fulfillment</th>
                       <th className="text-right px-4 py-3">Ad Spend</th>
                       <th className="text-right px-4 py-3">Shopify Fees</th>
@@ -1057,6 +1059,7 @@ export default function StoreDetailPage() {
                       <tr key={row.period} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                         <td className="px-4 py-3 text-slate-300">{row.period}</td>
                         <td className="px-4 py-3 text-right text-white font-medium">{cents(row.revenue_cents || 0)}</td>
+                        <td className="px-4 py-3 text-right text-cyan-400">{cents(row.cogs_cents || 0)}</td>
                         <td className="px-4 py-3 text-right text-slate-400">
                           {cents(row.shipping_cents || 0)}
                           {(row.fulfillment_est_cents || 0) > 0 && (
