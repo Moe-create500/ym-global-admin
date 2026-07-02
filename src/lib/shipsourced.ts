@@ -168,8 +168,13 @@ export async function getAllClientOrdersList(clientId: string): Promise<SSOrder[
  */
 export async function getNewClientOrders(clientId: string, knownOrderNumbers: Set<string>): Promise<SSOrder[]> {
   const newOrders: SSOrder[] = [];
+  // Hard caps: if local order numbers never match the API's (e.g. a store migration
+  // changed numbering), the allKnown early-exit never fires and this pages the client's
+  // ENTIRE history into memory — on a 2GB box that OOM-crashes the app.
+  const MAX_PAGES = 30;
+  const MAX_NEW = 3000;
   let page = 1;
-  while (true) {
+  while (page <= MAX_PAGES && newOrders.length < MAX_NEW) {
     const data = await getClientOrdersList(clientId, page, 100);
     if (!data.orders || data.orders.length === 0) break;
 

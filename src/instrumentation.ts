@@ -26,6 +26,11 @@ export async function register() {
         }
         const totalSynced = storeResult.results.reduce((s, r) => s + r.synced, 0);
         console.log(`[auto-sync] ${label} done: ${totalSynced} store records, ${fbResult.synced} ad records, ${productSynced} products`);
+        // Surface FB sync failures — a checkpointed/expired token otherwise fails
+        // silently as "0 ad records" while ad spend quietly goes stale.
+        if (fbResult.errors.length > 0) {
+          console.error(`[auto-sync] ${label}: ${fbResult.errors.length} FB profile errors; first: ${fbResult.errors.slice(0, 3).join(' | ').slice(0, 500)}`);
+        }
       } catch (e) {
         console.error(`[auto-sync] ${label} error:`, e);
       } finally {
