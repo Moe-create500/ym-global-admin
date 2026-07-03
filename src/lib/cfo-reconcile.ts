@@ -424,6 +424,43 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
       details: appDetails.invoices?.length ? appDetails : undefined });
   }
 
+  // Payments in transit: a payment logged in the window (ad/app card payments, ShipSourced
+  // transfers) whose cash has NOT actually left any connected bank account yet (pending
+  // ACH/card settlement). The paid totals above already counted it as cash-out, but the
+  // bank/equity side hasn't moved — same dollars would otherwise land in the residual
+  // (and double-count against a manual credit-card placeholder typed for the same charge).
+  const bankDebitExists = db.prepare(`
+    SELECT 1 FROM bank_transactions bt JOIN bank_accounts ba ON ba.id = bt.bank_account_id
+    WHERE (ba.store_id = ? OR COALESCE(ba.is_global, 0) = 1)
+      AND bt.amount_cents BETWEEN ? AND ?
+      AND bt.date >= date(?, '-5 days') AND bt.date <= date(?, '+5 days')
+    LIMIT 1
+  `);
+  const loggedPayments: { id: string; date: string; amount_cents: number; description: string }[] = db.prepare(`
+    SELECT id, date, amount_cents, category || ' payment *' || COALESCE(card_last4, '?') AS description
+    FROM card_payments_log
+    WHERE store_id = ? AND category IN ('ad','app') AND date != 'N/A' AND date >= ? AND date <= ?
+    UNION ALL
+    SELECT id, date, amount_cents, 'ShipSourced payment' AS description
+    FROM ss_payments
+    WHERE store_id = ? AND date != 'unknown' AND date >= ? AND date <= ?
+      AND (date != ? OR created_at IS NULL OR created_at > ?)
+      AND (date != ? OR created_at IS NULL OR created_at <= ?)
+  `).all(storeId, periodStart, periodEnd, storeId, periodStart, periodEnd, ...boundaryArgs) as any[];
+  const inTransitPayments = loggedPayments.filter(pmt => {
+    const debit = -pmt.amount_cents;
+    return !bankDebitExists.get(storeId, debit - 100, debit + 100, pmt.date, pmt.date);
+  });
+  const inTransitCents = inTransitPayments.reduce((sum, pmt) => sum + pmt.amount_cents, 0);
+  if (inTransitCents !== 0) {
+    items.push({ key: 'payments_in_transit', label: 'Payments in transit (not yet bank-settled)',
+      amount_cents: inTransitCents, kind: 'timing',
+      note: `${fmt(inTransitCents)} of logged payments have no matching bank debit yet (pending ACH/card settlement). Cash leaves when they post — this clears itself. If you typed a manual credit-card line for the same charge, that pair now cancels instead of flagging.`,
+      details: { payments: inTransitPayments.map(pmt => ({
+        id: pmt.id, date: pmt.date, amount_cents: pmt.amount_cents, description: pmt.description, matched: false,
+      })) } });
+  }
+
   // Shopify revenue-to-cash timing: P&L accrues revenue daily, but cash appears as
   // (Δ Shopify balance + Δ payout-in-transit + payouts landed in the bank this window).
   // Sales whose payout hasn't landed yet make equity move LESS than profit — a real,
