@@ -132,7 +132,7 @@ export function gatherEvidence(db: DB, storeId: string, recon: ReconResult): { p
   ).all(ts1, ts2), 'activity_log', notes);
 
   const syncLog = cap(db.prepare(
-    'SELECT * FROM sync_log WHERE created_at >= ? AND created_at <= ? ORDER BY created_at'
+    'SELECT * FROM sync_log WHERE started_at >= ? AND started_at <= ? ORDER BY started_at'
   ).all(ts1, ts2), 'sync_log', notes);
 
   const adSpendDaily = db.prepare(
