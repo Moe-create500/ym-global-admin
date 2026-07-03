@@ -429,12 +429,11 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
   // ACH/card settlement). The paid totals above already counted it as cash-out, but the
   // bank/equity side hasn't moved — same dollars would otherwise land in the residual
   // (and double-count against a manual credit-card placeholder typed for the same charge).
-  const bankDebitExists = db.prepare(`
-    SELECT 1 FROM bank_transactions bt JOIN bank_accounts ba ON ba.id = bt.bank_account_id
+  const bankDebitCandidates = db.prepare(`
+    SELECT bt.id FROM bank_transactions bt JOIN bank_accounts ba ON ba.id = bt.bank_account_id
     WHERE (ba.store_id = ? OR COALESCE(ba.is_global, 0) = 1)
       AND bt.amount_cents BETWEEN ? AND ?
       AND bt.date >= date(?, '-5 days') AND bt.date <= date(?, '+5 days')
-    LIMIT 1
   `);
   const loggedPayments: { id: string; date: string; amount_cents: number; description: string }[] = db.prepare(`
     SELECT id, date, amount_cents, category || ' payment *' || COALESCE(card_last4, '?') AS description
@@ -447,12 +446,22 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
       AND (date != ? OR created_at IS NULL OR created_at > ?)
       AND (date != ? OR created_at IS NULL OR created_at <= ?)
   `).all(storeId, periodStart, periodEnd, storeId, periodStart, periodEnd, ...boundaryArgs) as any[];
+  // One-to-one matching: each bank debit can settle only ONE payment (two same-amount
+  // payments must find two debits — the Purebite \$2,000 pair shares nothing).
+  const usedDebits = new Set<string>();
+  let settledCount = 0;
   const inTransitPayments = loggedPayments.filter(pmt => {
     const debit = -pmt.amount_cents;
-    return !bankDebitExists.get(storeId, debit - 100, debit + 100, pmt.date, pmt.date);
+    const candidates = bankDebitCandidates.all(storeId, debit - 100, debit + 100, pmt.date, pmt.date) as { id: string }[];
+    const free = candidates.find(c => !usedDebits.has(c.id));
+    if (free) { usedDebits.add(free.id); settledCount++; return false; }
+    return true;
   });
   const inTransitCents = inTransitPayments.reduce((sum, pmt) => sum + pmt.amount_cents, 0);
-  if (inTransitCents !== 0) {
+  // Visibility gate: if NONE of the store's payments matched any debit, the payment rail
+  // simply isn't visible in the linked bank accounts (no feed / cards elsewhere) — claiming
+  // everything is "in transit" would be false. Only report when the rail is provably visible.
+  if (inTransitCents !== 0 && settledCount > 0) {
     items.push({ key: 'payments_in_transit', label: 'Payments in transit (not yet bank-settled)',
       amount_cents: inTransitCents, kind: 'timing',
       note: `${fmt(inTransitCents)} of logged payments have no matching bank debit yet (pending ACH/card settlement). Cash leaves when they post — this clears itself. If you typed a manual credit-card line for the same charge, that pair now cancels instead of flagging.`,
