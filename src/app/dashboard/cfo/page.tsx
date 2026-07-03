@@ -148,8 +148,9 @@ function DetailRow({ d, type }: { d: ReconItemDetail; type: 'invoice' | 'payment
   );
 }
 
-function ReconciliationPanel({ recon }: { recon: ReconResult | null }) {
+function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null; onRecompute?: () => Promise<void> }) {
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+  const [recomputing, setRecomputing] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<any>(null);
   const [aiMeta, setAiMeta] = useState<{ model?: string; created_at?: string } | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
@@ -404,6 +405,19 @@ function ReconciliationPanel({ recon }: { recon: ReconResult | null }) {
         <div className="mt-4 pt-4 border-t border-slate-800">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-semibold text-violet-300">🧠 AI Investigator (Claude Fable 5)</h3>
+            <div className="flex items-center gap-2">
+            <button
+              onClick={async () => {
+                if (!onRecompute) return;
+                setRecomputing(true);
+                try { await onRecompute(); } finally { setRecomputing(false); }
+              }}
+              disabled={recomputing || !onRecompute}
+              title="Re-run this reconciliation after fixing data (payments, categories, balances) — updates the numbers above without a new snapshot"
+              className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors"
+            >
+              {recomputing ? 'Recomputing…' : '↻ I fixed something — resubmit'}
+            </button>
             <button
               onClick={runAiAnalysis}
               disabled={aiLoading}
@@ -411,6 +425,7 @@ function ReconciliationPanel({ recon }: { recon: ReconResult | null }) {
             >
               {aiLoading ? 'Scanning every record… (1-3 min)' : aiAnalysis ? 'Re-run deep analysis' : 'Run deep analysis'}
             </button>
+            </div>
           </div>
           {aiError && <p className="text-[11px] text-red-400 mb-2">{aiError}</p>}
           {aiLoading && (
@@ -1313,7 +1328,11 @@ function CFOContent() {
           </div>
 
           {/* RECONCILIATION — does the balance sheet tie out to the P&L? */}
-          <ReconciliationPanel recon={recon} />
+          <ReconciliationPanel recon={recon} onRecompute={async () => {
+            const r = await fetch(`/api/cfo/reconcile?storeId=${storeId}&recompute=1`);
+            const rd = await r.json();
+            setRecon(rd.latest || null);
+          }} />
 
           {/* SNAPSHOT HISTORY */}
           {snapshots.length > 0 && (
