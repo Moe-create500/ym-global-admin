@@ -17,6 +17,7 @@ export async function GET() {
     INNER JOIN (
       SELECT store_id, MAX(created_at) as max_created
       FROM cfo_snapshots
+      WHERE COALESCE(excluded, 0) = 0
       GROUP BY store_id
     ) latest ON s.store_id = latest.store_id AND s.created_at = latest.max_created
     ORDER BY s.snapshot_date DESC
@@ -35,9 +36,10 @@ export async function GET() {
     INNER JOIN (
       SELECT store_id, MAX(created_at) as max_created
       FROM cfo_snapshots
-      WHERE (store_id, created_at) NOT IN (
-        SELECT store_id, MAX(created_at) FROM cfo_snapshots GROUP BY store_id
-      )
+      WHERE COALESCE(excluded, 0) = 0
+        AND (store_id, created_at) NOT IN (
+          SELECT store_id, MAX(created_at) FROM cfo_snapshots WHERE COALESCE(excluded, 0) = 0 GROUP BY store_id
+        )
       GROUP BY store_id
     ) prev ON s.store_id = prev.store_id AND s.created_at = prev.max_created
   `).all();

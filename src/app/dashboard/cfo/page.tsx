@@ -1375,7 +1375,9 @@ function CFOContent() {
                   </thead>
                   <tbody>
                     {snapshots.map((snap, i) => {
-                      const prev = snapshots[i + 1];
+                      // Blocked snapshots are invisible to the math: compare against the
+                      // previous NON-blocked snapshot, and show no change on blocked rows.
+                      const prev = snap.excluded ? undefined : snapshots.slice(i + 1).find(p => !p.excluded);
                       const change = prev ? snap.equity_cents - prev.equity_cents : 0;
                       return (
                         <tr key={snap.id} className={`border-b border-slate-800/50 hover:bg-slate-800/30 ${snap.excluded ? 'opacity-40' : ''}`}>
