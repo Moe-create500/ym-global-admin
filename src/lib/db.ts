@@ -48,6 +48,13 @@ export function getDb(): Database.Database {
       _db.exec("ALTER TABLE card_payments_log ADD COLUMN platform TEXT DEFAULT 'facebook'");
     }
 
+    // Migration: cfo_snapshots.excluded — a blocked snapshot is skipped by the
+    // reconciliation chain (used to redo a window after fixing underlying data)
+    const csCols = _db.prepare("PRAGMA table_info(cfo_snapshots)").all() as any[];
+    if (csCols.length > 0 && !csCols.find((c: any) => c.name === 'excluded')) {
+      _db.exec("ALTER TABLE cfo_snapshots ADD COLUMN excluded INTEGER DEFAULT 0");
+    }
+
     // Migration: estimated fulfillment portion of shipping_cost_cents (un-billed orders)
     const dpCols = _db.prepare("PRAGMA table_info(daily_pnl)").all() as any[];
     if (!dpCols.find((c: any) => c.name === 'fulfillment_est_cents')) {

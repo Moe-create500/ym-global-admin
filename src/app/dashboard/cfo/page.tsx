@@ -89,6 +89,7 @@ interface MoneyFlowSummary {
 
 interface ReconResult {
   store_id?: string;
+  t2_snapshot_id?: string;
   period_start: string;
   period_end: string;
   period_start_ts?: string;
@@ -406,6 +407,26 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-semibold text-violet-300">🧠 AI Investigator (Claude Fable 5)</h3>
             <div className="flex items-center gap-2">
+            <button
+              onClick={async () => {
+                if (!recon?.t2_snapshot_id) return;
+                if (!confirm('Block the end snapshot of this window?\n\nUse this after fixing data: the blocked snapshot is skipped, so when you save the CFO again, the reconciliation re-runs from this window\'s ORIGINAL start point to your fresh snapshot — instead of a tiny window from minutes ago.')) return;
+                setRecomputing(true);
+                try {
+                  const r = await fetch('/api/cfo/reconcile', {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ snapshotId: recon.t2_snapshot_id, excluded: true }),
+                  });
+                  await r.json();
+                  if (onRecompute) await onRecompute();
+                } finally { setRecomputing(false); }
+              }}
+              disabled={recomputing || !recon?.t2_snapshot_id}
+              title="Skip this window's end snapshot in the reconciliation chain — then re-save the CFO and the window re-runs from its original start to your fresh snapshot"
+              className="px-3 py-1.5 bg-red-900/60 hover:bg-red-800/60 disabled:opacity-50 text-red-200 text-xs font-medium rounded-lg transition-colors"
+            >
+              🚫 Block end snapshot
+            </button>
             <button
               onClick={async () => {
                 if (!onRecompute) return;

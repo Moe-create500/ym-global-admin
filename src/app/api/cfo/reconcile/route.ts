@@ -16,7 +16,7 @@ export async function POST() {
 
   for (const { store_id } of stores) {
     const snaps: any[] = db.prepare(
-      'SELECT id, store_id, snapshot_date, equity_cents, data, created_at FROM cfo_snapshots WHERE store_id = ? ORDER BY created_at ASC'
+      'SELECT id, store_id, snapshot_date, equity_cents, data, created_at FROM cfo_snapshots WHERE store_id = ? AND COALESCE(excluded, 0) = 0 ORDER BY created_at ASC'
     ).all(store_id);
     perStore[store_id] = { pairs: 0, flagged: 0 };
     for (let i = 1; i < snaps.length; i++) {
@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
 
   if (recompute) {
     const latest: any = db.prepare(
-      'SELECT id FROM cfo_snapshots WHERE store_id = ? ORDER BY created_at DESC LIMIT 1'
+      'SELECT id FROM cfo_snapshots WHERE store_id = ? AND COALESCE(excluded, 0) = 0 ORDER BY created_at DESC LIMIT 1'
     ).get(storeId);
     if (latest) {
       try { reconcileSnapshot(db, storeId, latest.id); } catch {}
@@ -80,4 +80,35 @@ export async function GET(req: NextRequest) {
   }
 
   return NextResponse.json({ latest, history });
+}
+
+// PUT /api/cfo/reconcile  { snapshotId, excluded }  → block/unblock a snapshot from the
+// reconciliation chain. Blocking the end-snapshot of a window lets the user fix underlying
+// data and re-save: the next snapshot reconciles against the window's ORIGINAL start point
+// instead of the stale (pre-fix) snapshot minutes ago.
+export async function PUT(req: NextRequest) {
+  const body = await req.json().catch(() => ({}));
+  const { snapshotId, excluded } = body;
+  if (!snapshotId) return NextResponse.json({ error: 'snapshotId required' }, { status: 400 });
+
+  const db = getDb();
+  ensureReconcileTable(db);
+
+  const snap: any = db.prepare('SELECT id, store_id FROM cfo_snapshots WHERE id = ?').get(snapshotId);
+  if (!snap) return NextResponse.json({ error: 'snapshot not found' }, { status: 404 });
+
+  db.prepare('UPDATE cfo_snapshots SET excluded = ? WHERE id = ?').run(excluded ? 1 : 0, snapshotId);
+  // Remove reconciliations that used this snapshot — they'll be rebuilt from the new chain.
+  db.prepare('DELETE FROM cfo_reconciliations WHERE t2_snapshot_id = ? OR t1_snapshot_id = ?').run(snapshotId, snapshotId);
+
+  // Re-reconcile the store's latest non-excluded snapshot against the adjusted chain.
+  const latest: any = db.prepare(
+    'SELECT id FROM cfo_snapshots WHERE store_id = ? AND COALESCE(excluded, 0) = 0 ORDER BY created_at DESC LIMIT 1'
+  ).get(snap.store_id);
+  let latestRecon = null;
+  if (latest) {
+    try { latestRecon = reconcileSnapshot(db, snap.store_id, latest.id); } catch {}
+  }
+
+  return NextResponse.json({ success: true, excluded: !!excluded, latest: latestRecon });
 }

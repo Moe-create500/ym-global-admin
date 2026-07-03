@@ -530,7 +530,7 @@ export function priorSnapshot(db: DB, storeId: string, beforeCreatedAt: string):
   return db.prepare(`
     SELECT id, store_id, snapshot_date, equity_cents, data, created_at
     FROM cfo_snapshots
-    WHERE store_id = ? AND created_at < ?
+    WHERE store_id = ? AND created_at < ? AND COALESCE(excluded, 0) = 0
     ORDER BY created_at DESC LIMIT 1
   `).get(storeId, beforeCreatedAt) as SnapshotRow | undefined;
 }
