@@ -251,15 +251,23 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
   base.net_income_cents = pnl.net;
 
   // ── Cash payments made within the window (reduce liabilities, leave bank) ──
+  // Boundary-second filtering: a payment dated on t1's snapshot DATE but recorded BEFORE the
+  // exact snapshot second is already inside t1's balances — counting it again double-counts
+  // (e.g. Purebite 06-28: $5,982.74 SS payment at 19:27, snapshot at 20:18). Rows on boundary
+  // dates only count when their created_at falls inside (ts1, ts2]; NULL created_at keeps the
+  // legacy date-window behavior.
+  const BOUNDARY = `AND (date != ? OR created_at IS NULL OR created_at > ?)
+                    AND (date != ? OR created_at IS NULL OR created_at <= ?)`;
+  const boundaryArgs = [periodStart, periodStartTs, periodEnd, periodEndTs];
   const ssPaid = (db.prepare(
-    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM ss_payments WHERE store_id = ? AND date >= ? AND date <= ?`
-  ).get(storeId, periodStart, periodEnd) as any).t;
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM ss_payments WHERE store_id = ? AND date >= ? AND date <= ? ${BOUNDARY}`
+  ).get(storeId, periodStart, periodEnd, ...boundaryArgs) as any).t;
   const adPaid = (db.prepare(
-    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'ad' AND date >= ? AND date <= ?`
-  ).get(storeId, periodStart, periodEnd) as any).t;
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'ad' AND date >= ? AND date <= ? ${BOUNDARY}`
+  ).get(storeId, periodStart, periodEnd, ...boundaryArgs) as any).t;
   const appPaid = (db.prepare(
-    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'app' AND date >= ? AND date <= ?`
-  ).get(storeId, periodStart, periodEnd) as any).t;
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'app' AND date >= ? AND date <= ? ${BOUNDARY}`
+  ).get(storeId, periodStart, periodEnd, ...boundaryArgs) as any).t;
 
   // ── Owner capital movements from categorized bank transactions in the window ──
   const ownerRows = db.prepare(`
@@ -267,7 +275,9 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
     FROM bank_transactions bt
     JOIN bank_accounts ba ON ba.id = bt.bank_account_id
     WHERE ba.store_id = ? AND bt.date >= ? AND bt.date <= ? AND bt.date != 'N/A'
-  `).all(storeId, periodStart, periodEnd) as { id: string; date: string; amount_cents: number; cat: string }[];
+      AND (bt.date != ? OR bt.created_at IS NULL OR bt.created_at > ?)
+      AND (bt.date != ? OR bt.created_at IS NULL OR bt.created_at <= ?)
+  `).all(storeId, periodStart, periodEnd, ...boundaryArgs) as { id: string; date: string; amount_cents: number; cat: string }[];
   const owner = sumOwner(ownerRows);
 
   base.flows = { ss_paid: ssPaid, ad_paid: adPaid, app_paid: appPaid, owner_draws: owner.draws, owner_contributions: owner.contributions };
@@ -409,6 +419,29 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
     items.push({ key: 'app_timing', label: 'App / Shopify billing timing', amount_cents: appTiming, kind: 'timing',
       note: `P&L app costs ${fmt(pnl.app)} vs app charges ${fmt(bsApp)} (invoices + payments).`,
       details: appDetails.invoices?.length ? appDetails : undefined });
+  }
+
+  // Shopify revenue-to-cash timing: P&L accrues revenue daily, but cash appears as
+  // (Δ Shopify balance + Δ payout-in-transit + payouts landed in the bank this window).
+  // Sales whose payout hasn't landed yet make equity move LESS than profit — a real,
+  // self-correcting timing gap that previously leaked into the residual.
+  const storePlatform = ((db.prepare('SELECT platform FROM stores WHERE id = ?').get(storeId) as any)?.platform) || 'shopify';
+  if (storePlatform !== 'amazon' && storePlatform !== 'ebay') {
+    const landedPayouts = (db.prepare(`
+      SELECT COALESCE(SUM(bt.amount_cents),0) AS t
+      FROM bank_transactions bt JOIN bank_accounts ba ON ba.id = bt.bank_account_id
+      WHERE ba.store_id = ? AND bt.amount_cents > 0 AND UPPER(bt.description) LIKE '%SHOPIFY%'
+        AND bt.date >= ? AND bt.date <= ? AND bt.date != 'N/A'
+        AND (bt.date != ? OR bt.created_at IS NULL OR bt.created_at > ?)
+        AND (bt.date != ? OR bt.created_at IS NULL OR bt.created_at <= ?)
+    `).get(storeId, periodStart, periodEnd, ...boundaryArgs) as any).t;
+    const accruedNet = pnl.revenue - pnl.fees; // Shopify nets fees out of payouts
+    const bsRevenue = dA('cash_shopify_cents') + dA('shopify_payout_cents') + landedPayouts;
+    const revTiming = bsRevenue - accruedNet;
+    if (revTiming !== 0) {
+      items.push({ key: 'revenue_timing', label: 'Shopify revenue timing', amount_cents: revTiming, kind: 'timing',
+        note: `Accrued net revenue ${fmt(accruedNet)} vs cash received ${fmt(bsRevenue)} (Δbalance + Δpayout + ${fmt(landedPayouts)} payouts landed). Self-corrects as payouts land.` });
+    }
   }
 
   // Manual ledger adjustments — reserves (asset) and manual credit cards (liability) are hand-entered.
