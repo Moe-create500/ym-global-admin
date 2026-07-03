@@ -88,6 +88,7 @@ interface MoneyFlowSummary {
 }
 
 interface ReconResult {
+  store_id?: string;
   period_start: string;
   period_end: string;
   period_start_ts?: string;
@@ -149,6 +150,35 @@ function DetailRow({ d, type }: { d: ReconItemDetail; type: 'invoice' | 'payment
 
 function ReconciliationPanel({ recon }: { recon: ReconResult | null }) {
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+  const [aiAnalysis, setAiAnalysis] = useState<any>(null);
+  const [aiMeta, setAiMeta] = useState<{ model?: string; created_at?: string } | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState('');
+
+  const storeIdForAi = recon?.store_id;
+  useEffect(() => {
+    if (!storeIdForAi) return;
+    fetch(`/api/cfo/reconcile/ai?storeId=${storeIdForAi}`)
+      .then(r => r.json())
+      .then(d => { if (d.analysis) { setAiAnalysis(d.analysis); setAiMeta({ model: d.model, created_at: d.created_at }); } })
+      .catch(() => {});
+  }, [storeIdForAi]);
+
+  const runAiAnalysis = async () => {
+    if (!storeIdForAi) return;
+    setAiLoading(true); setAiError('');
+    try {
+      const r = await fetch('/api/cfo/reconcile/ai', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId: storeIdForAi }),
+      });
+      const d = await r.json();
+      if (d.error) setAiError(d.error);
+      else { setAiAnalysis(d.analysis); setAiMeta({ model: 'claude-fable-5', created_at: new Date().toISOString() }); }
+    } catch (e: any) {
+      setAiError(e?.message || 'analysis failed');
+    } finally { setAiLoading(false); }
+  };
 
   if (!recon || recon.status === 'insufficient_data') {
     return (
@@ -369,6 +399,74 @@ function ReconciliationPanel({ recon }: { recon: ReconResult | null }) {
             New balance lines not yet modeled: {recon.unmodeled_keys.join(', ')} — counted in residual.
           </p>
         )}
+
+        {/* AI Investigator */}
+        <div className="mt-4 pt-4 border-t border-slate-800">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-semibold text-violet-300">🧠 AI Investigator (Claude Fable 5)</h3>
+            <button
+              onClick={runAiAnalysis}
+              disabled={aiLoading}
+              className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors"
+            >
+              {aiLoading ? 'Scanning every record… (1-3 min)' : aiAnalysis ? 'Re-run deep analysis' : 'Run deep analysis'}
+            </button>
+          </div>
+          {aiError && <p className="text-[11px] text-red-400 mb-2">{aiError}</p>}
+          {aiLoading && (
+            <p className="text-[11px] text-slate-500 animate-pulse">
+              Reading snapshots, bank transactions, payment logs, P&amp;L rows, activity + sync logs between the exact snapshot timestamps…
+            </p>
+          )}
+          {aiAnalysis && !aiLoading && (
+            <div className="space-y-3">
+              <div className={`text-xs rounded-lg px-3 py-2 ${aiAnalysis.confidence === 'high' ? 'bg-emerald-950/40 text-emerald-200' : aiAnalysis.confidence === 'medium' ? 'bg-amber-950/40 text-amber-200' : 'bg-slate-800 text-slate-300'}`}>
+                <span className="font-semibold">Verdict:</span> {aiAnalysis.verdict}
+                <span className="ml-2 text-[10px] opacity-70">confidence: {aiAnalysis.confidence}</span>
+              </div>
+              {(aiAnalysis.causes || []).map((c: any, i: number) => (
+                <div key={i} className="bg-slate-800/60 rounded-lg px-3 py-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-white font-medium">{c.title}</span>
+                    <span className={`font-mono font-bold ${c.amount_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{signed(c.amount_cents)}</span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className={`text-[9px] uppercase px-1.5 py-0.5 rounded ${c.category === 'data_bug' ? 'bg-red-900/50 text-red-300' : c.category === 'timing' ? 'bg-blue-900/50 text-blue-300' : c.category === 'capital' ? 'bg-purple-900/50 text-purple-300' : 'bg-slate-700 text-slate-300'}`}>{c.category}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-1">{c.explanation}</p>
+                  {(c.evidence || []).length > 0 && (
+                    <ul className="mt-1 space-y-0.5">
+                      {c.evidence.map((e: string, j: number) => (
+                        <li key={j} className="text-[10px] text-slate-500 font-mono">• {e}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {c.fix && <p className="text-[11px] text-violet-300 mt-1">→ {c.fix}</p>}
+                </div>
+              ))}
+              {typeof aiAnalysis.unexplained_remaining_cents === 'number' && Math.abs(aiAnalysis.unexplained_remaining_cents) > 100 && (
+                <p className="text-[11px] text-amber-400">Still unexplained after analysis: {signed(aiAnalysis.unexplained_remaining_cents)}</p>
+              )}
+              {(aiAnalysis.recommended_actions || []).length > 0 && (
+                <div className="text-[11px] text-slate-300">
+                  <span className="text-slate-400 font-medium">Next steps:</span>
+                  <ol className="list-decimal list-inside mt-0.5 space-y-0.5">
+                    {aiAnalysis.recommended_actions.map((a: string, i: number) => <li key={i}>{a}</li>)}
+                  </ol>
+                </div>
+              )}
+              {aiAnalysis.raw_text && (
+                <pre className="text-[10px] text-slate-400 whitespace-pre-wrap bg-slate-800/50 rounded p-2 max-h-64 overflow-auto">{aiAnalysis.raw_text}</pre>
+              )}
+              {aiMeta?.created_at && <p className="text-[9px] text-slate-600">{aiMeta.model || 'claude-fable-5'} · {aiMeta.created_at}</p>}
+            </div>
+          )}
+          {!aiAnalysis && !aiLoading && !aiError && (
+            <p className="text-[11px] text-slate-500">
+              Scans the store&apos;s bank transactions, every log change, payments, and both snapshots from the exact second each was taken — and explains the residual line by line.
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
