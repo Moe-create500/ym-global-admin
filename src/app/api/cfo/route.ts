@@ -328,7 +328,7 @@ export async function GET(req: NextRequest) {
       manualCreditCards: manualCCRows.map((c: any) => ({ id: c.id, card_name: c.card_name, amount_owed_cents: c.amount_owed_cents })),
     },
     snapshots: db.prepare(
-      'SELECT id, snapshot_date, assets_cents, liabilities_cents, equity_cents, created_at FROM cfo_snapshots WHERE store_id = ? ORDER BY created_at DESC LIMIT 20'
+      'SELECT id, snapshot_date, assets_cents, liabilities_cents, equity_cents, created_at, COALESCE(excluded, 0) AS excluded FROM cfo_snapshots WHERE store_id = ? ORDER BY created_at DESC LIMIT 20'
     ).all(storeId),
   });
 }

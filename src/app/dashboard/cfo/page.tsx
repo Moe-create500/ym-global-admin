@@ -524,7 +524,7 @@ function CFOContent() {
   const [savingPayout, setSavingPayout] = useState(false);
   const [savingSnapshot, setSavingSnapshot] = useState(false);
   const [snapshotSaved, setSnapshotSaved] = useState('');
-  const [snapshots, setSnapshots] = useState<{ id: string; snapshot_date: string; assets_cents: number; liabilities_cents: number; equity_cents: number; created_at: string }[]>([]);
+  const [snapshots, setSnapshots] = useState<{ id: string; snapshot_date: string; assets_cents: number; liabilities_cents: number; equity_cents: number; created_at: string; excluded?: number }[]>([]);
   const [addingReserve, setAddingReserve] = useState(false);
   const [reserveAmountInput, setReserveAmountInput] = useState('');
   const [reserveHeldAtInput, setReserveHeldAtInput] = useState('');
@@ -1370,6 +1370,7 @@ function CFOContent() {
                       <th className="text-right px-5 py-3">Liabilities</th>
                       <th className="text-right px-5 py-3">Equity</th>
                       <th className="text-right px-5 py-3">Change</th>
+                      <th className="text-right px-5 py-3"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1377,9 +1378,10 @@ function CFOContent() {
                       const prev = snapshots[i + 1];
                       const change = prev ? snap.equity_cents - prev.equity_cents : 0;
                       return (
-                        <tr key={snap.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                        <tr key={snap.id} className={`border-b border-slate-800/50 hover:bg-slate-800/30 ${snap.excluded ? 'opacity-40' : ''}`}>
                           <td className="px-5 py-3 text-slate-300">{snap.snapshot_date}
                             <span className="text-[10px] text-slate-600 ml-2">{snap.created_at?.slice(11, 16)}</span>
+                            {!!snap.excluded && <span className="ml-2 text-[9px] uppercase bg-red-900/50 text-red-300 rounded px-1.5 py-0.5">blocked</span>}
                           </td>
                           <td className="px-5 py-3 text-right text-emerald-400">{cents(snap.assets_cents)}</td>
                           <td className="px-5 py-3 text-right text-red-400">{cents(snap.liabilities_cents)}</td>
@@ -1392,6 +1394,23 @@ function CFOContent() {
                             ) : (
                               <span className="text-xs text-slate-600">—</span>
                             )}
+                          </td>
+                          <td className="px-5 py-3 text-right">
+                            <button
+                              onClick={async () => {
+                                const blocking = !snap.excluded;
+                                if (blocking && !confirm(`Block the ${snap.snapshot_date} ${snap.created_at?.slice(11, 16)} snapshot?\n\nIt will be skipped by the reconciliation chain — fix your data, then save a fresh snapshot and the window re-runs from the previous good snapshot.`)) return;
+                                await fetch('/api/cfo/reconcile', {
+                                  method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ snapshotId: snap.id, excluded: blocking }),
+                                });
+                                loadData();
+                              }}
+                              title={snap.excluded ? 'Unblock — include this snapshot in the reconciliation chain again' : 'Block — skip this snapshot so you can fix data and resubmit a fresh one'}
+                              className={`text-xs px-2 py-1 rounded transition-colors ${snap.excluded ? 'text-emerald-400 hover:bg-emerald-900/30' : 'text-red-400 hover:bg-red-900/30'}`}
+                            >
+                              {snap.excluded ? '↩ Unblock' : '🚫 Block'}
+                            </button>
                           </td>
                         </tr>
                       );
