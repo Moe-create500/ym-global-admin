@@ -262,12 +262,15 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
   const ssPaid = (db.prepare(
     `SELECT COALESCE(SUM(amount_cents),0) AS t FROM ss_payments WHERE store_id = ? AND date >= ? AND date <= ? ${BOUNDARY}`
   ).get(storeId, periodStart, periodEnd, ...boundaryArgs) as any).t;
+  // card_payments_log keeps date-only windows: a log row's created_at is when it was typed,
+  // not when cash moved (the 06-28 AmEx pair was logged pre-snapshot but debited 06-29), and
+  // the manual-CC placeholder lines already bridge log-vs-bank timing for card payments.
   const adPaid = (db.prepare(
-    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'ad' AND date >= ? AND date <= ? ${BOUNDARY}`
-  ).get(storeId, periodStart, periodEnd, ...boundaryArgs) as any).t;
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'ad' AND date >= ? AND date <= ?`
+  ).get(storeId, periodStart, periodEnd) as any).t;
   const appPaid = (db.prepare(
-    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'app' AND date >= ? AND date <= ? ${BOUNDARY}`
-  ).get(storeId, periodStart, periodEnd, ...boundaryArgs) as any).t;
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'app' AND date >= ? AND date <= ?`
+  ).get(storeId, periodStart, periodEnd) as any).t;
 
   // ── Owner capital movements from categorized bank transactions in the window ──
   const ownerRows = db.prepare(`
@@ -438,7 +441,9 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
     const accruedNet = pnl.revenue - pnl.fees; // Shopify nets fees out of payouts
     const bsRevenue = dA('cash_shopify_cents') + dA('shopify_payout_cents') + landedPayouts;
     const revTiming = bsRevenue - accruedNet;
-    if (revTiming !== 0) {
+    // Only claim a revenue-timing gap when we can actually SEE the payout rail — a store with
+    // no linked bank feed (landedPayouts = 0) would otherwise look like its cash never arrived.
+    if (revTiming !== 0 && landedPayouts > 0) {
       items.push({ key: 'revenue_timing', label: 'Shopify revenue timing', amount_cents: revTiming, kind: 'timing',
         note: `Accrued net revenue ${fmt(accruedNet)} vs cash received ${fmt(bsRevenue)} (Δbalance + Δpayout + ${fmt(landedPayouts)} payouts landed). Self-corrects as payouts land.` });
     }
