@@ -5,7 +5,7 @@ import { useEffect, useState, useRef } from 'react';
 interface Store { id: string; name: string; platform: string; shipsourced_client_id: string | null; }
 interface FbProfile { id: string; store_id: string; profile_name: string; ad_account_id: string; ad_account_name: string; }
 
-type FileCategory = 'fb_invoice' | 'google_invoice' | 'shopify_billing' | 'chargeflow';
+type FileCategory = 'fb_invoice' | 'google_invoice' | 'shopify_billing' | 'chargeflow' | 'shopify_payments' | 'shopify_bank';
 
 interface UploadResult { status: 'idle' | 'uploading' | 'done' | 'error'; message: string; }
 
@@ -14,13 +14,16 @@ const CATEGORIES: { key: FileCategory; label: string; color: string; endpoint: s
   { key: 'google_invoice', label: 'Google Invoice', color: 'text-green-400', endpoint: '/api/ads/import', platform: 'google' },
   { key: 'shopify_billing', label: 'Shopify Billing', color: 'text-emerald-400', endpoint: '/api/shopify-invoices' },
   { key: 'chargeflow', label: 'Chargeflow', color: 'text-violet-400', endpoint: '/api/shopify-invoices' },
+  // Cash ground truth → cfo_evidence (deduped by row fingerprint; feeds reconciliation + cashflow AI)
+  { key: 'shopify_payments', label: 'Shopify Payments', color: 'text-cyan-400', endpoint: '/api/cfo/reconcile/evidence' },
+  { key: 'shopify_bank', label: 'Shopify Bank', color: 'text-amber-400', endpoint: '/api/cfo/reconcile/evidence' },
 ];
 
 function FileSlot({ storeId, category, results, onUpload }: {
   storeId: string;
   category: typeof CATEGORIES[0];
   results: Record<string, UploadResult>;
-  onUpload: (storeId: string, category: FileCategory, text: string) => void;
+  onUpload: (storeId: string, category: FileCategory, text: string, filename?: string) => void;
 }) {
   const ref = useRef<HTMLInputElement>(null);
   const key = `${storeId}-${category.key}`;
@@ -33,7 +36,7 @@ function FileSlot({ storeId, category, results, onUpload }: {
           const file = e.target.files?.[0];
           if (!file) return;
           const reader = new FileReader();
-          reader.onload = (ev) => onUpload(storeId, category.key, ev.target?.result as string);
+          reader.onload = (ev) => onUpload(storeId, category.key, ev.target?.result as string, file.name);
           reader.readAsText(file);
           if (ref.current) ref.current.value = '';
         }}
@@ -77,7 +80,7 @@ export default function BulkUploadPage() {
     });
   }, []);
 
-  async function handleUpload(storeId: string, category: FileCategory, csvText: string) {
+  async function handleUpload(storeId: string, category: FileCategory, csvText: string, filename?: string) {
     const key = `${storeId}-${category}`;
     setResults(prev => ({ ...prev, [key]: { status: 'uploading', message: '' } }));
 
@@ -87,6 +90,9 @@ export default function BulkUploadPage() {
 
       if (category === 'fb_invoice' || category === 'google_invoice') {
         body = { storeId, platform: cat.platform, csvText };
+      } else if (category === 'shopify_payments' || category === 'shopify_bank') {
+        // Cash ground truth: store-scoped (feeds every reconciliation window), row-fingerprint deduped
+        body = { storeId, csvText, filename, scope: 'store', kind: category === 'shopify_bank' ? 'bank_statement' : 'shopify_payouts' };
       } else if (category === 'shopify_billing') {
         body = { storeId, csvText };
       } else {
@@ -141,7 +147,6 @@ export default function BulkUploadPage() {
   }
 
   const doneCount = Object.values(results).filter(r => r.status === 'done').length;
-  const totalSlots = stores.length * 4;
 
   return (
     <div>
@@ -255,12 +260,14 @@ export default function BulkUploadPage() {
       )}
 
       {/* Column Headers */}
-      <div className="hidden sm:grid grid-cols-[1fr_1fr_1fr_1fr_1fr] gap-3 px-5 mb-2">
+      <div className="hidden sm:grid grid-cols-[1.2fr_1fr_1fr_1fr_1fr_1fr_1fr] gap-3 px-5 mb-2">
         <div className="text-[10px] text-slate-500 uppercase font-semibold">Store</div>
         <div className="text-[10px] text-blue-400 uppercase font-semibold text-center">FB Invoice</div>
         <div className="text-[10px] text-green-400 uppercase font-semibold text-center">Google Invoice</div>
         <div className="text-[10px] text-emerald-400 uppercase font-semibold text-center">Shopify Billing</div>
         <div className="text-[10px] text-violet-400 uppercase font-semibold text-center">Chargeflow</div>
+        <div className="text-[10px] text-cyan-400 uppercase font-semibold text-center" title="Shopify Admin → Finances → Payouts → Export CSV (payout summary or transactions)">Shopify Payments</div>
+        <div className="text-[10px] text-amber-400 uppercase font-semibold text-center" title="Shopify Balance → balance transactions export, or any bank CSV">Shopify Bank</div>
       </div>
 
       {/* Per-Store Rows */}
@@ -273,9 +280,9 @@ export default function BulkUploadPage() {
 
           return (
             <div key={store.id} className={`bg-slate-900 border rounded-xl px-5 py-3 ${
-              storeDone === 4 ? 'border-emerald-800/60' : storeError > 0 ? 'border-red-800/40' : 'border-slate-800'
+              storeDone === CATEGORIES.length ? 'border-emerald-800/60' : storeError > 0 ? 'border-red-800/40' : 'border-slate-800'
             }`}>
-              <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_1fr_1fr] gap-3 items-center">
+              <div className="grid grid-cols-1 sm:grid-cols-[1.2fr_1fr_1fr_1fr_1fr_1fr_1fr] gap-3 items-center">
                 {/* Store info */}
                 <div>
                   <h3 className="text-sm font-semibold text-white">{store.name}</h3>
