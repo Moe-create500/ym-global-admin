@@ -242,6 +242,7 @@ Domain facts you must use:
 - Snapshot component keys ending _cents are integer cents. Sign convention: every cause you report must be expressed as its contribution to (delta_equity − net_profit), same as the deterministic items — i.e. positive = equity moved MORE than profit explains.
 - CRITICAL — units in prose: the evidence is in integer cents, but a human CFO reads your output. In EVERY prose field (verdict, explanation, evidence strings, fix, data_quality_issues, recommended_actions) express ALL amounts in dollars formatted like $1,234.56 — NEVER raw cents. Only the numeric JSON fields amount_cents, residual_cents, and unexplained_remaining_cents stay in integer cents.
 - Balance lines fed by hand (manual credit cards, Shopify balance typed in, inventory) are the most common source of residuals: a re-typed balance that mixes real spend with balance corrections breaks the bridge.
+- Reserves (reserves_cents) are Shopify-internal payout holdbacks. The deterministic engine deliberately does NOT peel reserve deltas as an explaining item — a reserve move sits inside the residual by design. When the reserve line and the Shopify balance/payout lines move together the NET equity effect of the holdback is zero; verify the typed reserve delta against the payouts export's "Reserved Funds" rows and flag any mismatch (typed amount vs actual withheld) as its own cause.
 - Boundary effects: date-only rows on the two boundary dates may belong to either side of the exact snapshot second.
 
 Method — be rigorous:

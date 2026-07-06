@@ -495,12 +495,13 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
     }
   }
 
-  // Manual ledger adjustments — reserves (asset) and manual credit cards (liability) are hand-entered.
+  // Reserves are Shopify-internal holdbacks: money withheld FROM the store's own payout
+  // pipeline ("Reserved Funds" on the payouts export). The cash comes out of the Shopify
+  // balance/payout lines, so a reserve increase is NOT new equity and must never inflate
+  // expected equity as a reconciling item (doing so double-counts and manufactures phantom
+  // drift). The reserve delta stays inside the residual and is surfaced as a driver below,
+  // where the AI investigator ties it to the payouts export's Reserved Funds rows.
   const dReserves = dA('reserves_cents');
-  if (dReserves !== 0) {
-    items.push({ key: 'reserves_adj', label: 'Reserves adjustment', amount_cents: dReserves, kind: 'manual',
-      note: 'Manually-tracked reserve cash held outside connected accounts.' });
-  }
   const dManualCC = dL('manual_cc_cents');
   if (dManualCC !== 0) {
     items.push({ key: 'manual_cc_adj', label: 'Manual credit-card adjustment', amount_cents: -dManualCC, kind: 'manual',
@@ -533,6 +534,7 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
       { label: 'Bank cash move', amount_cents: dA('cash_bank_cents') },
       { label: 'Shopify balance move', amount_cents: dA('cash_shopify_cents') },
       { label: 'Shopify payout move', amount_cents: dA('shopify_payout_cents') },
+      { label: 'Reserves move (Shopify holdback)', amount_cents: dReserves },
       { label: 'Inventory move', amount_cents: dA('inventory_cents') },
       { label: 'Loans payable move', amount_cents: -dL('loans_payable_cents') },
       { label: 'Loans receivable move', amount_cents: dA('loans_receivable_cents') },
