@@ -21,7 +21,8 @@ export interface NormalizedRow {
   reference: string | null; // order #, payout id, transaction id, description
   payout_status: string | null;
   payout_date: string | null;
-  raw: Record<string, string>; // every original column, untouched
+  money: Record<string, number>; // EVERY money column normalized to integer cents (e.g. Charges, Refunds, Adjustments, Reserved Funds, Fees, Total)
+  raw: Record<string, string>;   // every original column, untouched
 }
 
 export interface ParsedEvidence {
@@ -141,13 +142,18 @@ function findHeader(headers: string[], ...candidates: string[]): number {
     const i = lower.indexOf(c);
     if (i !== -1) return i;
   }
-  // loose contains-match as fallback
+  // loose contains-match as fallback — never let 'amount' grab 'retried amount' etc.
+  const LOOSE_SKIP = /retried|presentment|available/;
   for (const c of candidates) {
-    const i = lower.findIndex(h => h.includes(c));
+    const i = lower.findIndex(h => h.includes(c) && !LOOSE_SKIP.test(h));
     if (i !== -1) return i;
   }
   return -1;
 }
+
+/** Column headers that must NEVER be treated as money even if the value parses numerically
+ *  (bank references, account numbers, order ids, counts...). */
+const NON_MONEY_HEADER = /reference|account|routing|\bid\b|number|order|checkout|currency|status|date|description|memo|type|name|brand|source|count|rows|method|card/i;
 
 /** Parse + normalize a submitted evidence CSV. Never throws on messy data — collects warnings. */
 export function parseEvidenceCsv(csvText: string): ParsedEvidence {
@@ -159,18 +165,28 @@ export function parseEvidenceCsv(csvText: string): ParsedEvidence {
   const headers = grid[0].map(h => h.trim());
   const lower = headers.map(h => h.toLowerCase());
 
-  // classify the export
+  // classify the export — three known shapes:
+  //   shopify_payouts:  Shopify Admin → Finances → Payouts → Export (payout-level summary:
+  //                     Payout Date, Status, Charges, Refunds, Adjustments, Reserved Funds, Fees, Total, Bank Reference)
+  //   shopify_payments: Shopify Payouts → Transactions export (per-transaction: Transaction Date, Type, Order, Fee, Net, Payout Status)
+  //   bank_statement:   Shopify Balance / any bank CSV (Date(s), Description, Amount)
   let kind: ParsedEvidence['kind_guess'] = 'unknown';
-  if (lower.includes('transaction date') && (lower.includes('fee') || lower.includes('net'))) kind = 'shopify_payments';
-  else if (lower.includes('payout date') && lower.includes('total') === false && lower.includes('transaction date') === false && lower.some(h => h === 'amount')) kind = 'shopify_payouts';
+  if (lower.some(h => h.includes('payout date')) && lower.some(h => h === 'total') && lower.some(h => h === 'charges')) kind = 'shopify_payouts';
+  else if (lower.some(h => h.includes('transaction date')) && (lower.some(h => h === 'fee') || lower.some(h => h === 'net'))) kind = 'shopify_payments';
   else if (lower.some(h => h.includes('description') || h.includes('memo')) && lower.some(h => h === 'amount' || h.includes('amount'))) kind = 'bank_statement';
 
-  const iTs = findHeader(headers, 'transaction date', 'date', 'posted date', 'created at', 'created_at', 'datetime');
-  const iAmount = findHeader(headers, 'amount', 'gross', 'debit');
-  const iFee = findHeader(headers, 'fee', 'fees');
-  const iNet = findHeader(headers, 'net', 'net amount');
+  const iTs = findHeader(headers, 'transaction date', 'date', 'posted date', 'created at', 'created_at', 'datetime', 'payout date');
+  // For the payouts summary export the cash amount is 'Total' (never 'Retried Amount');
+  // 'Fees' is the fee; Total already IS the net that lands at the bank.
+  const iAmount = kind === 'shopify_payouts'
+    ? findHeader(headers, 'total')
+    : findHeader(headers, 'amount', 'gross', 'total', 'debit');
+  const iFee = findHeader(headers, 'fees', 'fee');
+  const iNet = kind === 'shopify_payouts' ? findHeader(headers, 'total') : findHeader(headers, 'net', 'net amount');
   const iType = findHeader(headers, 'type', 'transaction type', 'category');
-  const iRef = findHeader(headers, 'order', 'order name', 'description', 'memo', 'reference', 'transaction id', 'checkout');
+  const iRef = kind === 'shopify_payouts'
+    ? findHeader(headers, 'bank reference', 'reference')
+    : findHeader(headers, 'order', 'order name', 'description', 'memo', 'reference', 'bank reference', 'transaction id', 'checkout');
   const iPayoutStatus = findHeader(headers, 'payout status', 'status');
   const iPayoutDate = findHeader(headers, 'payout date');
 
@@ -187,7 +203,15 @@ export function parseEvidenceCsv(csvText: string): ParsedEvidence {
     const cells = grid[r];
     if (cells.every(c => !c || !c.trim())) continue;
     const raw: Record<string, string> = {};
-    for (let c = 0; c < headers.length; c++) raw[headers[c] || `col_${c}`] = cells[c] ?? '';
+    const money: Record<string, number> = {};
+    for (let c = 0; c < headers.length; c++) {
+      const h = headers[c] || `col_${c}`;
+      raw[h] = cells[c] ?? '';
+      if (!NON_MONEY_HEADER.test(h)) {
+        const cents = parseMoneyCents(cells[c]);
+        if (cents != null) money[h] = cents;
+      }
+    }
 
     const { ts, date } = normalizeTs(iTs !== -1 ? cells[iTs] : null);
     const amount = parseMoneyCents(iAmount !== -1 ? cells[iAmount] : null);
@@ -213,8 +237,24 @@ export function parseEvidenceCsv(csvText: string): ParsedEvidence {
       reference: iRef !== -1 ? (cells[iRef]?.trim() || null) : null,
       payout_status: iPayoutStatus !== -1 ? (cells[iPayoutStatus]?.trim() || null) : null,
       payout_date: payoutDate,
+      money,
       raw,
     });
+  }
+
+  // Integrity check for payout summaries: every row must satisfy
+  // Total = Charges − Refunds + Adjustments + Reserved Funds − Fees (+ tax/advances/retried).
+  // A row that doesn't tie means a corrupted or hand-edited export — flag it before analysis.
+  if (kind === 'shopify_payouts') {
+    for (const r of rows) {
+      const m = r.money;
+      if (m['Total'] == null || m['Charges'] == null) continue;
+      const calc = (m['Charges'] ?? 0) - (m['Refunds'] ?? 0) + (m['Adjustments'] ?? 0) + (m['Reserved Funds'] ?? 0)
+        + (m['Marketplace Sales Tax'] ?? 0) + (m['Advances'] ?? 0) + (m['Retried Amount'] ?? 0) - (m['Fees'] ?? 0);
+      if (calc !== m['Total']) {
+        warnings.push(`Payout row ${r.date || '?'} does not tie: charges−refunds+adjustments+reserved−fees = ${(calc / 100).toFixed(2)} but Total = ${(m['Total'] / 100).toFixed(2)} — export may be corrupted or edited.`);
+      }
+    }
   }
 
   return { kind_guess: kind, headers, rows, row_count: rows.length, min_ts: minTs, max_ts: maxTs, sum_amount_cents: sumAmount, sum_net_cents: sumNet, warnings };

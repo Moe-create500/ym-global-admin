@@ -65,7 +65,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `No data rows parsed. ${parsed.warnings.join(' ')}` }, { status: 400 });
   }
 
-  const finalKind = kind || parsed.kind_guess;
+  // The parser's structural guess beats the drop zone the user happened to click
+  // (e.g. a payouts export dropped on the "payments" zone still gets payout semantics).
+  const finalKind = parsed.kind_guess !== 'unknown' ? parsed.kind_guess : (kind || 'unknown');
   const id = crypto.randomUUID();
   db.prepare(
     `INSERT INTO cfo_evidence (id, store_id, reconciliation_id, kind, filename, headers_json, rows_json, row_count, min_ts, max_ts, sum_amount_cents, sum_net_cents, note, warnings)

@@ -495,15 +495,15 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
               </p>
               <div className="grid grid-cols-2 gap-3">
                 <label className={`block border border-dashed rounded-lg p-3 cursor-pointer transition-colors ${evidenceUploading === 'shopify_payments' ? 'border-amber-500 bg-amber-950/30' : 'border-slate-600 hover:border-amber-600 hover:bg-slate-800/60'}`}>
-                  <p className="text-xs font-medium text-white">💳 Shopify Payments export</p>
-                  <p className="text-[10px] text-slate-500 mt-0.5">Shopify Admin → Finances → Payouts → Transactions → Export as CSV. Has exact timestamps + fees + payout status per transaction.</p>
+                  <p className="text-xs font-medium text-white">💳 Shopify payouts / transactions export</p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Shopify Admin → Finances → Payouts → Export (payout summary with charges/fees/reserves/status), or the Transactions export (exact-second timestamps). Both auto-detected.</p>
                   <p className="text-[10px] text-amber-400 mt-1">{evidenceUploading === 'shopify_payments' ? 'Parsing…' : 'Click to choose CSV'}</p>
                   <input type="file" accept=".csv,text/csv" className="hidden" disabled={!!evidenceUploading}
                     onChange={e => { const f = e.target.files?.[0]; if (f) uploadEvidence('shopify_payments', f); e.target.value = ''; }} />
                 </label>
                 <label className={`block border border-dashed rounded-lg p-3 cursor-pointer transition-colors ${evidenceUploading === 'bank_statement' ? 'border-amber-500 bg-amber-950/30' : 'border-slate-600 hover:border-amber-600 hover:bg-slate-800/60'}`}>
                   <p className="text-xs font-medium text-white">🏦 Bank statement (Shopify Balance or other)</p>
-                  <p className="text-[10px] text-slate-500 mt-0.5">Shopify Balance → statements export, or any bank CSV — used to verify every payout actually landed.</p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Shopify Balance → balance transactions export, or any bank CSV — verifies every payout actually landed, and flags any that didn&apos;t.</p>
                   <p className="text-[10px] text-amber-400 mt-1">{evidenceUploading === 'bank_statement' ? 'Parsing…' : 'Click to choose CSV'}</p>
                   <input type="file" accept=".csv,text/csv" className="hidden" disabled={!!evidenceUploading}
                     onChange={e => { const f = e.target.files?.[0]; if (f) uploadEvidence('bank_statement', f); e.target.value = ''; }} />
