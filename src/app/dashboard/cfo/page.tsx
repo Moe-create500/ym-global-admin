@@ -487,6 +487,17 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
             </div>
           </div>
 
+          {evidenceList.length > 0 && !evidenceOpen && (
+            <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[10px]">
+              <span className="text-emerald-400 font-medium">📎 Ground truth on file (auto-used by deep analysis):</span>
+              {evidenceList.map((ev: any) => (
+                <span key={ev.id} className="bg-slate-800/70 text-slate-300 rounded px-1.5 py-0.5">
+                  {ev.kind === 'bank_statement' ? '🏦' : '💳'} {ev.row_count} rows · {String(ev.min_ts || '').slice(0, 10)} → {String(ev.max_ts || '').slice(0, 10)}
+                </span>
+              ))}
+            </div>
+          )}
+
           {evidenceOpen && (
             <div className="mb-3 bg-slate-800/40 border border-amber-900/40 rounded-lg p-3 space-y-3">
               <p className="text-[11px] text-slate-300">
@@ -540,7 +551,9 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
           {aiError && <p className="text-[11px] text-red-400 mb-2">{aiError}</p>}
           {aiLoading && (
             <p className="text-[11px] text-slate-500 animate-pulse">
-              Reading snapshots, bank transactions, payment logs, P&amp;L rows, activity + sync logs between the exact snapshot timestamps…
+              {evidenceList.length > 0
+                ? `Tracing every dollar through ${evidenceList.length} submitted export${evidenceList.length > 1 ? 's' : ''} (payouts, reserves, bank landings) + all internal records between the exact snapshot timestamps…`
+                : 'Reading snapshots, bank transactions, payment logs, P&L rows, activity + sync logs between the exact snapshot timestamps…'}
             </p>
           )}
           {aiAnalysis && !aiLoading && (
