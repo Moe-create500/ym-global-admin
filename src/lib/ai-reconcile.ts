@@ -45,6 +45,30 @@ export interface AiAnalysis {
   raw_text?: string; // populated only if JSON parsing failed
 }
 
+export function ensureEvidenceTable(db: DB): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cfo_evidence (
+      id TEXT PRIMARY KEY,
+      store_id TEXT NOT NULL,
+      reconciliation_id TEXT,
+      kind TEXT NOT NULL,
+      filename TEXT,
+      headers_json TEXT,
+      rows_json TEXT NOT NULL,
+      row_count INTEGER NOT NULL DEFAULT 0,
+      min_ts TEXT,
+      max_ts TEXT,
+      sum_amount_cents INTEGER,
+      sum_net_cents INTEGER,
+      note TEXT,
+      warnings TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_cfo_evidence_store ON cfo_evidence(store_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_cfo_evidence_recon ON cfo_evidence(reconciliation_id);
+  `);
+}
+
 export function ensureAiAnalysisTable(db: DB): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS cfo_ai_analyses (
@@ -69,7 +93,7 @@ function cap<T>(rows: T[], label: string, notes: string[]): T[] {
 }
 
 /** Collect every relevant record between the two snapshot timestamps. */
-export function gatherEvidence(db: DB, storeId: string, recon: ReconResult): { pack: any; truncationNotes: string[] } {
+export function gatherEvidence(db: DB, storeId: string, recon: ReconResult, reconciliationId?: string): { pack: any; truncationNotes: string[] } {
   const notes: string[] = [];
   const ts1 = recon.period_start_ts;
   const ts2 = recon.period_end_ts;
@@ -140,6 +164,40 @@ export function gatherEvidence(db: DB, storeId: string, recon: ReconResult): { p
      FROM ad_spend WHERE store_id = ? AND date >= ? AND date <= ? GROUP BY date, platform ORDER BY date`
   ).all(storeId, d1, d2);
 
+  // User-submitted ground-truth exports (Shopify Payments export, bank statements) attached
+  // to this reconciliation. Rows carry exact-second UTC timestamps (ts_utc) where the export
+  // had them — filter to the window with ±3 days slack so boundary/pipeline rows are visible.
+  ensureEvidenceTable(db);
+  const slackMs = 3 * 24 * 3600 * 1000;
+  const winLo = new Date(ts1.replace(' ', 'T') + 'Z').getTime() - slackMs;
+  const winHi = new Date(ts2.replace(' ', 'T') + 'Z').getTime() + slackMs;
+  const userEvidence = db.prepare(
+    `SELECT id, kind, filename, headers_json, rows_json, row_count, min_ts, max_ts, sum_amount_cents, sum_net_cents, note, warnings, created_at
+     FROM cfo_evidence WHERE store_id = ? AND (reconciliation_id = ? OR reconciliation_id IS NULL)
+     ORDER BY created_at`
+  ).all(storeId, reconciliationId || '__none__').map((ev: any) => {
+    let rows: any[] = [];
+    try { rows = JSON.parse(ev.rows_json) || []; } catch { /* keep empty */ }
+    const inWindow = rows.filter((r: any) => {
+      const key = r.ts_utc || (r.date ? r.date + ' 12:00:00' : null);
+      if (!key) return true; // undated rows: keep, flagged for the model
+      const t = new Date(key.replace(' ', 'T') + 'Z').getTime();
+      return t >= winLo && t <= winHi;
+    });
+    const dropped = rows.length - inWindow.length;
+    return {
+      id: ev.id,
+      kind: ev.kind,
+      filename: ev.filename,
+      note: ev.note,
+      uploaded_at: ev.created_at,
+      export_full_range: { min_ts: ev.min_ts, max_ts: ev.max_ts, total_rows: ev.row_count, sum_amount_cents: ev.sum_amount_cents, sum_net_cents: ev.sum_net_cents },
+      window_filter_note: dropped > 0 ? `${dropped} rows outside window ±3d omitted (full-range sums above cover the whole export).` : 'All export rows fall within window ±3d.',
+      parse_warnings: ev.warnings ? JSON.parse(ev.warnings) : [],
+      rows: cap(inWindow, `user_evidence:${ev.kind}:${ev.filename || ev.id}`, notes),
+    };
+  });
+
   const pack = {
     store,
     window: {
@@ -164,6 +222,7 @@ export function gatherEvidence(db: DB, storeId: string, recon: ReconResult): { p
     chargebacks,
     activity_log: activityLog,
     sync_log: syncLog,
+    user_submitted_evidence: userEvidence,
     truncation_notes: notes,
   };
 
@@ -175,11 +234,13 @@ const SYSTEM_PROMPT = `You are a forensic financial reconciliation analyst for a
 You are given:
 1. A deterministic CFO-to-P&L reconciliation between two balance-sheet snapshots (exact timestamps included). Its identity: delta_equity = net_profit + explained_items + residual. Your job is to explain the RESIDUAL.
 2. The complete evidence recorded between the snapshots: both snapshots' full component data (assets/liabilities), daily P&L rows, ad-platform payments, card payment logs, bank transactions (store + global accounts), manual entries, manual credit-card balances, chargebacks, the app's activity log, and sync logs.
+3. Possibly user_submitted_evidence: raw exports the user uploaded (Shopify Payments transactions/payouts export, bank statements). These are GROUND TRUTH from the payment processor / bank — they outrank every hand-typed balance in the snapshots. Rows carry normalized fields (ts_utc = exact UTC timestamp to the second when the export had one, amount_cents/fee_cents/net_cents) plus every original column in raw.
 
 Domain facts you must use:
 - P&L revenue/fulfillment comes from a 3PL (ShipSourced). Fulfillment for Shopify-platform stores is a BUNDLED per-SKU price (product cost included); some recent days include ESTIMATED fulfillment (fulfillment_est_cents) for orders the 3PL has not billed yet.
 - Ad spend accrues daily in the P&L, but cash leaves via card charges (ad_payments) later — timing gaps are normal and the deterministic engine already models them; only flag what it MISSED.
 - Snapshot component keys ending _cents are integer cents. Sign convention: every cause you report must be expressed as its contribution to (delta_equity − net_profit), same as the deterministic items — i.e. positive = equity moved MORE than profit explains.
+- CRITICAL — units in prose: the evidence is in integer cents, but a human CFO reads your output. In EVERY prose field (verdict, explanation, evidence strings, fix, data_quality_issues, recommended_actions) express ALL amounts in dollars formatted like $1,234.56 — NEVER raw cents. Only the numeric JSON fields amount_cents, residual_cents, and unexplained_remaining_cents stay in integer cents.
 - Balance lines fed by hand (manual credit cards, Shopify balance typed in, inventory) are the most common source of residuals: a re-typed balance that mixes real spend with balance corrections breaks the bridge.
 - Boundary effects: date-only rows on the two boundary dates may belong to either side of the exact snapshot second.
 
@@ -189,6 +250,12 @@ Method — be rigorous:
 3. Distinguish: timing (real, self-corrects), capital (owner draw/contribution), data_bug (app wrote wrong number — say which write, when, citing activity/sync logs), double_count (same dollars in two lines), missing_data (evidence you'd need but wasn't recorded).
 4. Check the classic traps: manual credit-card line moved without matching card_payments_log entries; Shopify balance/payout moved without matching P&L revenue; fulfillment estimated vs billed double-counted in liabilities; ad invoices counted both as pending liability and as paid cash; P&L rows rewritten by a sync DURING the window (see sync_log/activity_log).
 5. Numbers must tie. Do not hand-wave. If something cannot be explained with the given evidence, quantify exactly how much remains unexplained and say precisely what record would be needed.
+6. If user_submitted_evidence is present, it is your PRIMARY source — do a full dollar-level trace:
+   a. Shopify Payments export: sum charges/refunds/fees/payouts/adjustments by type WITHIN the exact window [exact_start_ts, exact_end_ts] using ts_utc to the SECOND — a row at 12:04:58 belongs before a 12:05:00 snapshot, one at 12:05:03 does not. Reconstruct the true Shopify balance movement: balance_delta = charges − refunds − fees − payouts_sent ± adjustments. Compare against the snapshot's typed-in Shopify balance delta and against P&L revenue — name the exact rows that make up any difference.
+   b. Identify payouts IN TRANSIT at each boundary: payout rows whose payout_date/status shows sent-but-not-landed at the snapshot second. That is the pending-pipeline number — state it exactly from the rows, never estimate it.
+   c. Bank statement: match every payout row to its bank landing (amount + date proximity); flag payouts that never landed, deposits with no matching payout, and every non-payout bank movement (which must be explained as spend, transfer, or owner capital).
+   d. Cross-check the P&L: window revenue per daily_pnl vs charges-net-of-refunds in the export for the same dates. If they disagree, the P&L is wrong — quantify by how much, cite which dates, and say so plainly in the verdict.
+   e. Rows outside the exact window (the ±3d slack) exist ONLY to resolve boundary and in-transit questions — never count them inside window totals.
 
 Output STRICT JSON only (no markdown fences, no prose outside JSON):
 {
@@ -218,8 +285,9 @@ export async function analyzeReconciliation(db: DB, storeId: string, reconciliat
   if (!row?.result) throw new Error('Reconciliation not found or has no stored result');
   const recon: ReconResult = JSON.parse(row.result);
 
-  const { pack } = gatherEvidence(db, storeId, recon);
+  const { pack } = gatherEvidence(db, storeId, recon, reconciliationId);
   const evidenceText = JSON.stringify(pack);
+  const nEvidence = (pack.user_submitted_evidence || []).length;
 
   const client = new Anthropic(); // ANTHROPIC_API_KEY from env
 
@@ -234,7 +302,11 @@ export async function analyzeReconciliation(db: DB, storeId: string, reconciliat
       role: 'user',
       content:
         `Reconciliation case for store "${pack.store?.name}" — residual to explain: ${recon.residual_cents} cents ` +
-        `(window ${recon.period_start_ts} → ${recon.period_end_ts}).\n\nFULL EVIDENCE PACK (JSON):\n${evidenceText}`,
+        `(window ${recon.period_start_ts} → ${recon.period_end_ts}).` +
+        (nEvidence > 0
+          ? ` The user disputes prior conclusions and submitted ${nEvidence} ground-truth export(s) in user_submitted_evidence — trace every dollar through them per method step 6.`
+          : '') +
+        `\n\nFULL EVIDENCE PACK (JSON):\n${evidenceText}`,
     }],
   });
   const response = await stream.finalMessage();

@@ -156,6 +156,10 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
   const [aiMeta, setAiMeta] = useState<{ model?: string; created_at?: string } | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [evidenceList, setEvidenceList] = useState<any[]>([]);
+  const [evidenceUploading, setEvidenceUploading] = useState<string>(''); // kind currently uploading
+  const [evidenceError, setEvidenceError] = useState('');
 
   const storeIdForAi = recon?.store_id;
   useEffect(() => {
@@ -164,7 +168,34 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
       .then(r => r.json())
       .then(d => { if (d.analysis) { setAiAnalysis(d.analysis); setAiMeta({ model: d.model, created_at: d.created_at }); } })
       .catch(() => {});
+    fetch(`/api/cfo/reconcile/evidence?storeId=${storeIdForAi}`)
+      .then(r => r.json())
+      .then(d => setEvidenceList(d.evidence || []))
+      .catch(() => {});
   }, [storeIdForAi]);
+
+  const uploadEvidence = async (kind: 'shopify_payments' | 'bank_statement', file: File) => {
+    if (!storeIdForAi) return;
+    setEvidenceUploading(kind); setEvidenceError('');
+    try {
+      const csvText = await file.text();
+      const r = await fetch('/api/cfo/reconcile/evidence', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId: storeIdForAi, kind, filename: file.name, csvText }),
+      });
+      const d = await r.json();
+      if (d.error) { setEvidenceError(d.error); return; }
+      const list = await fetch(`/api/cfo/reconcile/evidence?storeId=${storeIdForAi}`).then(x => x.json());
+      setEvidenceList(list.evidence || []);
+    } catch (e: any) {
+      setEvidenceError(e?.message || 'upload failed');
+    } finally { setEvidenceUploading(''); }
+  };
+
+  const deleteEvidence = async (id: string) => {
+    await fetch(`/api/cfo/reconcile/evidence?id=${id}`, { method: 'DELETE' }).catch(() => {});
+    setEvidenceList(prev => prev.filter(e => e.id !== id));
+  };
 
   const runAiAnalysis = async () => {
     if (!storeIdForAi) return;
@@ -446,8 +477,66 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
             >
               {aiLoading ? 'Scanning every record… (1-3 min)' : aiAnalysis ? 'Re-run deep analysis' : 'Run deep analysis'}
             </button>
+            <button
+              onClick={() => setEvidenceOpen(v => !v)}
+              title="Disagree with the verdict? Submit your Shopify Payments export and bank statement — the AI re-traces every dollar against them with exact-second timestamps"
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${evidenceOpen ? 'bg-amber-600 text-white' : 'bg-amber-900/60 hover:bg-amber-800/60 text-amber-200'}`}
+            >
+              ⚖ Still not right — submit proof{evidenceList.length > 0 ? ` (${evidenceList.length})` : ''}
+            </button>
             </div>
           </div>
+
+          {evidenceOpen && (
+            <div className="mb-3 bg-slate-800/40 border border-amber-900/40 rounded-lg p-3 space-y-3">
+              <p className="text-[11px] text-slate-300">
+                Submit raw exports as <span className="text-amber-300 font-medium">ground truth</span> — they outrank every typed-in balance.
+                The AI will trace every dollar through them, second-by-second, verify the pending-payout pipeline exactly, and call out the P&amp;L if it&apos;s wrong.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <label className={`block border border-dashed rounded-lg p-3 cursor-pointer transition-colors ${evidenceUploading === 'shopify_payments' ? 'border-amber-500 bg-amber-950/30' : 'border-slate-600 hover:border-amber-600 hover:bg-slate-800/60'}`}>
+                  <p className="text-xs font-medium text-white">💳 Shopify Payments export</p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Shopify Admin → Finances → Payouts → Transactions → Export as CSV. Has exact timestamps + fees + payout status per transaction.</p>
+                  <p className="text-[10px] text-amber-400 mt-1">{evidenceUploading === 'shopify_payments' ? 'Parsing…' : 'Click to choose CSV'}</p>
+                  <input type="file" accept=".csv,text/csv" className="hidden" disabled={!!evidenceUploading}
+                    onChange={e => { const f = e.target.files?.[0]; if (f) uploadEvidence('shopify_payments', f); e.target.value = ''; }} />
+                </label>
+                <label className={`block border border-dashed rounded-lg p-3 cursor-pointer transition-colors ${evidenceUploading === 'bank_statement' ? 'border-amber-500 bg-amber-950/30' : 'border-slate-600 hover:border-amber-600 hover:bg-slate-800/60'}`}>
+                  <p className="text-xs font-medium text-white">🏦 Bank statement (Shopify Balance or other)</p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Shopify Balance → statements export, or any bank CSV — used to verify every payout actually landed.</p>
+                  <p className="text-[10px] text-amber-400 mt-1">{evidenceUploading === 'bank_statement' ? 'Parsing…' : 'Click to choose CSV'}</p>
+                  <input type="file" accept=".csv,text/csv" className="hidden" disabled={!!evidenceUploading}
+                    onChange={e => { const f = e.target.files?.[0]; if (f) uploadEvidence('bank_statement', f); e.target.value = ''; }} />
+                </label>
+              </div>
+              {evidenceError && <p className="text-[11px] text-red-400">{evidenceError}</p>}
+              {evidenceList.length > 0 && (
+                <div className="space-y-1">
+                  {evidenceList.map((ev: any) => (
+                    <div key={ev.id} className="flex items-center justify-between bg-slate-900/60 rounded px-2 py-1.5 text-[11px]">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span>{ev.kind === 'bank_statement' ? '🏦' : '💳'}</span>
+                        <span className="text-slate-200 truncate">{ev.filename || ev.kind}</span>
+                        <span className="text-slate-500 shrink-0">{ev.row_count} rows</span>
+                        {ev.min_ts && <span className="text-slate-500 font-mono shrink-0">{String(ev.min_ts).slice(0, 10)} → {String(ev.max_ts).slice(0, 10)}</span>}
+                        {typeof ev.sum_net_cents === 'number' && ev.sum_net_cents !== 0 && <span className="text-slate-400 font-mono shrink-0">net {signed(ev.sum_net_cents)}</span>}
+                        {ev.warnings && <span className="text-amber-500 shrink-0" title={JSON.parse(ev.warnings).join(' ')}>⚠</span>}
+                      </div>
+                      <button onClick={() => deleteEvidence(ev.id)} className="text-slate-500 hover:text-red-400 shrink-0 ml-2" title="Remove this evidence">✕</button>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => { setEvidenceOpen(false); runAiAnalysis(); }}
+                    disabled={aiLoading || !!evidenceUploading}
+                    className="w-full mt-1 px-3 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-colors"
+                  >
+                    {aiLoading ? 'Tracing every dollar…' : `🔍 Re-run deep analysis with ${evidenceList.length} export${evidenceList.length > 1 ? 's' : ''} as ground truth`}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {aiError && <p className="text-[11px] text-red-400 mb-2">{aiError}</p>}
           {aiLoading && (
             <p className="text-[11px] text-slate-500 animate-pulse">
