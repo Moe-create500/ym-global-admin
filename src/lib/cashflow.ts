@@ -196,6 +196,7 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       const status = (r.payout_status || '').toLowerCase();
       if (/fail/.test(status)) { failedTotal += r.net_cents ?? 0; continue; }
       if (!/pending|sched|transit/.test(status)) continue; // paid rows are not upcoming
+      if ((r.type || '').toLowerCase() === 'payout') continue; // payout-movement row = −sum of its own charges; would zero the group
       if (r.net_cents == null) continue;
       if (!r.payout_date || !ISO_DATE.test(r.payout_date)) { unassignedPending += r.net_cents; continue; }
       // a payout date the summary export already shows as PAID = these tx rows are a stale

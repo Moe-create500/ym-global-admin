@@ -154,7 +154,12 @@ function normalizePayouts(payouts: any[]): any[] {
 /** Balance transactions → shopify_payments rows (exact-second per-transaction detail).
  *  Resolves each txn's payout date from the payouts map (pending txns have no payout_id). */
 function normalizeBalanceTxns(txns: any[], payoutDateById: Map<string, string>): any[] {
-  return txns.map(t => {
+  return txns
+    // 'payout' type rows are the payout MOVEMENT itself (net = −sum of that payout's
+    // charges); the payout is already captured in shopify_payouts. Keeping them here would
+    // zero out each payout group (charges − reserve − payout = 0). Drop them.
+    .filter(t => (t.type || '').toLowerCase() !== 'payout')
+    .map(t => {
     const pid = t.payout_id != null ? String(t.payout_id) : null;
     const payoutDate = pid ? (payoutDateById.get(pid) || null) : null;
     return {
