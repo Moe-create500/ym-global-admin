@@ -444,13 +444,17 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
     SELECT id, date, amount_cents, category || ' payment *' || COALESCE(card_last4, '?') AS description
     FROM card_payments_log
     WHERE store_id = ? AND category IN ('ad','app') AND date != 'N/A' AND date >= ? AND date <= ?
+      AND (date != ? OR created_at IS NULL OR created_at <= ?)
     UNION ALL
     SELECT id, date, amount_cents, 'ShipSourced payment' AS description
     FROM ss_payments
     WHERE store_id = ? AND date != 'unknown' AND date >= ? AND date <= ?
       AND (date != ? OR created_at IS NULL OR created_at > ?)
       AND (date != ? OR created_at IS NULL OR created_at <= ?)
-  `).all(storeId, periodStart, periodEnd, storeId, periodStart, periodEnd, ...boundaryArgs) as any[];
+  `).all(storeId, periodStart, periodEnd, periodEnd, periodEndTs, storeId, periodStart, periodEnd, ...boundaryArgs) as any[];
+  // ^ card branch gets the same exact-second END boundary as adPaid/appPaid — a payment
+  // logged after t2's snapshot second is next window's business, not this window's
+  // in-transit (it would re-inject the exact amount CARD_END_BOUNDARY excludes above).
   // One-to-one matching: each bank debit can settle only ONE payment (two same-amount
   // payments must find two debits — the Purebite \$2,000 pair shares nothing).
   const usedDebits = new Set<string>();

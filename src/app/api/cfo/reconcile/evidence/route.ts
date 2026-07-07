@@ -9,28 +9,22 @@ export const dynamic = 'force-dynamic';
 const MAX_CSV_BYTES = 8 * 1024 * 1024; // 8 MB
 
 /**
- * Row fingerprinting for duplicate detection across uploads.
- * Key = normalized timestamp/date + all money fields + reference + type; an occurrence
- * ordinal is appended so two LEGITIMATELY identical rows in one export (e.g. two $100
- * payouts on the same day) both survive, while re-uploading the same file — or an
- * overlapping date range — dedupes exactly.
+ * Row identity for dedup/supersede across uploads.
+ * Identity = the IMMUTABLE facts of a money event: timestamp/date + type + amounts +
+ * reference. payout_status and payout_date are deliberately EXCLUDED — Shopify mutates
+ * them (pending → scheduled → paid; estimated dates slide), and keying on them would
+ * store the same charge twice on every re-upload, doubling cashflow totals.
+ * Re-uploads SUPERSEDE matching stored rows (fresher status/payout_date wins).
+ * An occurrence ordinal distinguishes legitimately identical rows in one export
+ * (two $100 payouts on the same day); the prior-side ordinal counter is shared across
+ * ALL stored uploads in insertion order so split-across-files twins stay correct.
  */
 function rowKey(r: any): string {
   return [
     r.ts_utc || r.date || '',
     r.amount_cents ?? '', r.fee_cents ?? '', r.net_cents ?? '',
-    (r.reference || '').trim(), (r.type || '').trim(), (r.payout_status || '').trim(),
+    (r.reference || '').trim(), (r.type || '').trim(),
   ].join('|');
-}
-
-function fingerprints(rows: any[]): string[] {
-  const seen = new Map<string, number>();
-  return rows.map(r => {
-    const k = rowKey(r);
-    const n = seen.get(k) || 0;
-    seen.set(k, n + 1);
-    return crypto.createHash('sha1').update(`${k}#${n}`).digest('hex');
-  });
 }
 
 /** Recompute range + sums over a subset of rows (after dedup filtering). */
@@ -114,39 +108,94 @@ export async function POST(req: NextRequest) {
   // (e.g. a payouts export dropped on the "payments" zone still gets payout semantics).
   const finalKind = parsed.kind_guess !== 'unknown' ? parsed.kind_guess : (kind || 'unknown');
 
-  // Dedup against EVERY prior upload for this store+kind (any scope): only rows whose
-  // fingerprint has never been stored are inserted, so overlapping exports never double count.
-  const existingFps = new Set<string>();
-  const priorUploads: any[] = db.prepare('SELECT rows_json FROM cfo_evidence WHERE store_id = ? AND kind = ?').all(storeId, finalKind);
-  for (const prior of priorUploads) {
-    try { fingerprints(JSON.parse(prior.rows_json) || []).forEach(f => existingFps.add(f)); } catch { /* skip corrupt */ }
+  // ── Cross-store guard: the same export uploaded to the WRONG store must be rejected,
+  // not silently duplicated across stores (rows carry store-unique refs/timestamps, so
+  // heavy overlap with another store's data means it's that store's file).
+  const incomingKeys = new Set(parsed.rows.map(rowKey));
+  if (parsed.rows.length >= 20) {
+    const otherUploads: any[] = db.prepare(
+      `SELECT e.store_id, s.name AS store_name, e.rows_json FROM cfo_evidence e JOIN stores s ON s.id = e.store_id WHERE e.store_id != ?`
+    ).all(storeId);
+    const overlapByStore = new Map<string, number>();
+    for (const other of otherUploads) {
+      try {
+        let hits = 0;
+        for (const r of JSON.parse(other.rows_json) || []) if (incomingKeys.has(rowKey(r))) hits++;
+        overlapByStore.set(other.store_name, (overlapByStore.get(other.store_name) || 0) + hits);
+      } catch { /* skip corrupt */ }
+    }
+    for (const [otherStore, hits] of overlapByStore) {
+      if (hits / parsed.rows.length >= 0.6) {
+        return NextResponse.json({
+          error: `This file looks like it belongs to ${otherStore} — ${Math.round((hits / parsed.rows.length) * 100)}% of its rows are already uploaded there. In Shopify, make sure you're logged into the right store before exporting.`,
+        }, { status: 409 });
+      }
+    }
   }
-  const fps = fingerprints(parsed.rows);
-  const newRows = parsed.rows.filter((_, i) => !existingFps.has(fps[i]));
-  const duplicates = parsed.rows.length - newRows.length;
 
-  if (newRows.length === 0) {
-    return NextResponse.json({
-      success: true, imported: 0, duplicates,
-      kind: finalKind, message: `All ${duplicates} rows already uploaded — nothing new.`,
-      warnings: parsed.warnings,
-    });
+  // ── Dedup + supersede against every prior upload for this store (ALL kinds — kind is
+  // metadata, not identity). Matching rows are REFRESHED in place (status/payout_date
+  // updates win); only genuinely new rows are stored as a new upload.
+  const priorUploads: any[] = db.prepare(
+    'SELECT id, rows_json FROM cfo_evidence WHERE store_id = ? ORDER BY created_at ASC'
+  ).all(storeId).map((u: any) => {
+    let rows: any[] = [];
+    try { rows = JSON.parse(u.rows_json) || []; } catch { /* corrupt → treat as empty */ }
+    return { id: u.id, rows, dirty: false };
+  });
+  // occupancy: identity key → ordered slots across all prior uploads (shared ordinal space)
+  const slots = new Map<string, { u: number; i: number }[]>();
+  priorUploads.forEach((u, ui) => u.rows.forEach((r: any, ri: number) => {
+    const k = rowKey(r);
+    if (!slots.has(k)) slots.set(k, []);
+    slots.get(k)!.push({ u: ui, i: ri });
+  }));
+
+  const newRows: any[] = [];
+  let updated = 0, duplicates = 0;
+  const seenIncoming = new Map<string, number>();
+  for (const r of parsed.rows) {
+    const k = rowKey(r);
+    const ord = seenIncoming.get(k) || 0;
+    seenIncoming.set(k, ord + 1);
+    const slotList = slots.get(k);
+    if (slotList && ord < slotList.length) {
+      const slot = slotList[ord];
+      const prior = priorUploads[slot.u];
+      if (JSON.stringify(prior.rows[slot.i]) !== JSON.stringify(r)) {
+        prior.rows[slot.i] = r; // supersede: fresher status / payout_date wins
+        prior.dirty = true;
+        updated++;
+      } else {
+        duplicates++;
+      }
+    } else {
+      newRows.push(r);
+    }
+  }
+  for (const u of priorUploads) {
+    if (u.dirty) db.prepare('UPDATE cfo_evidence SET rows_json = ? WHERE id = ?').run(JSON.stringify(u.rows), u.id);
   }
 
-  const stats = summarize(newRows);
   const warnings = [...parsed.warnings];
-  if (duplicates > 0) warnings.push(`${duplicates} duplicate rows skipped (already uploaded earlier); ${newRows.length} new rows stored.`);
+  if (duplicates > 0 || updated > 0) {
+    warnings.push(`${newRows.length} new rows stored; ${updated} existing rows refreshed (status/date changes); ${duplicates} unchanged duplicates skipped.`);
+  }
 
-  const id = crypto.randomUUID();
-  db.prepare(
-    `INSERT INTO cfo_evidence (id, store_id, reconciliation_id, kind, filename, headers_json, rows_json, row_count, min_ts, max_ts, sum_amount_cents, sum_net_cents, note, warnings)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    id, storeId, reconId, finalKind, filename || null,
-    JSON.stringify(parsed.headers), JSON.stringify(newRows), newRows.length,
-    stats.min_ts, stats.max_ts, stats.sum_amount_cents, stats.sum_net_cents,
-    note || null, warnings.length ? JSON.stringify(warnings) : null
-  );
+  let id: string | null = null;
+  let stats = summarize(newRows);
+  if (newRows.length > 0) {
+    id = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO cfo_evidence (id, store_id, reconciliation_id, kind, filename, headers_json, rows_json, row_count, min_ts, max_ts, sum_amount_cents, sum_net_cents, note, warnings)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id, storeId, reconId, finalKind, filename || null,
+      JSON.stringify(parsed.headers), JSON.stringify(newRows), newRows.length,
+      stats.min_ts, stats.max_ts, stats.sum_amount_cents, stats.sum_net_cents,
+      note || null, warnings.length ? JSON.stringify(warnings) : null
+    );
+  }
 
   return NextResponse.json({
     success: true,
@@ -155,6 +204,7 @@ export async function POST(req: NextRequest) {
     kind: finalKind,
     kind_guess: parsed.kind_guess,
     imported: newRows.length,
+    updated,
     duplicates,
     row_count: newRows.length,
     min_ts: stats.min_ts,

@@ -113,7 +113,9 @@ export default function BulkUploadPage() {
         if (data.duplicates) parts.push(`${data.duplicates} dup`);
         if (data.skippedFailed) parts.push(`${data.skippedFailed} failed`);
         if (data.synced !== undefined) parts.push(`${data.synced} synced`);
+        if (data.warnings?.length) parts.push(`⚠ ${data.warnings.length} warning${data.warnings.length > 1 ? 's' : ''}`);
         setResults(prev => ({ ...prev, [key]: { status: 'done', message: parts.join(', ') || 'Done' } }));
+        if (data.warnings?.length) console.warn(`[bulk-upload] ${key}:`, data.warnings);
       } else {
         setResults(prev => ({ ...prev, [key]: { status: 'error', message: data.error || 'Failed' } }));
       }

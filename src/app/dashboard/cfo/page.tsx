@@ -182,7 +182,7 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
       });
       const d = await r.json();
       if (d.error) setAiError(d.error);
-      else { setAiAnalysis(d.analysis); setAiMeta({ model: 'claude-fable-5', created_at: new Date().toISOString() }); }
+      else { setAiAnalysis(d.analysis); setAiMeta({ model: d.model || 'claude-fable-5', created_at: new Date().toISOString() }); }
     } catch (e: any) {
       setAiError(e?.message || 'analysis failed');
     } finally { setAiLoading(false); }

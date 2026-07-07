@@ -86,6 +86,14 @@ function median(nums: number[]): number | null {
   return s[Math.floor(s.length / 2)];
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Business "today" in the store's timezone (Pacific) — pure UTC would flip to tomorrow
+ *  from 5pm PDT onward and hide the current day's landings from an evening user. */
+function todayPacific(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
 /** Load every deduped evidence row of a kind for a store, across all uploads. */
 function evidenceRows(db: DB, storeId: string, kinds: string[]): any[] {
   const placeholders = kinds.map(() => '?').join(',');
@@ -100,7 +108,8 @@ function evidenceRows(db: DB, storeId: string, kinds: string[]): any[] {
 }
 
 export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonDays = 14): CashflowProjection {
-  const today = fmtDate(Date.now() - (Date.now() % DAY_MS));
+  const today = todayPacific();
+  const horizonEnd = addDays(today, horizonDays);
   const dataGaps: string[] = [];
 
   const stores: any[] = db.prepare(
@@ -116,24 +125,31 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     const txRows = evidenceRows(db, store.id, ['shopify_payments']);
     const hasEvidence = payoutRows.length > 0 || txRows.length > 0;
 
-    // ── Measure landing lag: match paid payouts to bank deposits (amount + date window) ──
-    const bankDeposits = bankRows
-      .filter(r => (r.amount_cents ?? 0) > 0)
-      .map(r => ({ date: r.date as string, amount: r.amount_cents as number, used: false }))
-      .sort((a, b) => (a.date < b.date ? -1 : 1));
+    // ── Measure landing lag: match paid payouts to bank rows (amount + nearest date) ──
+    // Positive payouts match deposits; negative (refund-heavy) payouts match withdrawals.
+    // Window [pdate−1, pdate+7] tolerates timezone off-by-one; nearest-date-first pairing
+    // prevents an older same-amount payout from stealing a newer payout's landing.
+    const bankMovements = bankRows
+      .filter(r => (r.amount_cents ?? 0) !== 0 && ISO_DATE.test(r.date || ''))
+      .map(r => ({ date: r.date as string, amount: r.amount_cents as number, used: false }));
+    const bankMaxDate = bankMovements.reduce((m, d) => (d.date > m ? d.date : m), '');
 
     const lags: number[] = [];
     const paidPayouts = payoutRows
-      .filter(r => /paid/i.test(r.payout_status || '') && r.amount_cents != null && (r.payout_date || r.date))
+      .filter(r => /paid/i.test(r.payout_status || '') && r.amount_cents != null && ISO_DATE.test((r.payout_date || r.date) || ''))
       .map(r => ({ ...r, pdate: (r.payout_date || r.date) as string }))
       .sort((a, b) => (a.pdate < b.pdate ? -1 : 1));
 
     for (const p of paidPayouts) {
-      const hit = bankDeposits.find(d => !d.used && d.amount === p.amount_cents && d.date >= p.pdate && toDate(d.date) - toDate(p.pdate) <= 7 * DAY_MS);
-      if (hit) {
+      const candidates = bankMovements.filter(d =>
+        !d.used && d.amount === p.amount_cents &&
+        toDate(d.date) - toDate(p.pdate) >= -1 * DAY_MS && toDate(d.date) - toDate(p.pdate) <= 7 * DAY_MS
+      );
+      if (candidates.length) {
+        const hit = candidates.reduce((best, d) => Math.abs(toDate(d.date) - toDate(p.pdate)) < Math.abs(toDate(best.date) - toDate(p.pdate)) ? d : best);
         hit.used = true;
         (p as any).landed = hit.date;
-        lags.push(Math.round((toDate(hit.date) - toDate(p.pdate)) / DAY_MS));
+        lags.push(Math.max(0, Math.round((toDate(hit.date) - toDate(p.pdate)) / DAY_MS)));
       }
     }
     const lag = median(lags) ?? 2;
@@ -143,19 +159,26 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
 
     const events: CashEvent[] = [];
 
-    // ── In-transit: paid, never landed, recent enough to still be on the rail ──
+    // ── In-transit: paid, never landed, recent enough to still be on the rail.
+    // If the bank export DOES cover the expected landing window and there's still no
+    // match, that is potentially missing money — the one thing this engine must flag.
     let inTransit = 0;
     for (const p of paidPayouts) {
       if ((p as any).landed) continue;
+      const expectedLand = rollToBusinessDay(addDays(p.pdate, lag));
+      if (bankMaxDate && bankMaxDate >= addDays(expectedLand, 2)) {
+        dataGaps.push(`${store.name}: payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} of $${(p.amount_cents / 100).toFixed(2)} is marked PAID but has no matching bank landing even though the bank export covers that period — verify with Shopify/bank.`);
+        continue; // not on the rail — it's missing until proven otherwise
+      }
       if (toDate(p.pdate) < toDate(today) - 10 * DAY_MS) continue; // stale unmatched = bank export just doesn't cover it
-      const land = rollToBusinessDay(addDays(p.pdate, lag));
       inTransit += p.amount_cents;
       events.push({
-        date: land < today ? today : land, kind: 'in_transit', amount_cents: p.amount_cents,
+        date: expectedLand < today ? today : expectedLand, kind: 'in_transit', amount_cents: p.amount_cents,
         store_id: store.id, store_name: store.name,
         source: `payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} (sent, not landed)`,
       });
     }
+    const paidPayoutDates = new Set(paidPayouts.map(p => p.pdate));
 
     // ── Upcoming payouts. PRIMARY source: the per-transaction export — every not-yet-paid
     // row (status scheduled OR pending) carries its Payout Date, and grouping by that date
@@ -164,12 +187,20 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     // transaction export has no rows for. Composition per landing: charges / refunds /
     // chargebacks / reserves.
     let scheduled = 0;
+    let beyondHorizon = 0;
     let lastKnownPayoutDate = today;
+    let unassignedPending = 0;
+    let failedTotal = 0;
     const txByPayout = new Map<string, { net: number; charges: number; nCharges: number; refunds: number; nRefunds: number; chargebacks: number; nChargebacks: number; reserved: number; other: number; committed: number; estimated: number }>();
     for (const r of txRows) {
       const status = (r.payout_status || '').toLowerCase();
-      if (!/pending|sched|transit/.test(status)) continue; // paid/failed rows are not upcoming
-      if (!r.payout_date || r.net_cents == null) continue;
+      if (/fail/.test(status)) { failedTotal += r.net_cents ?? 0; continue; }
+      if (!/pending|sched|transit/.test(status)) continue; // paid rows are not upcoming
+      if (r.net_cents == null) continue;
+      if (!r.payout_date || !ISO_DATE.test(r.payout_date)) { unassignedPending += r.net_cents; continue; }
+      // a payout date the summary export already shows as PAID = these tx rows are a stale
+      // copy from an older export; counting them would double the money across tiers
+      if (paidPayoutDates.has(r.payout_date)) continue;
       const g = txByPayout.get(r.payout_date) || { net: 0, charges: 0, nCharges: 0, refunds: 0, nRefunds: 0, chargebacks: 0, nChargebacks: 0, reserved: 0, other: 0, committed: 0, estimated: 0 };
       g.net += r.net_cents;
       // 'scheduled' = Shopify assigned a payout ID (date committed); 'pending' = Shopify's
@@ -187,6 +218,7 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       if (pdate > lastKnownPayoutDate) lastKnownPayoutDate = pdate;
       if (pdate < today || g.net === 0) continue;
       const land = rollToBusinessDay(addDays(pdate, lag));
+      if (land > horizonEnd) { beyondHorizon += g.net; continue; } // totals must match the visible calendar
       scheduled += g.net;
       const parts = [`${g.nCharges} charges ${(g.charges / 100).toFixed(2)}`];
       if (g.nRefunds) parts.push(`${g.nRefunds} refunds ${(g.refunds / 100).toFixed(2)}`);
@@ -205,12 +237,13 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     // Summary export fills only the dates the transaction export doesn't cover.
     for (const r of payoutRows) {
       const pdate = (r.payout_date || r.date) as string | null;
-      if (!pdate) continue;
+      if (!pdate || !ISO_DATE.test(pdate)) continue;
       if (pdate > lastKnownPayoutDate) lastKnownPayoutDate = pdate;
       if (txByPayout.has(pdate)) continue;
       if (!/sched|transit/i.test(r.payout_status || '')) continue;
       if (r.amount_cents == null || pdate < today) continue;
       const land = rollToBusinessDay(addDays(pdate, lag));
+      if (land > horizonEnd) { beyondHorizon += r.amount_cents; continue; }
       scheduled += r.amount_cents;
       events.push({
         date: land, kind: 'scheduled', amount_cents: r.amount_cents,
@@ -218,6 +251,9 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
         source: `scheduled payout ${pdate} (payouts summary)`,
       });
     }
+    if (beyondHorizon !== 0) notes.push(`$${(beyondHorizon / 100).toFixed(2)} of known payouts land beyond the ${horizonDays}-day view (not in totals) — widen the horizon to see them.`);
+    if (unassignedPending !== 0) notes.push(`$${(unassignedPending / 100).toFixed(2)} of pending money has no payout date stamped yet — re-export later and it will appear with dates.`);
+    if (failedTotal !== 0) dataGaps.push(`${store.name}: $${(failedTotal / 100).toFixed(2)} of transactions sit on FAILED payouts — Shopify will retry, but verify in the Payouts screen.`);
 
     // ── Refunds & chargebacks over the last 30 days (loss visibility) ──
     const cutoff30 = addDays(today, -30);

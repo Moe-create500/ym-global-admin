@@ -46,7 +46,8 @@ export async function POST(req: NextRequest) {
 
   try {
     const analysis = await analyzeReconciliation(db, storeId, reconId);
-    return NextResponse.json({ success: true, analysis, reconciliation_id: reconId });
+    const saved: any = getDb().prepare('SELECT model FROM cfo_ai_analyses WHERE reconciliation_id = ?').get(reconId);
+    return NextResponse.json({ success: true, analysis, reconciliation_id: reconId, model: saved?.model });
   } catch (err: any) {
     console.error('[ai-reconcile]', err?.message || err);
     return NextResponse.json({ error: err?.message || 'analysis failed' }, { status: 500 });

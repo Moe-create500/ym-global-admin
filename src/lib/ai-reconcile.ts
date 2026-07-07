@@ -284,7 +284,14 @@ Output STRICT JSON only (no markdown fences, no prose outside JSON):
 }`;
 
 function extractJson(text: string): any | null {
-  const cleaned = text.replace(/```json\s*|```\s*/g, '');
+  // try the raw braces slice first — global fence-stripping corrupts JSON whose string
+  // values legitimately contain ``` sequences
+  const rawStart = text.indexOf('{');
+  const rawEnd = text.lastIndexOf('}');
+  if (rawStart !== -1 && rawEnd > rawStart) {
+    try { return JSON.parse(text.slice(rawStart, rawEnd + 1)); } catch { /* fall through */ }
+  }
+  const cleaned = text.replace(/^\s*```json\s*/i, '').replace(/\s*```\s*$/, '');
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   if (start === -1 || end <= start) return null;
@@ -325,6 +332,10 @@ export async function analyzeReconciliation(db: DB, storeId: string, reconciliat
 
   if (response.stop_reason === 'refusal') {
     throw new Error('Model declined the request (refusal stop reason)');
+  }
+  if (response.stop_reason === 'max_tokens') {
+    // NEVER persist a truncated analysis — the upsert would overwrite a good stored one
+    throw new Error('Analysis output was truncated (max_tokens) — please re-run.');
   }
 
   const text = response.content

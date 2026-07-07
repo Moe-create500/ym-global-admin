@@ -52,8 +52,12 @@ export function parseCsv(text: string): string[][] {
         if (text[i + 1] === '"') { field += '"'; i++; }
         else inQuotes = false;
       } else field += c;
-    } else if (c === '"') {
+    } else if (c === '"' && field === '') {
+      // quotes only open a quoted field at field start; a stray mid-field quote
+      // (e.g. `12" RULER CO`) is literal text, not a field opener
       inQuotes = true;
+    } else if (c === '"') {
+      field += c;
     } else if (c === ',') {
       row.push(field); field = '';
     } else if (c === '\n' || c === '\r') {
@@ -67,23 +71,44 @@ export function parseCsv(text: string): string[][] {
   return rows;
 }
 
-/** "$1,234.56" | "(123.45)" | "-123.45" | "123" → integer cents (null if not money-like). */
+/** "$1,234.56" | "(123.45)" | "-123.45" | "123" → integer cents (null if not money-like).
+ *  String-based math (no float precision loss); rejects European decimal-comma formats
+ *  ("1.234,56") instead of silently misparsing them 1000x off. */
 export function parseMoneyCents(s: string | undefined | null): number | null {
   if (s == null) return null;
   let t = String(s).trim();
   if (!t) return null;
   let neg = false;
-  if (/^\(.*\)$/.test(t)) { neg = true; t = t.slice(1, -1); }
-  t = t.replace(/[$€£\s]/g, '').replace(/,/g, '');
-  if (t.startsWith('-')) { neg = !neg ? true : neg; t = t.slice(1); }
+  if (/^\(.*\)$/.test(t)) { neg = true; t = t.slice(1, -1).trim(); }
+  t = t.replace(/[$€£\s]/g, '');
+  if (t.startsWith('-')) { neg = true; t = t.slice(1); }
   else if (t.startsWith('+')) t = t.slice(1);
-  if (!/^\d*\.?\d+$/.test(t)) return null;
-  const cents = Math.round(parseFloat(t) * 100);
-  if (!isFinite(cents)) return null;
+  if (t.includes(',')) {
+    // comma after the last dot = European decimal comma ("1.234,56") — reject, don't guess
+    if (t.lastIndexOf(',') > t.lastIndexOf('.')) return null;
+    // otherwise commas must be valid thousands grouping
+    if (!/^\d{1,3}(,\d{3})*(\.\d+)?$/.test(t)) return null;
+    t = t.replace(/,/g, '');
+  }
+  const m = t.match(/^(\d+)(?:\.(\d+))?$/);
+  if (!m) return null;
+  const whole = parseInt(m[1], 10);
+  const fracStr = (m[2] || '').padEnd(3, '0').slice(0, 3); // 3rd digit only for rounding
+  const frac = Math.round(parseInt(fracStr, 10) / 10);
+  if (!Number.isSafeInteger(whole) || whole > 90_000_000_000) return null; // > $90B = garbage input
+  const cents = whole * 100 + frac;
   return neg ? -cents : cents;
 }
 
 function pad(n: number): string { return n < 10 ? '0' + n : String(n); }
+
+/** True only if Y-M-D (and optionally H:M:S) are a real calendar date/time — catches
+ *  Feb-30 rollovers and impossible values like month 13 or minute 99. */
+function validComponents(Y: number, Mo: number, D: number, H = 0, Mi = 0, S = 0): boolean {
+  if (Mo < 1 || Mo > 12 || D < 1 || D > 31 || H > 23 || Mi > 59 || S > 59) return false;
+  const d = new Date(Date.UTC(Y, Mo - 1, D));
+  return d.getUTCFullYear() === Y && d.getUTCMonth() === Mo - 1 && d.getUTCDate() === D;
+}
 
 /**
  * Normalize a timestamp string to UTC 'YYYY-MM-DD HH:MM:SS'.
@@ -98,9 +123,9 @@ export function normalizeTs(s: string | undefined | null): { ts: string | null; 
 
   // date-only
   let m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (m) return { ts: null, date: `${m[1]}-${m[2]}-${m[3]}` };
+  if (m) return validComponents(+m[1], +m[2], +m[3]) ? { ts: null, date: `${m[1]}-${m[2]}-${m[3]}` } : { ts: null, date: null };
   m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (m) return { ts: null, date: `${m[3]}-${pad(+m[1])}-${pad(+m[2])}` };
+  if (m) return validComponents(+m[3], +m[1], +m[2]) ? { ts: null, date: `${m[3]}-${pad(+m[1])}-${pad(+m[2])}` } : { ts: null, date: null };
 
   // full timestamp with optional offset: 2026-07-03 18:04:32 -0400 | -04:00 | Z
   m = t.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*(Z|[+-]\d{2}:?\d{2})?$/);
@@ -108,6 +133,7 @@ export function normalizeTs(s: string | undefined | null): { ts: string | null; 
     const [, Y, Mo, D, H, Mi] = m;
     const S = m[6] || '00';
     const off = m[7];
+    if (!validComponents(+Y, +Mo, +D, +H, +Mi, +S)) return { ts: null, date: null };
     let ms = Date.UTC(+Y, +Mo - 1, +D, +H, +Mi, +S);
     if (off && off !== 'Z') {
       const om = off.match(/([+-])(\d{2}):?(\d{2})/)!;
@@ -122,17 +148,13 @@ export function normalizeTs(s: string | undefined | null): { ts: string | null; 
   // MM/DD/YYYY HH:MM[:SS] — assume UTC
   m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
   if (m) {
+    if (!validComponents(+m[3], +m[1], +m[2], +m[4], +m[5], +(m[6] || '0'))) return { ts: null, date: null };
     const ts = `${m[3]}-${pad(+m[1])}-${pad(+m[2])} ${pad(+m[4])}:${m[5]}:${m[6] || '00'}`;
     return { ts, date: ts.slice(0, 10) };
   }
 
-  // last resort: Date.parse
-  const p = Date.parse(t);
-  if (!isNaN(p)) {
-    const d = new Date(p);
-    const ts = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
-    return { ts, date: ts.slice(0, 10) };
-  }
+  // No Date.parse fallback: V8 parses unknown formats in the SERVER's local timezone,
+  // making normalization (and dedup fingerprints) machine-dependent. Unknown = null.
   return { ts: null, date: null };
 }
 
@@ -172,7 +194,9 @@ export function parseEvidenceCsv(csvText: string): ParsedEvidence {
   //   bank_statement:   Shopify Balance / any bank CSV (Date(s), Description, Amount)
   let kind: ParsedEvidence['kind_guess'] = 'unknown';
   if (lower.some(h => h.includes('payout date')) && lower.some(h => h === 'total') && lower.some(h => h === 'charges')) kind = 'shopify_payouts';
-  else if (lower.some(h => h.includes('transaction date')) && (lower.some(h => h === 'fee') || lower.some(h => h === 'net'))) kind = 'shopify_payments';
+  // payments export needs ≥2 Shopify-specific signals — a bank CSV that happens to have a
+  // 'Fee' column must not masquerade as a Shopify transactions export
+  else if (lower.some(h => h.includes('transaction date')) && lower.some(h => h.includes('payout status') || h.includes('payout id')) && lower.some(h => h === 'net')) kind = 'shopify_payments';
   else if (lower.some(h => h.includes('description') || h.includes('memo')) && lower.some(h => h === 'amount' || h.includes('amount'))) kind = 'bank_statement';
 
   const iTs = findHeader(headers, 'transaction date', 'date', 'posted date', 'created at', 'created_at', 'datetime', 'payout date');
@@ -193,11 +217,14 @@ export function parseEvidenceCsv(csvText: string): ParsedEvidence {
   if (iTs === -1) warnings.push('No date/timestamp column recognized — rows kept with ts_utc=null.');
   if (iAmount === -1) warnings.push('No amount column recognized — rows kept with amount_cents=null.');
 
+  const iCurrency = findHeader(headers, 'currency');
   const rows: NormalizedRow[] = [];
   let minTs: string | null = null;
   let maxTs: string | null = null;
   let sumAmount = 0;
   let sumNet = 0;
+  let unparsedAmounts = 0;
+  const currencies = new Set<string>();
 
   for (let r = 1; r < grid.length; r++) {
     const cells = grid[r];
@@ -215,9 +242,13 @@ export function parseEvidenceCsv(csvText: string): ParsedEvidence {
 
     const { ts, date } = normalizeTs(iTs !== -1 ? cells[iTs] : null);
     const amount = parseMoneyCents(iAmount !== -1 ? cells[iAmount] : null);
+    if (amount == null && iAmount !== -1 && (cells[iAmount] || '').trim() !== '') unparsedAmounts++;
     const fee = parseMoneyCents(iFee !== -1 ? cells[iFee] : null);
     const net = parseMoneyCents(iNet !== -1 ? cells[iNet] : null);
-    const payoutDate = iPayoutDate !== -1 ? (normalizeTs(cells[iPayoutDate]).date || cells[iPayoutDate]?.trim() || null) : null;
+    // payout_date: normalized ISO date or null — NEVER raw text ("Pending", "N/A" etc.
+    // would corrupt date comparisons and crash date math downstream)
+    const payoutDate = iPayoutDate !== -1 ? (normalizeTs(cells[iPayoutDate]).date || null) : null;
+    if (iCurrency !== -1 && (cells[iCurrency] || '').trim()) currencies.add(cells[iCurrency].trim().toUpperCase());
 
     if (amount != null) sumAmount += amount;
     if (net != null) sumNet += net;
@@ -242,19 +273,32 @@ export function parseEvidenceCsv(csvText: string): ParsedEvidence {
     });
   }
 
+  if (unparsedAmounts > 0) {
+    warnings.push(`${unparsedAmounts} rows have a non-empty amount that could not be parsed as money — they are stored but excluded from sums.`);
+  }
+  const nonUsd = [...currencies].filter(c => c !== 'USD');
+  if (nonUsd.length > 0) {
+    warnings.push(`Export contains non-USD currency values (${nonUsd.join(', ')}) — amounts are summed WITHOUT conversion.`);
+  }
+
   // Integrity check for payout summaries: every row must satisfy
   // Total = Charges − Refunds + Adjustments + Reserved Funds − Fees (+ tax/advances/retried).
-  // A row that doesn't tie means a corrupted or hand-edited export — flag it before analysis.
+  // ±1¢ tolerance for per-column rounding; warnings capped so a big export can't flood storage.
   if (kind === 'shopify_payouts') {
+    let tieWarnings = 0;
     for (const r of rows) {
       const m = r.money;
       if (m['Total'] == null || m['Charges'] == null) continue;
       const calc = (m['Charges'] ?? 0) - (m['Refunds'] ?? 0) + (m['Adjustments'] ?? 0) + (m['Reserved Funds'] ?? 0)
         + (m['Marketplace Sales Tax'] ?? 0) + (m['Advances'] ?? 0) + (m['Retried Amount'] ?? 0) - (m['Fees'] ?? 0);
-      if (calc !== m['Total']) {
-        warnings.push(`Payout row ${r.date || '?'} does not tie: charges−refunds+adjustments+reserved−fees = ${(calc / 100).toFixed(2)} but Total = ${(m['Total'] / 100).toFixed(2)} — export may be corrupted or edited.`);
+      if (Math.abs(calc - m['Total']) > 1) {
+        tieWarnings++;
+        if (tieWarnings <= 5) {
+          warnings.push(`Payout row ${r.date || '?'} does not tie: charges−refunds+adjustments+reserved−fees = ${(calc / 100).toFixed(2)} but Total = ${(m['Total'] / 100).toFixed(2)} — export may be corrupted or edited.`);
+        }
       }
     }
+    if (tieWarnings > 5) warnings.push(`…and ${tieWarnings - 5} more payout rows that do not tie.`);
   }
 
   return { kind_guess: kind, headers, rows, row_count: rows.length, min_ts: minTs, max_ts: maxTs, sum_amount_cents: sumAmount, sum_net_cents: sumNet, warnings };
