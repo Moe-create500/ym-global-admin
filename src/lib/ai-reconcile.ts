@@ -263,9 +263,15 @@ Method — be rigorous:
       - kind "bank_statement": Amount positive = deposit into the bank. "Shopify Payments payout" descriptions are payout landings — every paid payout MUST have one; a paid payout with no landing within 3 business days is missing money, say so. Non-payout rows (negative amounts, other descriptions) are spend/transfers/owner activity that must reconcile to bank_transactions or be flagged as untracked. Posted vs transaction date may differ by a day — match on transaction date.
       - Cross-source check: payouts export "paid" Totals ↔ bank statement deposits ↔ the snapshot's payout-in-transit line. All three must form one consistent story; quantify any break.
 
+WRITE FOR A BUSINESS OWNER, NOT AN ACCOUNTANT. The reader runs stores and reads this in 30 seconds:
+- The verdict must answer three things in plain words: (1) Is any money actually missing — yes or no? (2) What's the main reason the numbers don't match? (3) What should they do?
+- Cause titles must be everyday language. Say "Sales made after you saved the snapshot — money is in profit but wasn't in the balance yet", NOT "P&L revenue booked outside the exact snapshot window (boundary-day timing)". Say "Shopify took chargebacks out of your money but they were never recorded as a cost", NOT "unbooked adjustment deduction".
+- Every cause explanation must OPEN with one sentence anyone can understand ("You made $254 of sales in the evening after saving the snapshot, so that money shows as profit but hadn't reached your Shopify balance yet."), THEN give the technical detail and row citations.
+- Never use these words in verdict/titles/opening sentences: residual, boundary-day, equity, P&L bridge, reconciling item, delta. "The gap", "the mismatch", "your profit number", "the balances you typed in" are fine.
+
 Output STRICT JSON only (no markdown fences, no prose outside JSON):
 {
-  "verdict": "<1-2 sentence headline: what mainly caused the residual>",
+  "verdict": "<2-3 short plain-language sentences: is money missing? main reason? what to do?>",
   "confidence": "high" | "medium" | "low",
   "residual_cents": <the residual you verified>,
   "causes": [
