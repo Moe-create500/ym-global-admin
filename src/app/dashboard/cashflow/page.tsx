@@ -104,11 +104,6 @@ export default function CashflowPage() {
               <p className="text-lg font-bold text-white">{cents(t.reserves_held_cents)}</p>
               <p className="text-[10px] text-slate-500">Shopify holdbacks — not spendable</p>
             </div>
-            <div className="bg-slate-900 border border-red-900/40 rounded-xl p-3">
-              <p className="text-[10px] text-red-400 uppercase tracking-wider">Cards owed</p>
-              <p className="text-lg font-bold text-white">{cents(t.cards_owed_cents)}</p>
-              <p className="text-[10px] text-slate-500">manual card balances</p>
-            </div>
           </div>
 
           {/* Data gaps */}
@@ -189,9 +184,6 @@ export default function CashflowPage() {
                           <span className="text-rose-400/80">30d: refunds {cents(s.refunds_30d_cents)} · chargebacks {cents(s.chargebacks_30d_cents)}</span>
                         )}
                         {s.last_export_payout_date && <span>export covers → {s.last_export_payout_date}</span>}
-                        {s.cards.map((c: any, i: number) => (
-                          <span key={i} className="text-red-400/80">{c.card_name}: {cents(c.owed_cents)}</span>
-                        ))}
                       </div>
                     </div>
                   ))}
