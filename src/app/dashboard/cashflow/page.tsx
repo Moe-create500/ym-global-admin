@@ -28,18 +28,27 @@ export default function CashflowPage() {
 
   const load = (sid: string) => {
     setLoading(true);
-    fetch(`/api/cashflow${sid ? `?storeId=${sid}` : ''}`)
+    const url = `/api/cashflow${sid ? `?storeId=${sid}` : ''}`;
+    fetch(url)
       .then(r => r.json())
-      .then(d => setProjection(d.projection || null))
-      .catch(() => {})
+      .then(d => {
+        if (!d.projection) console.warn('[cashflow] no projection in response');
+        setProjection(d.projection || null);
+      })
+      .catch(e => console.error('[cashflow] fetch failed:', e))
       .finally(() => setLoading(false));
     fetch(`/api/cashflow/ai?storeId=${sid || 'all'}`)
       .then(r => r.json())
       .then(d => { setPlan(d.plan || null); setPlanMeta(d.plan ? { created_at: d.created_at } : null); })
-      .catch(() => {});
+      .catch(e => console.error('[cashflow/ai] fetch failed:', e));
   };
 
   useEffect(() => { load(storeId); }, [storeId]);
+
+  // Initial load: fetch all stores to populate the selector
+  useEffect(() => {
+    if (!projection) load('');
+  }, []);
 
   const runPlan = async () => {
     setPlanLoading(true); setPlanError('');
