@@ -89,6 +89,8 @@ export default function CashflowPage() {
 
       {loading && <p className="text-sm text-slate-500 animate-pulse">Building projection…</p>}
 
+      {!loading && !projection && <p className="text-sm text-red-400">No data loaded. Check console for errors.</p>}
+
       {!loading && projection && (
         <>
           {/* Totals strip */}
