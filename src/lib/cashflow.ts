@@ -23,7 +23,7 @@ type DB = BetterSqlite3.Database;
 
 export interface CashEvent {
   date: string;              // expected landing date YYYY-MM-DD
-  kind: 'in_transit' | 'scheduled' | 'projected';
+  kind: 'landed' | 'in_transit' | 'scheduled' | 'projected';
   amount_cents: number;
   store_id: string;
   store_name: string;
@@ -36,6 +36,7 @@ export interface StoreCashflow {
   has_evidence: boolean;
   landing_lag_days: number | null;   // measured median payout→bank lag
   matched_payouts: number;           // how many payout→bank pairs the lag is based on
+  landed_today_cents: number;        // paid payouts that arrived in the bank today (lag elapsed)
   in_transit_cents: number;
   scheduled_cents: number;
   projected_cents: number;           // captured charges not yet assigned a payout, dated by measured delay
@@ -56,6 +57,7 @@ export interface CashflowProjection {
   stores: StoreCashflow[];
   calendar: { date: string; confirmed_cents: number; cumulative_cents: number; events: CashEvent[] }[];
   totals: {
+    landed_today_cents: number;
     in_transit_cents: number;
     scheduled_cents: number;
     projected_cents: number;
@@ -181,19 +183,31 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     // cash, not something to hold hostage waiting for a bank CSV that may be stale.
     // The only alarm case: bank data COVERS the landing window and shows no deposit.
     let inTransit = 0;
+    let landedToday = 0;
     for (const p of paidPayouts) {
-      if ((p as any).landed) continue; // confirmed by a bank row
       const expectedLand = rollToBusinessDay(addDays(p.pdate, lag));
-      if (bankMaxDate && bankMaxDate >= addDays(expectedLand, 2)) {
+      const confirmed = !!(p as any).landed; // matched to an actual bank row
+      if (!confirmed && bankMaxDate && bankMaxDate >= addDays(expectedLand, 2)) {
         dataGaps.push(`${store.name}: payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} of $${(p.amount_cents / 100).toFixed(2)} is marked PAID but has no matching bank landing even though the bank data covers that period — verify with Shopify/bank.`);
         continue; // not on the rail — it's missing until proven otherwise
       }
-      if (expectedLand < today) continue; // landed (lag already elapsed) — it's in the bank
+      if (expectedLand < today) continue; // landed on a past day — already in the bank
+      if (expectedLand === today) {
+        // paid + landing day reached = the money is IN the bank today (lag-0 stores land
+        // same day; Shopify Balance often posts a day early). Show as landed, not pending.
+        landedToday += p.amount_cents;
+        events.push({
+          date: today, kind: 'landed', amount_cents: p.amount_cents,
+          store_id: store.id, store_name: store.name,
+          source: `payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} — landed in bank${confirmed ? ' (bank-confirmed)' : ''}`,
+        });
+        continue;
+      }
       inTransit += p.amount_cents;
       events.push({
         date: expectedLand, kind: 'in_transit', amount_cents: p.amount_cents,
         store_id: store.id, store_name: store.name,
-        source: `payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} — ${expectedLand === today ? 'landing today' : `lands ${expectedLand}`}`,
+        source: `payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} — lands ${expectedLand}`,
       });
     }
     const paidPayoutDates = new Set(paidPayouts.map(p => p.pdate));
@@ -353,8 +367,8 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       dataGaps.push(`${store.name}: no exports uploaded — no landing dates available. Upload the Shopify payments/transactions + bank exports via Bulk Upload.`);
       notes.push('No evidence uploaded; nothing to project.');
     } else {
-      const committed = inTransit + scheduled;
-      notes.push(`$${(committed / 100).toFixed(2)} committed by Shopify (through ${lastKnownPayoutDate}) + $${(projected / 100).toFixed(2)} projected from captured charges = $${((committed + projected) / 100).toFixed(2)} incoming. Synced live from Shopify.`);
+      const committed = landedToday + inTransit + scheduled;
+      notes.push(`$${(landedToday / 100).toFixed(2)} landed today + $${((inTransit + scheduled) / 100).toFixed(2)} committed (through ${lastKnownPayoutDate}) + $${(projected / 100).toFixed(2)} projected from captured charges = $${((committed + projected) / 100).toFixed(2)}. Synced live from Shopify.`);
     }
 
     const cards: any[] = db.prepare(
@@ -367,6 +381,7 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       has_evidence: hasEvidence,
       landing_lag_days: lags.length ? lag : null,
       matched_payouts: lags.length,
+      landed_today_cents: landedToday,
       in_transit_cents: inTransit,
       scheduled_cents: scheduled,
       projected_cents: projected,
@@ -402,6 +417,7 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     stores: storeResults,
     calendar,
     totals: {
+      landed_today_cents: storeResults.reduce((s, x) => s + x.landed_today_cents, 0),
       in_transit_cents: storeResults.reduce((s, x) => s + x.in_transit_cents, 0),
       scheduled_cents: storeResults.reduce((s, x) => s + x.scheduled_cents, 0),
       projected_cents: storeResults.reduce((s, x) => s + x.projected_cents, 0),

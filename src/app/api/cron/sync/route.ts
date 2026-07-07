@@ -89,6 +89,27 @@ export async function GET(req: NextRequest) {
   // Sync bank accounts + credit cards (Teller)
   const bankResult = await syncBankAccounts();
 
+  // Shopify Payments (payouts + balance txns + disputes) for every connected store.
+  // Tokens auto-re-mint via client_credentials when the cached 24h token expires.
+  const shopifyPayments: any[] = [];
+  try {
+    const { getDb } = await import('@/lib/db');
+    const { ensureShopifyCredsTable, syncShopifyPayments } = await import('@/lib/shopify-sync');
+    const db = getDb();
+    ensureShopifyCredsTable(db);
+    const connected: any[] = db.prepare('SELECT store_id FROM shopify_credentials').all();
+    for (const c of connected) {
+      try {
+        const s = await syncShopifyPayments(db, c.store_id, Date.now());
+        shopifyPayments.push({ store_id: c.store_id, note: s.note });
+      } catch (e: any) {
+        shopifyPayments.push({ store_id: c.store_id, error: (e?.message || String(e)).slice(0, 200) });
+      }
+    }
+  } catch (e: any) {
+    shopifyPayments.push({ error: (e?.message || String(e)).slice(0, 200) });
+  }
+
   return NextResponse.json({
     success: true,
     synced: totalSynced,
@@ -100,6 +121,7 @@ export async function GET(req: NextRequest) {
     errors: errors.length > 0 ? errors : undefined,
     fbErrors: fbResult.errors.length > 0 ? fbResult.errors : undefined,
     bankErrors: bankResult.errors.length > 0 ? bankResult.errors : undefined,
+    shopifyPayments: shopifyPayments.length > 0 ? shopifyPayments : undefined,
     logId,
   });
 }
