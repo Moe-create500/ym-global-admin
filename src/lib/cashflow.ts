@@ -157,35 +157,20 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       });
     }
 
-    // ── Scheduled: Shopify has queued it; lands payout_date + lag ──
+    // ── Upcoming payouts. PRIMARY source: the per-transaction export — every not-yet-paid
+    // row (status scheduled OR pending) carries its Payout Date, and grouping by that date
+    // naturally handles multiple payouts on the same day (e.g. a regular payout AND a
+    // reserve-release payout both on Jul 7). The payouts summary only fills dates the
+    // transaction export has no rows for. Composition per landing: charges / refunds /
+    // chargebacks / reserves.
     let scheduled = 0;
     let lastKnownPayoutDate = today;
-    const summaryPayoutDates = new Set<string>();
-    for (const r of payoutRows) {
-      const pdate = (r.payout_date || r.date) as string | null;
-      if (!pdate) continue;
-      if (pdate > lastKnownPayoutDate) lastKnownPayoutDate = pdate;
-      summaryPayoutDates.add(pdate);
-      if (!/sched|transit/i.test(r.payout_status || '')) continue;
-      if (r.amount_cents == null || pdate < today) continue;
-      const land = rollToBusinessDay(addDays(pdate, lag));
-      scheduled += r.amount_cents;
-      events.push({
-        date: land, kind: 'scheduled', amount_cents: r.amount_cents,
-        store_id: store.id, store_name: store.name,
-        source: `scheduled payout ${pdate}`,
-      });
-    }
-
-    // ── Pending transactions: the per-transaction export stamps every pending row with its
-    // exact future Payout Date. Group by payout_date with full composition — charges,
-    // refunds, chargebacks (+fees), reserves — so each landing shows what's inside it.
-    // Skip dates the payouts summary already carries as scheduled.
-    const pendingByPayout = new Map<string, { net: number; charges: number; nCharges: number; refunds: number; nRefunds: number; chargebacks: number; nChargebacks: number; reserved: number; other: number }>();
+    const txByPayout = new Map<string, { net: number; charges: number; nCharges: number; refunds: number; nRefunds: number; chargebacks: number; nChargebacks: number; reserved: number; other: number }>();
     for (const r of txRows) {
-      if (!/pending/i.test(r.payout_status || '')) continue;
+      const status = (r.payout_status || '').toLowerCase();
+      if (!/pending|sched|transit/.test(status)) continue; // paid/failed rows are not upcoming
       if (!r.payout_date || r.net_cents == null) continue;
-      const g = pendingByPayout.get(r.payout_date) || { net: 0, charges: 0, nCharges: 0, refunds: 0, nRefunds: 0, chargebacks: 0, nChargebacks: 0, reserved: 0, other: 0 };
+      const g = txByPayout.get(r.payout_date) || { net: 0, charges: 0, nCharges: 0, refunds: 0, nRefunds: 0, chargebacks: 0, nChargebacks: 0, reserved: 0, other: 0 };
       g.net += r.net_cents;
       const t = (r.type || '').toLowerCase();
       if (t === 'charge') { g.charges += r.net_cents; g.nCharges++; }
@@ -193,11 +178,10 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       else if (/chargeback|dispute/.test(t)) { g.chargebacks += r.net_cents; g.nChargebacks++; }
       else if (/reserve/.test(t)) { g.reserved += r.net_cents; }
       else { g.other += r.net_cents; }
-      pendingByPayout.set(r.payout_date, g);
+      txByPayout.set(r.payout_date, g);
     }
-    for (const [pdate, g] of [...pendingByPayout.entries()].sort()) {
+    for (const [pdate, g] of [...txByPayout.entries()].sort()) {
       if (pdate > lastKnownPayoutDate) lastKnownPayoutDate = pdate;
-      if (summaryPayoutDates.has(pdate) && /sched|transit/i.test(payoutRows.find(r => (r.payout_date || r.date) === pdate)?.payout_status || '')) continue; // summary already carries this payout
       if (pdate < today || g.net === 0) continue;
       const land = rollToBusinessDay(addDays(pdate, lag));
       scheduled += g.net;
@@ -210,6 +194,22 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
         date: land, kind: 'scheduled', amount_cents: g.net,
         store_id: store.id, store_name: store.name,
         source: `payout ${pdate}: ${parts.join(', ')}`,
+      });
+    }
+    // Summary export fills only the dates the transaction export doesn't cover.
+    for (const r of payoutRows) {
+      const pdate = (r.payout_date || r.date) as string | null;
+      if (!pdate) continue;
+      if (pdate > lastKnownPayoutDate) lastKnownPayoutDate = pdate;
+      if (txByPayout.has(pdate)) continue;
+      if (!/sched|transit/i.test(r.payout_status || '')) continue;
+      if (r.amount_cents == null || pdate < today) continue;
+      const land = rollToBusinessDay(addDays(pdate, lag));
+      scheduled += r.amount_cents;
+      events.push({
+        date: land, kind: 'scheduled', amount_cents: r.amount_cents,
+        store_id: store.id, store_name: store.name,
+        source: `scheduled payout ${pdate} (payouts summary)`,
       });
     }
 
