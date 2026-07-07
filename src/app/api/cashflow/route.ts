@@ -11,7 +11,9 @@ export async function GET(req: NextRequest) {
   try {
     const db = getDb();
     const projection = buildCashflowProjection(db, storeId, horizon);
-    return NextResponse.json({ projection });
+    return NextResponse.json({ projection }, {
+      headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate', 'CDN-Cache-Control': 'no-store' },
+    });
   } catch (err: any) {
     console.error('[cashflow]', err?.message || err);
     return NextResponse.json({ error: err?.message || 'projection failed' }, { status: 500 });

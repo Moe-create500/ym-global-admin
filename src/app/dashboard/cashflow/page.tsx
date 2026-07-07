@@ -28,8 +28,10 @@ export default function CashflowPage() {
 
   const load = (sid: string) => {
     setLoading(true);
-    const url = `/api/cashflow${sid ? `?storeId=${sid}` : ''}`;
-    fetch(url)
+    // cache-bust: defeat any edge/proxy cache so a fresh upload shows immediately
+    const bust = Date.now();
+    const url = `/api/cashflow?_=${bust}${sid ? `&storeId=${sid}` : ''}`;
+    fetch(url, { cache: 'no-store' })
       .then(r => r.json())
       .then(d => {
         if (!d.projection) console.warn('[cashflow] no projection in response');
@@ -37,18 +39,13 @@ export default function CashflowPage() {
       })
       .catch(e => console.error('[cashflow] fetch failed:', e))
       .finally(() => setLoading(false));
-    fetch(`/api/cashflow/ai?storeId=${sid || 'all'}`)
+    fetch(`/api/cashflow/ai?storeId=${sid || 'all'}&_=${bust}`, { cache: 'no-store' })
       .then(r => r.json())
       .then(d => { setPlan(d.plan || null); setPlanMeta(d.plan ? { created_at: d.created_at } : null); })
       .catch(e => console.error('[cashflow/ai] fetch failed:', e));
   };
 
   useEffect(() => { load(storeId); }, [storeId]);
-
-  // Initial load: fetch all stores to populate the selector
-  useEffect(() => {
-    if (!projection) load('');
-  }, []);
 
   const runPlan = async () => {
     setPlanLoading(true); setPlanError('');
@@ -77,8 +74,8 @@ export default function CashflowPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-white">Cashflow</h1>
-          <p className="text-sm text-slate-400 mt-1">When money lands, per date — from your payout exports, bank landings, and revenue run-rate</p>
+          <h1 className="text-2xl font-bold text-white">Cashflow <span className="text-[9px] text-slate-600 font-normal align-middle">v2</span></h1>
+          <p className="text-sm text-slate-400 mt-1">When money lands, per date — straight from your Shopify exports</p>
         </div>
         <select value={storeId} onChange={e => setStoreId(e.target.value)}
           className="bg-slate-900 border border-slate-700 text-white text-xs rounded-lg px-3 py-2">
