@@ -175,23 +175,25 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
 
     const events: CashEvent[] = [];
 
-    // ── In-transit: paid, never landed, recent enough to still be on the rail.
-    // If the bank export DOES cover the expected landing window and there's still no
-    // match, that is potentially missing money — the one thing this engine must flag.
+    // ── In-transit: paid payouts whose expected landing (payout_date + measured lag) is
+    // today or later. Once expectedLand is in the past, the money IS in the bank — payouts
+    // to Shopify Balance land same-day (lag 0, measured), so a 'paid' payout is landed
+    // cash, not something to hold hostage waiting for a bank CSV that may be stale.
+    // The only alarm case: bank data COVERS the landing window and shows no deposit.
     let inTransit = 0;
     for (const p of paidPayouts) {
-      if ((p as any).landed) continue;
+      if ((p as any).landed) continue; // confirmed by a bank row
       const expectedLand = rollToBusinessDay(addDays(p.pdate, lag));
       if (bankMaxDate && bankMaxDate >= addDays(expectedLand, 2)) {
-        dataGaps.push(`${store.name}: payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} of $${(p.amount_cents / 100).toFixed(2)} is marked PAID but has no matching bank landing even though the bank export covers that period — verify with Shopify/bank.`);
+        dataGaps.push(`${store.name}: payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} of $${(p.amount_cents / 100).toFixed(2)} is marked PAID but has no matching bank landing even though the bank data covers that period — verify with Shopify/bank.`);
         continue; // not on the rail — it's missing until proven otherwise
       }
-      if (toDate(p.pdate) < toDate(today) - 10 * DAY_MS) continue; // stale unmatched = bank export just doesn't cover it
+      if (expectedLand < today) continue; // landed (lag already elapsed) — it's in the bank
       inTransit += p.amount_cents;
       events.push({
-        date: expectedLand < today ? today : expectedLand, kind: 'in_transit', amount_cents: p.amount_cents,
+        date: expectedLand, kind: 'in_transit', amount_cents: p.amount_cents,
         store_id: store.id, store_name: store.name,
-        source: `payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} (sent, not landed)`,
+        source: `payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} — ${expectedLand === today ? 'landing today' : `lands ${expectedLand}`}`,
       });
     }
     const paidPayoutDates = new Set(paidPayouts.map(p => p.pdate));
