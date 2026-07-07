@@ -188,11 +188,27 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     //                 −1..+1 day around the payout date (measured), so we NEVER claim
     //                 landed without a record. One business day past expected landing,
     //                 the money is almost certainly in — it leaves "incoming" quietly.
+    // ANCHOR RULE (no double count): if the Main account balance is anchored on the CFO
+    // sheet, any payout expected to land ON OR BEFORE the anchor date is presumed INSIDE
+    // that balance — it must not also appear as incoming. Ambiguity resolves to the bank
+    // side: brief undercount possible, overcount never.
+    let anchorDate: string | null = null;
+    try {
+      const anchorRow: any = db.prepare(
+        "SELECT balance_updated_at FROM bank_accounts WHERE store_id = ? AND institution_name = 'Shopify Balance' AND status = 'active' LIMIT 1"
+      ).get(store.id);
+      if (anchorRow?.balance_updated_at) {
+        anchorDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' })
+          .format(new Date(String(anchorRow.balance_updated_at).replace(' ', 'T') + 'Z'));
+      }
+    } catch { /* no anchor */ }
+
     let inTransit = 0;
     let landedToday = 0;
     for (const p of paidPayouts) {
       const expectedLand = rollToBusinessDay(addDays(p.pdate, lag));
       const confirmedDate = (p as any).landed as string | undefined; // matched bank row date
+      if (!confirmedDate && anchorDate && expectedLand <= anchorDate) continue; // Anchor Rule: inside the bank balance already
       if (confirmedDate) {
         if (confirmedDate === today) {
           landedToday += p.amount_cents;

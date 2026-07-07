@@ -999,7 +999,7 @@ function CFOContent() {
                       {data.details.shopify_live?.source === 'shopify_api' ? (
                         <span className="text-xs text-slate-400">
                           <span className="text-[9px] bg-emerald-900/60 text-emerald-300 px-1.5 py-0.5 rounded mr-2 font-semibold">● LIVE</span>
-                          paid out, landing ±1 day — not yet bank-confirmed
+                          paid out, landing after {(data.details.shopify_live as any).anchor_date || 'today'} — payouts on/before that date are already inside the bank balance (never double-counted)
                         </span>
                       ) : editingPayout ? (
                         <div className="flex items-center gap-2">

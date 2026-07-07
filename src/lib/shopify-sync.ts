@@ -241,10 +241,35 @@ export async function syncShopifyPayments(db: Database.Database, storeId: string
  *  scheduled       = payouts Shopify has committed but not sent
  *  paid_unlanded   = payouts sent whose landing day hasn't passed (in transit)
  *  reserves        = sum of reserve holdback events (from synced evidence)   */
+export function pacificDate(d: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+
+/** The Main (Shopify Balance) account anchor: manually-set balance + the Pacific date it
+ *  was set. THE ANCHOR RULE: any payout expected to land ON OR BEFORE the anchor date is
+ *  presumed INSIDE the anchor balance — it must never also count as in-transit. Ambiguity
+ *  always resolves toward the bank side (brief undercount possible, overcount never). */
+export function getMainAnchor(db: Database.Database, storeId: string): { balance_cents: number; anchor_date: string } | null {
+  try {
+    const row: any = db.prepare(
+      "SELECT balance_available_cents, balance_updated_at FROM bank_accounts WHERE store_id = ? AND institution_name = 'Shopify Balance' AND status = 'active' LIMIT 1"
+    ).get(storeId);
+    if (!row || row.balance_available_cents == null || !row.balance_updated_at) return null;
+    const anchorDate = pacificDate(new Date(String(row.balance_updated_at).replace(' ', 'T') + 'Z'));
+    return { balance_cents: row.balance_available_cents, anchor_date: anchorDate };
+  } catch { return null; }
+}
+
 export async function getLiveShopifyFigures(db: Database.Database, storeId: string, nowMs: number): Promise<{
-  pending_balance_cents: number; scheduled_cents: number; paid_unlanded_cents: number; reserves_cents: number; as_of: string;
+  pending_balance_cents: number; scheduled_cents: number; paid_unlanded_cents: number; reserves_cents: number; as_of: string; anchor_date: string | null;
 }> {
-  const todayPacific = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(nowMs));
+  const todayPacific = pacificDate(new Date(nowMs));
+  const anchor = getMainAnchor(db, storeId);
+  // in-transit cutoff (Anchor Rule): only payouts landing strictly AFTER the anchor date
+  // count as in transit — anything on/before it is presumed inside the anchored bank
+  // balance. With no anchor, payouts landing today or later count (yesterday as cutoff).
+  const yesterday = pacificDate(new Date(nowMs - 86_400_000));
+  const transitAfter = anchor ? anchor.anchor_date : yesterday;
 
   const bal = await shopifyGet(db, storeId, 'shopify_payments/balance.json', nowMs);
   const pending = Array.isArray(bal?.balance) && bal.balance[0] ? toCents(bal.balance[0].amount) : 0;
@@ -254,7 +279,7 @@ export async function getLiveShopifyFigures(db: Database.Database, storeId: stri
   for (const p of payouts) {
     const st = (p.status || '').toLowerCase();
     if (/sched|in_transit/.test(st)) scheduled += toCents(p.amount);
-    else if (st === 'paid' && p.date >= todayPacific) paidUnlanded += toCents(p.amount);
+    else if (st === 'paid' && p.date > transitAfter) paidUnlanded += toCents(p.amount);
   }
 
   // Reserve total: sum of reserve holdback events from the synced per-transaction evidence
@@ -272,7 +297,7 @@ export async function getLiveShopifyFigures(db: Database.Database, storeId: stri
   }
   if (reserves < 0) reserves = 0;
 
-  return { pending_balance_cents: pending, scheduled_cents: scheduled, paid_unlanded_cents: paidUnlanded, reserves_cents: reserves, as_of: new Date(nowMs).toISOString() };
+  return { pending_balance_cents: pending, scheduled_cents: scheduled, paid_unlanded_cents: paidUnlanded, reserves_cents: reserves, as_of: new Date(nowMs).toISOString(), anchor_date: anchor?.anchor_date || null };
 }
 
 /** Live probe: mint a token and confirm the store identity + payments scope. */
