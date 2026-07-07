@@ -236,6 +236,45 @@ export async function syncShopifyPayments(db: Database.Database, storeId: string
   return summary;
 }
 
+/** Live Shopify figures for the CFO balance sheet — replaces hand-typed values.
+ *  pending_balance = Shopify's payout balance (money held, not yet in a payout)
+ *  scheduled       = payouts Shopify has committed but not sent
+ *  paid_unlanded   = payouts sent whose landing day hasn't passed (in transit)
+ *  reserves        = sum of reserve holdback events (from synced evidence)   */
+export async function getLiveShopifyFigures(db: Database.Database, storeId: string, nowMs: number): Promise<{
+  pending_balance_cents: number; scheduled_cents: number; paid_unlanded_cents: number; reserves_cents: number; as_of: string;
+}> {
+  const todayPacific = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(nowMs));
+
+  const bal = await shopifyGet(db, storeId, 'shopify_payments/balance.json', nowMs);
+  const pending = Array.isArray(bal?.balance) && bal.balance[0] ? toCents(bal.balance[0].amount) : 0;
+
+  const payouts = (await shopifyGet(db, storeId, 'shopify_payments/payouts.json?limit=250', nowMs))?.payouts || [];
+  let scheduled = 0, paidUnlanded = 0;
+  for (const p of payouts) {
+    const st = (p.status || '').toLowerCase();
+    if (/sched|in_transit/.test(st)) scheduled += toCents(p.amount);
+    else if (st === 'paid' && p.date >= todayPacific) paidUnlanded += toCents(p.amount);
+  }
+
+  // Reserve total: sum of reserve holdback events from the synced per-transaction evidence
+  // (withhold negative → adds to held; release positive → subtracts). No direct API total.
+  let reserves = 0;
+  const uploads: any[] = db.prepare(
+    "SELECT rows_json FROM cfo_evidence WHERE store_id = ? AND kind = 'shopify_payments'"
+  ).all(storeId);
+  for (const u of uploads) {
+    try {
+      for (const r of JSON.parse(u.rows_json) || []) {
+        if (/reserve/.test((r.type || '').toLowerCase())) reserves -= r.net_cents ?? 0;
+      }
+    } catch { /* skip corrupt */ }
+  }
+  if (reserves < 0) reserves = 0;
+
+  return { pending_balance_cents: pending, scheduled_cents: scheduled, paid_unlanded_cents: paidUnlanded, reserves_cents: reserves, as_of: new Date(nowMs).toISOString() };
+}
+
 /** Live probe: mint a token and confirm the store identity + payments scope. */
 export async function probeStore(db: Database.Database, storeId: string, nowMs: number): Promise<{ shop: string; currency: string; payouts_visible: boolean }> {
   const shop = await shopifyGet(db, storeId, 'shop.json', nowMs);

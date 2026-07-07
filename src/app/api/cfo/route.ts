@@ -231,9 +231,26 @@ export async function GET(req: NextRequest) {
     lent_remaining_cents: lent.reduce((s, l) => s + l.remaining_cents, 0),
   };
 
-  // 6. Shopify Balance + Payout (manual input stored on store)
-  const shopifyBalance = store.shopify_balance_cents || 0;
-  const shopifyPayout = store.shopify_payout_cents || 0;
+  // 6. Shopify Balance + Payout — LIVE from the Shopify API when the store is connected
+  // (credential vault + client_credentials token); falls back to the hand-typed values.
+  //   Shopify balance  = pending payout balance + scheduled payouts (money still at Shopify)
+  //   Payout in transit = paid payouts whose landing day hasn't passed
+  let shopifyBalance = store.shopify_balance_cents || 0;
+  let shopifyPayout = store.shopify_payout_cents || 0;
+  let liveShopify: any = null;
+  let liveReserves: number | null = null;
+  try {
+    const { getCreds, getLiveShopifyFigures } = await import('@/lib/shopify-sync');
+    if (getCreds(db, storeId)) {
+      const fig = await getLiveShopifyFigures(db, storeId, Date.now());
+      shopifyBalance = fig.pending_balance_cents + fig.scheduled_cents;
+      shopifyPayout = fig.paid_unlanded_cents;
+      liveReserves = fig.reserves_cents;
+      liveShopify = { source: 'shopify_api', as_of: fig.as_of, ...fig };
+    }
+  } catch (e: any) {
+    liveShopify = { source: 'manual_fallback', error: (e?.message || String(e)).slice(0, 150) };
+  }
 
   // 7. Bank Accounts
   const bankAccounts: any[] = db.prepare(
@@ -250,11 +267,11 @@ export async function GET(req: NextRequest) {
     return s + (a.balance_available_cents || 0);
   }, 0);
 
-  // 8. Reserves (manual entries)
+  // 8. Reserves — live event-sum from the API sync when connected, else manual entries
   const reserveRows: any[] = db.prepare(
     'SELECT * FROM reserves WHERE store_id = ? ORDER BY created_at DESC'
   ).all(storeId);
-  const reservesTotal = reserveRows.reduce((s: number, r: any) => s + (r.amount_cents || 0), 0);
+  const reservesTotal = liveReserves != null ? liveReserves : reserveRows.reduce((s: number, r: any) => s + (r.amount_cents || 0), 0);
 
   // 9. Manual credit cards (liabilities)
   const manualCCRows: any[] = db.prepare(
@@ -324,6 +341,7 @@ export async function GET(req: NextRequest) {
       }),
       shopify_balance_cents: shopifyBalance,
       shopify_payout_cents: shopifyPayout,
+      shopify_live: liveShopify,
       reserves: reserveRows.map((r: any) => ({ id: r.id, amount_cents: r.amount_cents, held_at: r.held_at })),
       manualCreditCards: manualCCRows.map((c: any) => ({ id: c.id, card_name: c.card_name, amount_owed_cents: c.amount_owed_cents })),
     },
