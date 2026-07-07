@@ -165,13 +165,16 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     // chargebacks / reserves.
     let scheduled = 0;
     let lastKnownPayoutDate = today;
-    const txByPayout = new Map<string, { net: number; charges: number; nCharges: number; refunds: number; nRefunds: number; chargebacks: number; nChargebacks: number; reserved: number; other: number }>();
+    const txByPayout = new Map<string, { net: number; charges: number; nCharges: number; refunds: number; nRefunds: number; chargebacks: number; nChargebacks: number; reserved: number; other: number; committed: number; estimated: number }>();
     for (const r of txRows) {
       const status = (r.payout_status || '').toLowerCase();
       if (!/pending|sched|transit/.test(status)) continue; // paid/failed rows are not upcoming
       if (!r.payout_date || r.net_cents == null) continue;
-      const g = txByPayout.get(r.payout_date) || { net: 0, charges: 0, nCharges: 0, refunds: 0, nRefunds: 0, chargebacks: 0, nChargebacks: 0, reserved: 0, other: 0 };
+      const g = txByPayout.get(r.payout_date) || { net: 0, charges: 0, nCharges: 0, refunds: 0, nRefunds: 0, chargebacks: 0, nChargebacks: 0, reserved: 0, other: 0, committed: 0, estimated: 0 };
       g.net += r.net_cents;
+      // 'scheduled' = Shopify assigned a payout ID (date committed); 'pending' = Shopify's
+      // estimate — with reserves the actual release may slide to a later payout.
+      if (/sched|transit/.test(status)) g.committed += r.net_cents; else g.estimated += r.net_cents;
       const t = (r.type || '').toLowerCase();
       if (t === 'charge') { g.charges += r.net_cents; g.nCharges++; }
       else if (/refund/.test(t)) { g.refunds += r.net_cents; g.nRefunds++; }
@@ -190,10 +193,13 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       if (g.nChargebacks) parts.push(`${g.nChargebacks} chargebacks ${(g.chargebacks / 100).toFixed(2)}`);
       if (g.reserved) parts.push(`reserve ${(g.reserved / 100).toFixed(2)}`);
       if (g.other) parts.push(`other ${(g.other / 100).toFixed(2)}`);
+      const label = g.estimated > 0 && g.committed > 0
+        ? ` — ${(g.committed / 100).toFixed(2)} committed + ${(g.estimated / 100).toFixed(2)} Shopify-estimated (reserve releases may slide later)`
+        : g.estimated > 0 ? ' — Shopify-estimated date (reserve releases may slide later)' : ' — committed';
       events.push({
         date: land, kind: 'scheduled', amount_cents: g.net,
         store_id: store.id, store_name: store.name,
-        source: `payout ${pdate}: ${parts.join(', ')}`,
+        source: `payout ${pdate}: ${parts.join(', ')}${label}`,
       });
     }
     // Summary export fills only the dates the transaction export doesn't cover.
