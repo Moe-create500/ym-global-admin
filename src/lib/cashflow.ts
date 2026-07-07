@@ -182,32 +182,38 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     // to Shopify Balance land same-day (lag 0, measured), so a 'paid' payout is landed
     // cash, not something to hold hostage waiting for a bank CSV that may be stale.
     // The only alarm case: bank data COVERS the landing window and shows no deposit.
+    // ── Paid payouts. Two truths, never conflated:
+    //   'landed'    = an actual bank record confirms the deposit (only source that proves it)
+    //   'in_transit'= Shopify says paid; the bank hasn't confirmed. Real landings scatter
+    //                 −1..+1 day around the payout date (measured), so we NEVER claim
+    //                 landed without a record. One business day past expected landing,
+    //                 the money is almost certainly in — it leaves "incoming" quietly.
     let inTransit = 0;
     let landedToday = 0;
     for (const p of paidPayouts) {
       const expectedLand = rollToBusinessDay(addDays(p.pdate, lag));
-      const confirmed = !!(p as any).landed; // matched to an actual bank row
-      if (!confirmed && bankMaxDate && bankMaxDate >= addDays(expectedLand, 2)) {
+      const confirmedDate = (p as any).landed as string | undefined; // matched bank row date
+      if (confirmedDate) {
+        if (confirmedDate === today) {
+          landedToday += p.amount_cents;
+          events.push({
+            date: today, kind: 'landed', amount_cents: p.amount_cents,
+            store_id: store.id, store_name: store.name,
+            source: `payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} — landed today ✓ bank-confirmed`,
+          });
+        }
+        continue; // older confirmed landings are bank history, not incoming
+      }
+      if (bankMaxDate && bankMaxDate >= addDays(expectedLand, 2)) {
         dataGaps.push(`${store.name}: payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} of $${(p.amount_cents / 100).toFixed(2)} is marked PAID but has no matching bank landing even though the bank data covers that period — verify with Shopify/bank.`);
         continue; // not on the rail — it's missing until proven otherwise
       }
-      if (expectedLand < today) continue; // landed on a past day — already in the bank
-      if (expectedLand === today) {
-        // paid + landing day reached = the money is IN the bank today (lag-0 stores land
-        // same day; Shopify Balance often posts a day early). Show as landed, not pending.
-        landedToday += p.amount_cents;
-        events.push({
-          date: today, kind: 'landed', amount_cents: p.amount_cents,
-          store_id: store.id, store_name: store.name,
-          source: `payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} — landed in bank${confirmed ? ' (bank-confirmed)' : ''}`,
-        });
-        continue;
-      }
+      if (today > rollToBusinessDay(addDays(expectedLand, 1))) continue; // grace elapsed — treat as arrived
       inTransit += p.amount_cents;
       events.push({
-        date: expectedLand, kind: 'in_transit', amount_cents: p.amount_cents,
+        date: expectedLand < today ? today : expectedLand, kind: 'in_transit', amount_cents: p.amount_cents,
         store_id: store.id, store_name: store.name,
-        source: `payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} — lands ${expectedLand}`,
+        source: `payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} — paid out by Shopify, arrives ±1 day (not yet bank-confirmed)`,
       });
     }
     const paidPayoutDates = new Set(paidPayouts.map(p => p.pdate));

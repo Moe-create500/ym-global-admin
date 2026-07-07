@@ -227,7 +227,7 @@ export default function CashflowPage() {
             </div>
             <p className="text-[11px] text-slate-400 text-right max-w-md">
               Every dollar Shopify is holding or moving for you, dated.<br />
-              <span className="text-green-300">landed</span> = in your bank now · <span className="text-emerald-300">scheduled</span> = Shopify committed the date · <span className="text-violet-300">projected</span> = your sales, dated by your store&apos;s normal payout delay
+              <span className="text-green-300">landed</span> = bank-confirmed · <span className="text-blue-300">arriving</span> = Shopify sent it (±1 day) · <span className="text-emerald-300">scheduled</span> = date committed · <span className="text-violet-300">projected</span> = your sales, dated by measured delay
             </p>
           </div>
 
@@ -236,12 +236,12 @@ export default function CashflowPage() {
             <div className="bg-slate-900 border border-green-800/50 rounded-xl p-3">
               <p className="text-[10px] text-green-400 uppercase tracking-wider">✓ Landed today</p>
               <p className="text-lg font-bold text-white">{cents(t.landed_today_cents || 0)}</p>
-              <p className="text-[10px] text-slate-500">in your bank now</p>
+              <p className="text-[10px] text-slate-500">bank-confirmed deposits</p>
             </div>
             <div className="bg-slate-900 border border-blue-900/40 rounded-xl p-3">
-              <p className="text-[10px] text-blue-400 uppercase tracking-wider">In transit</p>
+              <p className="text-[10px] text-blue-400 uppercase tracking-wider">Paid out — arriving</p>
               <p className="text-lg font-bold text-white">{cents(t.in_transit_cents)}</p>
-              <p className="text-[10px] text-slate-500">paid, landing soon</p>
+              <p className="text-[10px] text-slate-500">Shopify sent it; bank not confirmed yet</p>
             </div>
             <div className="bg-slate-900 border border-emerald-900/40 rounded-xl p-3">
               <p className="text-[10px] text-emerald-400 uppercase tracking-wider">Scheduled</p>
