@@ -1,4 +1,6 @@
 import type Database from 'better-sqlite3';
+import crypto from 'crypto';
+import { storeEvidenceRows } from './evidence-store';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shopify per-store credential vault + client_credentials token minting.
@@ -95,16 +97,138 @@ export async function getAccessToken(db: Database.Database, storeId: string, now
   return token;
 }
 
-/** Authenticated GET against the store's Admin API. */
-export async function shopifyGet(db: Database.Database, storeId: string, path: string, nowMs: number): Promise<any> {
+/** Authenticated GET against the store's Admin API. Returns { json, linkHeader }. */
+export async function shopifyGetRaw(db: Database.Database, storeId: string, path: string, nowMs: number): Promise<{ json: any; link: string | null }> {
   const creds = getCreds(db, storeId);
   if (!creds) throw new Error('No Shopify credentials saved for this store');
   const token = await getAccessToken(db, storeId, nowMs);
-  const url = `https://${creds.shop_domain}/admin/api/${API_VERSION}/${path}`;
+  const url = path.startsWith('http') ? path : `https://${creds.shop_domain}/admin/api/${API_VERSION}/${path}`;
   const res = await fetch(url, { headers: { 'X-Shopify-Access-Token': token, 'Accept': 'application/json' } });
   const text = await res.text();
-  if (!res.ok) throw new Error(`GET ${path} failed (${res.status}): ${text.slice(0, 300)}`);
-  try { return JSON.parse(text); } catch { throw new Error(`Response not JSON for ${path}: ${text.slice(0, 200)}`); }
+  if (!res.ok) throw new Error(`GET ${path.slice(0, 60)} failed (${res.status}): ${text.slice(0, 300)}`);
+  let json: any;
+  try { json = JSON.parse(text); } catch { throw new Error(`Response not JSON: ${text.slice(0, 200)}`); }
+  return { json, link: res.headers.get('link') };
+}
+
+export async function shopifyGet(db: Database.Database, storeId: string, path: string, nowMs: number): Promise<any> {
+  return (await shopifyGetRaw(db, storeId, path, nowMs)).json;
+}
+
+/** Follow Shopify cursor pagination (Link: rel="next") up to maxPages. */
+async function shopifyGetAll(db: Database.Database, storeId: string, path: string, key: string, nowMs: number, maxPages = 20): Promise<any[]> {
+  const out: any[] = [];
+  let next: string | null = path;
+  for (let page = 0; page < maxPages && next; page++) {
+    const { json, link }: { json: any; link: string | null } = await shopifyGetRaw(db, storeId, next, nowMs);
+    if (Array.isArray(json[key])) out.push(...json[key]);
+    const m = link && link.match(/<([^>]+)>;\s*rel="next"/);
+    next = m ? m[1] : null;
+  }
+  return out;
+}
+
+const toCents = (s: any): number => Math.round(parseFloat(String(s ?? '0')) * 100) || 0;
+
+// ── Normalizers: Shopify Payments API JSON → the pipeline's NormalizedRow shape ──
+
+/** Payouts list → shopify_payouts rows (one per payout: date, status, net, breakdown). */
+function normalizePayouts(payouts: any[]): any[] {
+  return payouts.map(p => {
+    const s = p.summary || {};
+    const charges = toCents(s.charges_gross_amount);
+    const refunds = toCents(s.refunds_gross_amount);
+    const adjustments = toCents(s.adjustments_gross_amount);
+    const reserved = toCents(s.reserved_funds_gross_amount);
+    const fees = toCents(s.charges_fee_amount) + toCents(s.refunds_fee_amount) + toCents(s.adjustments_fee_amount) + toCents(s.reserved_funds_fee_amount);
+    return {
+      ts_utc: null, date: p.date, type: 'payout', reference: String(p.id),
+      payout_status: p.status, payout_date: p.date,
+      amount_cents: toCents(p.amount), fee_cents: fees, net_cents: toCents(p.amount),
+      money: { Charges: charges, Refunds: refunds, Adjustments: adjustments, 'Reserved Funds': reserved, Fees: fees, Total: toCents(p.amount) },
+      raw: { id: p.id, status: p.status, date: p.date, amount: p.amount },
+    };
+  });
+}
+
+/** Balance transactions → shopify_payments rows (exact-second per-transaction detail).
+ *  Resolves each txn's payout date from the payouts map (pending txns have no payout_id). */
+function normalizeBalanceTxns(txns: any[], payoutDateById: Map<string, string>): any[] {
+  return txns.map(t => {
+    const pid = t.payout_id != null ? String(t.payout_id) : null;
+    const payoutDate = pid ? (payoutDateById.get(pid) || null) : null;
+    return {
+      ts_utc: t.processed_at ? isoToUtcSeconds(t.processed_at) : null,
+      date: t.processed_at ? isoToUtcSeconds(t.processed_at)?.slice(0, 10) : null,
+      type: t.type, reference: t.source_order_id ? `#${t.source_order_id}` : String(t.id),
+      payout_status: t.payout_status || (pid ? 'paid' : 'pending'),
+      payout_date: payoutDate,
+      amount_cents: toCents(t.amount), fee_cents: toCents(t.fee), net_cents: toCents(t.net),
+      money: {}, raw: { id: t.id, type: t.type, payout_id: t.payout_id },
+    };
+  });
+}
+
+/** ISO8601 with offset → 'YYYY-MM-DD HH:MM:SS' in UTC. */
+function isoToUtcSeconds(iso: string): string | null {
+  const ms = Date.parse(iso);
+  if (isNaN(ms)) return null;
+  const d = new Date(ms);
+  const p = (n: number) => (n < 10 ? '0' + n : String(n));
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+
+/** Pull payouts + balance transactions + disputes + balance from Shopify and feed the
+ *  pipeline. Returns a per-source summary. */
+export async function syncShopifyPayments(db: Database.Database, storeId: string, nowMs: number): Promise<any> {
+  const summary: any = { payouts: null, transactions: null, disputes: null, balance_cents: null };
+
+  // 1) Payouts (last ~90 days + all scheduled/pending) → shopify_payouts
+  const payouts = await shopifyGetAll(db, storeId, 'shopify_payments/payouts.json?limit=250', 'payouts', nowMs);
+  const payoutDateById = new Map<string, string>();
+  for (const p of payouts) payoutDateById.set(String(p.id), p.date);
+  const payoutRows = normalizePayouts(payouts);
+  const pr = storeEvidenceRows(db, { storeId, kind: 'shopify_payouts', rows: payoutRows, filename: 'shopify-api:payouts' });
+  summary.payouts = { pulled: payouts.length, ...pr };
+
+  // 2) Balance transactions → shopify_payments (exact-second detail)
+  const txns = await shopifyGetAll(db, storeId, 'shopify_payments/balance/transactions.json?limit=250', 'transactions', nowMs);
+  const txnRows = normalizeBalanceTxns(txns, payoutDateById);
+  const tr = storeEvidenceRows(db, { storeId, kind: 'shopify_payments', rows: txnRows, filename: 'shopify-api:transactions' });
+  summary.transactions = { pulled: txns.length, ...tr };
+
+  // 3) Disputes → chargebacks table (book lost/needs_response as costs)
+  const disputes = await shopifyGetAll(db, storeId, 'shopify_payments/disputes.json?limit=250', 'disputes', nowMs);
+  let dbooked = 0;
+  for (const d of disputes) {
+    const id = `shopify_dispute_${d.id}`;
+    const dateOnly = (d.initiated_at || '').slice(0, 10) || null;
+    const amountCents = toCents(d.amount);
+    const status = /won/i.test(d.status) ? 'won' : /lost/i.test(d.status) ? 'lost' : 'open';
+    const exists = db.prepare('SELECT id FROM chargebacks WHERE id = ?').get(id);
+    if (!exists) {
+      db.prepare(`INSERT INTO chargebacks (id, store_id, order_number, chargeback_date, amount_cents, reason, status, chargeflow_fee_cents, notes, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        id, storeId, d.order_id ? `#${d.order_id}` : null, dateOnly, amountCents,
+        d.reason || 'dispute', status, 0, `Shopify dispute ${d.id} (${d.type}, ${d.status})`, 'shopify_api');
+      dbooked++;
+    } else {
+      db.prepare('UPDATE chargebacks SET status = ?, amount_cents = ? WHERE id = ?').run(status, amountCents, id);
+    }
+  }
+  summary.disputes = { pulled: disputes.length, booked: dbooked };
+
+  // 4) Available balance (the ****account behind Shopify Balance)
+  try {
+    const bal = await shopifyGet(db, storeId, 'shopify_payments/balance.json', nowMs);
+    const first = Array.isArray(bal?.balance) ? bal.balance[0] : null;
+    summary.balance_cents = first ? toCents(first.amount) : null;
+  } catch { /* balance scope optional */ }
+
+  const note = `payouts ${summary.payouts.pulled} (${summary.payouts.imported} new/${summary.payouts.updated} upd), txns ${summary.transactions.pulled} (${summary.transactions.imported} new/${summary.transactions.updated} upd), disputes ${summary.disputes.pulled}`;
+  db.prepare('UPDATE shopify_credentials SET last_synced_at = datetime(\'now\'), last_sync_note = ? WHERE store_id = ?').run(note, storeId);
+  summary.note = note;
+  return summary;
 }
 
 /** Live probe: mint a token and confirm the store identity + payments scope. */
