@@ -4,13 +4,13 @@
  * Answers: "how much money lands on which date, per store and overall, and what do I
  * owe on cards?" — so card payments can be planned against real incoming cash.
  *
- * Three confidence tiers, never mixed silently:
+ * Two tiers, both straight from the exports — nothing is estimated:
  *   in_transit — payout marked paid in the store's payouts export with NO bank landing
  *                yet: money is on the rail, lands at payout_date + measured lag.
- *   scheduled  — payout Shopify has already scheduled (from the export), lands at
- *                payout_date + measured lag.
- *   forecast   — estimated future payouts from recent daily net revenue (P&L), for
- *                dates beyond what the export covers. Clearly labeled an estimate.
+ *   scheduled  — a payout date Shopify has already committed: scheduled rows in the
+ *                payouts summary, plus pending charges in the per-transaction export
+ *                grouped by their stamped Payout Date (with charge/refund/chargeback/
+ *                reserve composition per payout).
  *
  * Landing lag is MEASURED per store by matching paid payouts to bank-statement deposits
  * (same amount, deposit date within payout_date..+7d); median lag, default 2 days.
@@ -23,7 +23,7 @@ type DB = BetterSqlite3.Database;
 
 export interface CashEvent {
   date: string;              // expected landing date YYYY-MM-DD
-  kind: 'in_transit' | 'scheduled' | 'forecast';
+  kind: 'in_transit' | 'scheduled';
   amount_cents: number;
   store_id: string;
   store_name: string;
@@ -38,10 +38,11 @@ export interface StoreCashflow {
   matched_payouts: number;           // how many payout→bank pairs the lag is based on
   in_transit_cents: number;
   scheduled_cents: number;
-  forecast_cents: number;
   reserves_held_cents: number;       // Shopify holdbacks not yet released
-  avg_daily_net_revenue_cents: number; // basis of the forecast (last 14d revenue − fees)
-  avg_daily_ad_burn_cents: number;     // last 7d ad spend accrual
+  refunds_30d_cents: number;         // refunds in the last 30 days (per-transaction export)
+  chargebacks_30d_cents: number;     // chargebacks + fees in the last 30 days
+  avg_daily_ad_burn_cents: number;   // last 7d ad spend accrual
+  last_export_payout_date: string | null; // exports know nothing past this — re-upload to extend
   cards: { card_name: string; owed_cents: number }[];
   events: CashEvent[];
   notes: string[];
@@ -51,12 +52,13 @@ export interface CashflowProjection {
   generated_at_date: string;
   horizon_days: number;
   stores: StoreCashflow[];
-  calendar: { date: string; confirmed_cents: number; forecast_cents: number; cumulative_cents: number; events: CashEvent[] }[];
+  calendar: { date: string; confirmed_cents: number; cumulative_cents: number; events: CashEvent[] }[];
   totals: {
     in_transit_cents: number;
     scheduled_cents: number;
-    forecast_cents: number;
     reserves_held_cents: number;
+    refunds_30d_cents: number;
+    chargebacks_30d_cents: number;
     cards_owed_cents: number;
   };
   data_gaps: string[];
@@ -111,7 +113,8 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     const notes: string[] = [];
     const payoutRows = evidenceRows(db, store.id, ['shopify_payouts']);
     const bankRows = evidenceRows(db, store.id, ['bank_statement']);
-    const hasEvidence = payoutRows.length > 0;
+    const txRows = evidenceRows(db, store.id, ['shopify_payments']);
+    const hasEvidence = payoutRows.length > 0 || txRows.length > 0;
 
     // ── Measure landing lag: match paid payouts to bank deposits (amount + date window) ──
     const bankDeposits = bankRows
@@ -174,74 +177,80 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       });
     }
 
-    // ── Pending transactions: the per-transaction export stamps every pending charge with
-    // its exact future Payout Date — sales already made are CONFIRMED payouts, not forecast.
-    // Group pending rows by payout_date; skip dates the payouts summary already covers.
-    const txRows = evidenceRows(db, store.id, ['shopify_payments']);
-    const pendingByPayout = new Map<string, number>();
+    // ── Pending transactions: the per-transaction export stamps every pending row with its
+    // exact future Payout Date. Group by payout_date with full composition — charges,
+    // refunds, chargebacks (+fees), reserves — so each landing shows what's inside it.
+    // Skip dates the payouts summary already carries as scheduled.
+    const pendingByPayout = new Map<string, { net: number; charges: number; nCharges: number; refunds: number; nRefunds: number; chargebacks: number; nChargebacks: number; reserved: number; other: number }>();
     for (const r of txRows) {
       if (!/pending/i.test(r.payout_status || '')) continue;
       if (!r.payout_date || r.net_cents == null) continue;
-      pendingByPayout.set(r.payout_date, (pendingByPayout.get(r.payout_date) || 0) + r.net_cents);
+      const g = pendingByPayout.get(r.payout_date) || { net: 0, charges: 0, nCharges: 0, refunds: 0, nRefunds: 0, chargebacks: 0, nChargebacks: 0, reserved: 0, other: 0 };
+      g.net += r.net_cents;
+      const t = (r.type || '').toLowerCase();
+      if (t === 'charge') { g.charges += r.net_cents; g.nCharges++; }
+      else if (/refund/.test(t)) { g.refunds += r.net_cents; g.nRefunds++; }
+      else if (/chargeback|dispute/.test(t)) { g.chargebacks += r.net_cents; g.nChargebacks++; }
+      else if (/reserve/.test(t)) { g.reserved += r.net_cents; }
+      else { g.other += r.net_cents; }
+      pendingByPayout.set(r.payout_date, g);
     }
-    for (const [pdate, net] of [...pendingByPayout.entries()].sort()) {
+    for (const [pdate, g] of [...pendingByPayout.entries()].sort()) {
       if (pdate > lastKnownPayoutDate) lastKnownPayoutDate = pdate;
       if (summaryPayoutDates.has(pdate) && /sched|transit/i.test(payoutRows.find(r => (r.payout_date || r.date) === pdate)?.payout_status || '')) continue; // summary already carries this payout
-      if (pdate < today || net <= 0) continue;
+      if (pdate < today || g.net === 0) continue;
       const land = rollToBusinessDay(addDays(pdate, lag));
-      scheduled += net;
+      scheduled += g.net;
+      const parts = [`${g.nCharges} charges ${(g.charges / 100).toFixed(2)}`];
+      if (g.nRefunds) parts.push(`${g.nRefunds} refunds ${(g.refunds / 100).toFixed(2)}`);
+      if (g.nChargebacks) parts.push(`${g.nChargebacks} chargebacks ${(g.chargebacks / 100).toFixed(2)}`);
+      if (g.reserved) parts.push(`reserve ${(g.reserved / 100).toFixed(2)}`);
+      if (g.other) parts.push(`other ${(g.other / 100).toFixed(2)}`);
       events.push({
-        date: land, kind: 'scheduled', amount_cents: net,
+        date: land, kind: 'scheduled', amount_cents: g.net,
         store_id: store.id, store_name: store.name,
-        source: `pending charges → payout ${pdate} (per-transaction export)`,
+        source: `payout ${pdate}: ${parts.join(', ')}`,
       });
     }
 
-    // ── Reserves currently held (withholdings minus releases across the export) ──
+    // ── Refunds & chargebacks over the last 30 days (loss visibility) ──
+    const cutoff30 = addDays(today, -30);
+    let refunds30 = 0, chargebacks30 = 0;
+    for (const r of txRows) {
+      const day = (r.ts_utc || r.date || '').slice(0, 10);
+      if (!day || day < cutoff30) continue;
+      const t = (r.type || '').toLowerCase();
+      if (/refund/.test(t)) refunds30 += r.net_cents ?? 0;
+      else if (/chargeback|dispute/.test(t)) chargebacks30 += r.net_cents ?? 0;
+    }
+
+    // ── Reserves currently held: prefer the per-transaction export's reserved_funds rows
+    // (event-level truth — Elvris: 26 events = $744.80 exactly); fall back to the payouts
+    // summary's Reserved Funds column. Withhold is negative → adds to held; release subtracts.
     let reservesHeld = 0;
-    for (const r of payoutRows) {
-      const rf = r.money?.['Reserved Funds'];
-      if (typeof rf === 'number') reservesHeld -= rf; // withhold is negative → adds to held
+    const txReserveRows = txRows.filter(r => /reserve/.test((r.type || '').toLowerCase()));
+    if (txReserveRows.length > 0) {
+      for (const r of txReserveRows) reservesHeld -= r.net_cents ?? 0;
+    } else {
+      for (const r of payoutRows) {
+        const rf = r.money?.['Reserved Funds'];
+        if (typeof rf === 'number') reservesHeld -= rf;
+      }
     }
     if (reservesHeld < 0) reservesHeld = 0;
 
-    // ── Forecast: average daily net revenue continues; payouts initiate on business days ──
-    const pnl: any = db.prepare(
-      `SELECT COALESCE(SUM(revenue_cents - shopify_fees_cents),0) AS net, COUNT(*) AS days
-       FROM daily_pnl WHERE store_id = ? AND date >= ? AND date < ? AND revenue_cents > 0`
-    ).get(store.id, addDays(today, -14), today);
-    const avgDailyNet = pnl.days > 0 ? Math.round(pnl.net / pnl.days) : 0;
-
+    // Ad burn context for the payment planner (cards keep accruing daily)
     const adPnl: any = db.prepare(
       `SELECT COALESCE(SUM(ad_spend_cents),0) AS ad, COUNT(*) AS days
        FROM daily_pnl WHERE store_id = ? AND date >= ? AND date < ? AND ad_spend_cents > 0`
     ).get(store.id, addDays(today, -7), today);
     const avgDailyAd = adPnl.days > 0 ? Math.round(adPnl.ad / adPnl.days) : 0;
 
-    let forecast = 0;
-    if (avgDailyNet > 0) {
-      // start after the last payout date the export already covers, so nothing double counts
-      let d = addDays(lastKnownPayoutDate, 1);
-      const end = addDays(today, horizonDays);
-      while (d <= end) {
-        if (!isWeekend(d)) {
-          const land = rollToBusinessDay(addDays(d, lag));
-          if (land <= end) {
-            forecast += avgDailyNet;
-            events.push({
-              date: land, kind: 'forecast', amount_cents: avgDailyNet,
-              store_id: store.id, store_name: store.name,
-              source: `est. payout initiated ${d} (avg daily net revenue)`,
-            });
-          }
-        }
-        d = addDays(d, 1);
-      }
-    }
-
     if (!hasEvidence) {
-      if (avgDailyNet > 0) dataGaps.push(`${store.name}: no payouts/bank exports uploaded — dates are pure forecast. Upload via Bulk Upload for exact landing dates.`);
-      notes.push('No evidence uploaded; projection is P&L-based estimate only.');
+      dataGaps.push(`${store.name}: no exports uploaded — no landing dates available. Upload the Shopify payments/transactions + bank exports via Bulk Upload.`);
+      notes.push('No evidence uploaded; nothing to project.');
+    } else {
+      notes.push(`Exports know payouts through ${lastKnownPayoutDate} — re-upload a fresh transactions export to extend the calendar.`);
     }
 
     const cards: any[] = db.prepare(
@@ -256,29 +265,29 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       matched_payouts: lags.length,
       in_transit_cents: inTransit,
       scheduled_cents: scheduled,
-      forecast_cents: forecast,
       reserves_held_cents: reservesHeld,
-      avg_daily_net_revenue_cents: avgDailyNet,
+      refunds_30d_cents: refunds30,
+      chargebacks_30d_cents: chargebacks30,
       avg_daily_ad_burn_cents: avgDailyAd,
+      last_export_payout_date: hasEvidence ? lastKnownPayoutDate : null,
       cards: cards.map(c => ({ card_name: c.card_name, owed_cents: c.amount_owed_cents })),
       events,
       notes,
     };
     // skip dead stores with nothing to show
-    if (hasEvidence || avgDailyNet > 0 || cards.length > 0) storeResults.push(sc);
+    if (hasEvidence || cards.length > 0) storeResults.push(sc);
   }
 
-  // ── Merge into a per-date calendar ──
+  // ── Merge into a per-date calendar (every dollar traces to an export row) ──
   const allEvents = storeResults.flatMap(s => s.events);
   const calendar: CashflowProjection['calendar'] = [];
   let cumulative = 0;
   for (let i = 0; i <= horizonDays; i++) {
     const date = addDays(today, i);
     const dayEvents = allEvents.filter(e => e.date === date).sort((a, b) => b.amount_cents - a.amount_cents);
-    const confirmed = dayEvents.filter(e => e.kind !== 'forecast').reduce((s, e) => s + e.amount_cents, 0);
-    const fc = dayEvents.filter(e => e.kind === 'forecast').reduce((s, e) => s + e.amount_cents, 0);
-    cumulative += confirmed + fc;
-    calendar.push({ date, confirmed_cents: confirmed, forecast_cents: fc, cumulative_cents: cumulative, events: dayEvents });
+    const confirmed = dayEvents.reduce((s, e) => s + e.amount_cents, 0);
+    cumulative += confirmed;
+    calendar.push({ date, confirmed_cents: confirmed, cumulative_cents: cumulative, events: dayEvents });
   }
 
   return {
@@ -289,8 +298,9 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     totals: {
       in_transit_cents: storeResults.reduce((s, x) => s + x.in_transit_cents, 0),
       scheduled_cents: storeResults.reduce((s, x) => s + x.scheduled_cents, 0),
-      forecast_cents: storeResults.reduce((s, x) => s + x.forecast_cents, 0),
       reserves_held_cents: storeResults.reduce((s, x) => s + x.reserves_held_cents, 0),
+      refunds_30d_cents: storeResults.reduce((s, x) => s + x.refunds_30d_cents, 0),
+      chargebacks_30d_cents: storeResults.reduce((s, x) => s + x.chargebacks_30d_cents, 0),
       cards_owed_cents: storeResults.reduce((s, x) => s + x.cards.reduce((c, y) => c + y.owed_cents, 0), 0),
     },
     data_gaps: dataGaps,

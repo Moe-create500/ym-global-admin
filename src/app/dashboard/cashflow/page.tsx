@@ -14,7 +14,6 @@ function dayLabel(dateStr: string): string {
 const KIND_STYLE: Record<string, { chip: string; label: string }> = {
   in_transit: { chip: 'bg-blue-900/50 text-blue-300', label: 'in transit' },
   scheduled: { chip: 'bg-emerald-900/50 text-emerald-300', label: 'scheduled' },
-  forecast: { chip: 'bg-slate-700 text-slate-400', label: 'forecast' },
 };
 
 export default function CashflowPage() {
@@ -95,10 +94,10 @@ export default function CashflowPage() {
               <p className="text-lg font-bold text-white">{cents(t.scheduled_cents)}</p>
               <p className="text-[10px] text-slate-500">queued by Shopify</p>
             </div>
-            <div className="bg-slate-900 border border-slate-700/60 rounded-xl p-3">
-              <p className="text-[10px] text-slate-400 uppercase tracking-wider">Forecast {projection.horizon_days}d</p>
-              <p className="text-lg font-bold text-slate-300">{cents(t.forecast_cents)}</p>
-              <p className="text-[10px] text-slate-500">from revenue run-rate</p>
+            <div className="bg-slate-900 border border-rose-900/40 rounded-xl p-3">
+              <p className="text-[10px] text-rose-400 uppercase tracking-wider">Refunds + chargebacks 30d</p>
+              <p className="text-lg font-bold text-white">{cents((t.refunds_30d_cents || 0) + (t.chargebacks_30d_cents || 0))}</p>
+              <p className="text-[10px] text-slate-500">{cents(t.refunds_30d_cents || 0)} refunds · {cents(t.chargebacks_30d_cents || 0)} chargebacks</p>
             </div>
             <div className="bg-slate-900 border border-amber-900/40 rounded-xl p-3">
               <p className="text-[10px] text-amber-400 uppercase tracking-wider">Reserves held</p>
@@ -126,14 +125,13 @@ export default function CashflowPage() {
             <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
               <div className="px-4 py-3 border-b border-slate-800">
                 <h2 className="text-sm font-semibold text-white">Landing calendar</h2>
-                <p className="text-[10px] text-slate-500">Confirmed = in-transit + scheduled (real export dates + measured bank lag). Click a day for detail.</p>
+                <p className="text-[10px] text-slate-500">Every dollar comes from your exports — payout dates Shopify has committed, with charge/refund/chargeback/reserve breakdown. Click a day for detail.</p>
               </div>
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-[10px] text-slate-500 uppercase">
                     <th className="text-left px-4 py-2">Date</th>
-                    <th className="text-right px-2 py-2">Confirmed</th>
-                    <th className="text-right px-2 py-2">Forecast</th>
+                    <th className="text-right px-2 py-2">Landing</th>
                     <th className="text-right px-4 py-2">Cumulative</th>
                   </tr>
                 </thead>
@@ -148,18 +146,15 @@ export default function CashflowPage() {
                           {day.events.length > 0 && <span className="ml-1.5 text-slate-600">{expandedDates.has(day.date) ? '▾' : '▸'}</span>}
                         </td>
                         <td className={`px-2 py-2 text-right font-mono ${day.confirmed_cents > 0 ? 'text-emerald-400 font-bold' : 'text-slate-600'}`}>
-                          {day.confirmed_cents > 0 ? cents(day.confirmed_cents) : '—'}
-                        </td>
-                        <td className={`px-2 py-2 text-right font-mono ${day.forecast_cents > 0 ? 'text-slate-400' : 'text-slate-700'}`}>
-                          {day.forecast_cents > 0 ? cents(day.forecast_cents) : '—'}
+                          {day.confirmed_cents !== 0 ? cents(day.confirmed_cents) : '—'}
                         </td>
                         <td className="px-4 py-2 text-right font-mono text-slate-300">{cents(day.cumulative_cents)}</td>
                       </tr>
                       {expandedDates.has(day.date) && day.events.map((e: any, i: number) => (
                         <tr key={`${day.date}-${i}`} className="bg-slate-800/30">
                           <td className="px-4 py-1 pl-8 text-slate-400">{e.store_name}</td>
-                          <td colSpan={2} className="px-2 py-1 text-slate-500">
-                            <span className={`text-[9px] px-1.5 py-0.5 rounded mr-1.5 ${KIND_STYLE[e.kind].chip}`}>{KIND_STYLE[e.kind].label}</span>
+                          <td className="px-2 py-1 text-slate-500">
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded mr-1.5 ${(KIND_STYLE[e.kind] || KIND_STYLE.scheduled).chip}`}>{(KIND_STYLE[e.kind] || KIND_STYLE.scheduled).label}</span>
                             {e.source}
                           </td>
                           <td className="px-4 py-1 text-right font-mono text-slate-300">{cents(e.amount_cents)}</td>
@@ -182,15 +177,18 @@ export default function CashflowPage() {
                     <div key={s.store_id} className="px-4 py-2.5">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-medium text-white">{s.store_name}
-                          {!s.has_evidence && <span className="ml-1.5 text-[9px] bg-amber-900/40 text-amber-400 px-1 rounded" title="Upload payouts + bank exports for exact dates">est. only</span>}
+                          {!s.has_evidence && <span className="ml-1.5 text-[9px] bg-amber-900/40 text-amber-400 px-1 rounded" title="Upload the Shopify transactions + bank exports to get landing dates">no data</span>}
                           {s.landing_lag_days != null && <span className="ml-1.5 text-[9px] text-slate-500">lands +{s.landing_lag_days}d ({s.matched_payouts} matched)</span>}
                         </span>
                         <span className="text-xs font-mono text-emerald-400">{cents(s.in_transit_cents + s.scheduled_cents)}</span>
                       </div>
-                      <div className="flex gap-3 mt-1 text-[10px] text-slate-500">
-                        <span>rev/day {cents(s.avg_daily_net_revenue_cents)}</span>
+                      <div className="flex flex-wrap gap-3 mt-1 text-[10px] text-slate-500">
                         <span>ad burn/day {cents(s.avg_daily_ad_burn_cents)}</span>
                         {s.reserves_held_cents > 0 && <span className="text-amber-500">reserve {cents(s.reserves_held_cents)}</span>}
+                        {(s.refunds_30d_cents !== 0 || s.chargebacks_30d_cents !== 0) && (
+                          <span className="text-rose-400/80">30d: refunds {cents(s.refunds_30d_cents)} · chargebacks {cents(s.chargebacks_30d_cents)}</span>
+                        )}
+                        {s.last_export_payout_date && <span>export covers → {s.last_export_payout_date}</span>}
                         {s.cards.map((c: any, i: number) => (
                           <span key={i} className="text-red-400/80">{c.card_name}: {cents(c.owed_cents)}</span>
                         ))}
