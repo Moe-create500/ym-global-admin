@@ -262,15 +262,20 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
   const ssPaid = (db.prepare(
     `SELECT COALESCE(SUM(amount_cents),0) AS t FROM ss_payments WHERE store_id = ? AND date >= ? AND date <= ? ${BOUNDARY}`
   ).get(storeId, periodStart, periodEnd, ...boundaryArgs) as any).t;
-  // card_payments_log keeps date-only windows: a log row's created_at is when it was typed,
-  // not when cash moved (the 06-28 AmEx pair was logged pre-snapshot but debited 06-29), and
-  // the manual-CC placeholder lines already bridge log-vs-bank timing for card payments.
+  // card_payments_log keeps a date-only START boundary: a log row's created_at is when it was
+  // typed, not when cash moved (the 06-28 AmEx pair was logged pre-snapshot but debited 06-29),
+  // and the manual-CC placeholder lines already bridge log-vs-bank timing for card payments.
+  // The END boundary is exact-second, though: a payment logged AFTER t2's snapshot second
+  // cannot be in this window — neither the log nor the cash existed when t2 was captured
+  // (Elvris 07-06: $1,151.52 FB ACH logged 20:55:10 vs snapshot 20:43:00 inflated ad_timing
+  // by the full amount). It belongs to the next window, where its balances will exist.
+  const CARD_END_BOUNDARY = `AND (date != ? OR created_at IS NULL OR created_at <= ?)`;
   const adPaid = (db.prepare(
-    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'ad' AND date >= ? AND date <= ?`
-  ).get(storeId, periodStart, periodEnd) as any).t;
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'ad' AND date >= ? AND date <= ? ${CARD_END_BOUNDARY}`
+  ).get(storeId, periodStart, periodEnd, periodEnd, periodEndTs) as any).t;
   const appPaid = (db.prepare(
-    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'app' AND date >= ? AND date <= ?`
-  ).get(storeId, periodStart, periodEnd) as any).t;
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'app' AND date >= ? AND date <= ? ${CARD_END_BOUNDARY}`
+  ).get(storeId, periodStart, periodEnd, periodEnd, periodEndTs) as any).t;
 
   // ── Owner capital movements from categorized bank transactions in the window ──
   const ownerRows = db.prepare(`
