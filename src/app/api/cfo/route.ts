@@ -246,7 +246,7 @@ export async function GET(req: NextRequest) {
       shopifyBalance = fig.pending_balance_cents + fig.scheduled_cents;
       shopifyPayout = fig.paid_unlanded_cents;
       liveReserves = fig.reserves_cents;
-      liveShopify = { source: 'shopify_api', as_of: fig.as_of, ...fig };
+      liveShopify = { source: 'shopify_api', ...fig };
     }
   } catch (e: any) {
     liveShopify = { source: 'manual_fallback', error: (e?.message || String(e)).slice(0, 150) };
