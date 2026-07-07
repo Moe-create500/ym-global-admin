@@ -49,6 +49,7 @@ interface CFOData {
     loans: { borrowed_total_cents: number; borrowed_remaining_cents: number; lent_total_cents: number; lent_remaining_cents: number };
     bankAccounts: { id: string; institution_name: string; account_name: string; last_four: string; balance_available_cents: number; balance_ledger_cents: number; balance_updated_at: string | null }[];
     shopify_balance_cents: number;
+    shopify_live?: { source: string; as_of?: string; pending_balance_cents?: number; scheduled_cents?: number; paid_unlanded_cents?: number; reserves_cents?: number; error?: string };
     shopify_payout_cents: number;
     reserves: { id: string; amount_cents: number; held_at: string }[];
     manualCreditCards: { id: string; card_name: string; amount_owed_cents: number }[];
@@ -967,7 +968,12 @@ function CFOContent() {
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">Shopify Balance</td>
                     <td className="px-5 py-3">
-                      {editingShopify ? (
+                      {data.details.shopify_live?.source === 'shopify_api' ? (
+                        <span className="text-xs text-slate-400">
+                          <span className="text-[9px] bg-emerald-900/60 text-emerald-300 px-1.5 py-0.5 rounded mr-2 font-semibold">● LIVE</span>
+                          pending {cents(data.details.shopify_live.pending_balance_cents || 0)} + scheduled payouts {cents(data.details.shopify_live.scheduled_cents || 0)}
+                        </span>
+                      ) : editingShopify ? (
                         <div className="flex items-center gap-2">
                           <span className="text-slate-400 text-xs">$</span>
                           <input type="number" step="0.01" value={shopifyInput}
@@ -990,7 +996,12 @@ function CFOContent() {
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">Shopify Payout</td>
                     <td className="px-5 py-3">
-                      {editingPayout ? (
+                      {data.details.shopify_live?.source === 'shopify_api' ? (
+                        <span className="text-xs text-slate-400">
+                          <span className="text-[9px] bg-emerald-900/60 text-emerald-300 px-1.5 py-0.5 rounded mr-2 font-semibold">● LIVE</span>
+                          paid out, landing ±1 day — not yet bank-confirmed
+                        </span>
+                      ) : editingPayout ? (
                         <div className="flex items-center gap-2">
                           <span className="text-slate-400 text-xs">$</span>
                           <input type="number" step="0.01" value={payoutInput}
@@ -1009,8 +1020,20 @@ function CFOContent() {
                     <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(data.assets.shopify_payout_cents)}</td>
                   </tr>
 
-                  {/* Reserves */}
-                  {(data.details.reserves || []).map(r => (
+                  {/* Reserves — live single row when connected; manual rows otherwise */}
+                  {data.details.shopify_live?.source === 'shopify_api' && (
+                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className="px-5 py-3 text-white font-medium">Reserves</td>
+                      <td className="px-5 py-3">
+                        <span className="text-xs text-slate-400">
+                          <span className="text-[9px] bg-emerald-900/60 text-emerald-300 px-1.5 py-0.5 rounded mr-2 font-semibold">● LIVE</span>
+                          Shopify holdback — net of all reserve events
+                        </span>
+                      </td>
+                      <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(data.assets.reserves_cents)}</td>
+                    </tr>
+                  )}
+                  {data.details.shopify_live?.source !== 'shopify_api' && (data.details.reserves || []).map(r => (
                     editingReserveId === r.id ? (
                       <tr key={r.id} className="border-b border-slate-800/50 bg-slate-800/20">
                         <td className="px-5 py-3 text-white font-medium">Reserve</td>
@@ -1045,8 +1068,8 @@ function CFOContent() {
                       </tr>
                     )
                   ))}
-                  {/* Add Reserve */}
-                  {addingReserve ? (
+                  {/* Add Reserve (manual stores only — live stores read reserves from the API) */}
+                  {data.details.shopify_live?.source === 'shopify_api' ? null : addingReserve ? (
                     <tr className="border-b border-slate-800/50 bg-slate-800/20">
                       <td className="px-5 py-3 text-white font-medium">New Reserve</td>
                       <td className="px-5 py-3">
