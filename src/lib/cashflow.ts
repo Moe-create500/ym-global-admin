@@ -23,7 +23,7 @@ type DB = BetterSqlite3.Database;
 
 export interface CashEvent {
   date: string;              // expected landing date YYYY-MM-DD
-  kind: 'in_transit' | 'scheduled';
+  kind: 'in_transit' | 'scheduled' | 'projected';
   amount_cents: number;
   store_id: string;
   store_name: string;
@@ -38,6 +38,8 @@ export interface StoreCashflow {
   matched_payouts: number;           // how many payout→bank pairs the lag is based on
   in_transit_cents: number;
   scheduled_cents: number;
+  projected_cents: number;           // captured charges not yet assigned a payout, dated by measured delay
+  charge_to_payout_days: number;     // measured business-day delay charge→payout
   reserves_held_cents: number;       // Shopify holdbacks not yet released
   refunds_30d_cents: number;         // refunds in the last 30 days (per-transaction export)
   chargebacks_30d_cents: number;     // chargebacks + fees in the last 30 days
@@ -56,6 +58,7 @@ export interface CashflowProjection {
   totals: {
     in_transit_cents: number;
     scheduled_cents: number;
+    projected_cents: number;
     reserves_held_cents: number;
     refunds_30d_cents: number;
     chargebacks_30d_cents: number;
@@ -78,6 +81,19 @@ function rollToBusinessDay(dateStr: string): string {
   let s = dateStr;
   while (isWeekend(s)) s = addDays(s, 1);
   return s;
+}
+/** Add N business days (skipping weekends) to a date. */
+function addBusinessDays(dateStr: string, n: number): string {
+  let s = dateStr, added = 0;
+  while (added < n) { s = addDays(s, 1); if (!isWeekend(s)) added++; }
+  return s;
+}
+/** Business days between two dates (excludes weekends). */
+function businessDaysBetween(from: string, to: string): number {
+  if (to <= from) return 0;
+  let s = from, count = 0;
+  while (s < to) { s = addDays(s, 1); if (!isWeekend(s)) count++; }
+  return count;
 }
 
 function median(nums: number[]): number | null {
@@ -191,6 +207,20 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     let lastKnownPayoutDate = today;
     let unassignedPending = 0;
     let failedTotal = 0;
+    const pendingUnassigned: { chargeDate: string; net: number }[] = [];
+
+    // Measure the deterministic charge→payout delay from paid charges (each has its charge
+    // timestamp AND the payout date it settled into). Median business-day gap. This lets us
+    // date the "pending, not-yet-assigned" money precisely instead of hiding it in a note.
+    const chargeDelays: number[] = [];
+    for (const r of txRows) {
+      if ((r.type || '').toLowerCase() !== 'charge') continue;
+      if (!/paid/i.test(r.payout_status || '') || !r.payout_date || !ISO_DATE.test(r.payout_date)) continue;
+      const cd = (r.ts_utc || r.date || '').slice(0, 10);
+      if (!ISO_DATE.test(cd)) continue;
+      chargeDelays.push(businessDaysBetween(cd, r.payout_date));
+    }
+    const chargeToPayoutDays = median(chargeDelays) ?? 2;
     const txByPayout = new Map<string, { net: number; charges: number; nCharges: number; refunds: number; nRefunds: number; chargebacks: number; nChargebacks: number; reserved: number; other: number; committed: number; estimated: number }>();
     for (const r of txRows) {
       const status = (r.payout_status || '').toLowerCase();
@@ -198,7 +228,12 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       if (!/pending|sched|transit/.test(status)) continue; // paid rows are not upcoming
       if ((r.type || '').toLowerCase() === 'payout') continue; // payout-movement row = −sum of its own charges; would zero the group
       if (r.net_cents == null) continue;
-      if (!r.payout_date || !ISO_DATE.test(r.payout_date)) { unassignedPending += r.net_cents; continue; }
+      if (!r.payout_date || !ISO_DATE.test(r.payout_date)) {
+        unassignedPending += r.net_cents;
+        const cd = (r.ts_utc || r.date || '').slice(0, 10);
+        if (ISO_DATE.test(cd)) pendingUnassigned.push({ chargeDate: cd, net: r.net_cents });
+        continue;
+      }
       // a payout date the summary export already shows as PAID = these tx rows are a stale
       // copy from an older export; counting them would double the money across tiers
       if (paidPayoutDates.has(r.payout_date)) continue;
@@ -252,8 +287,31 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
         source: `scheduled payout ${pdate} (payouts summary)`,
       });
     }
-    if (beyondHorizon !== 0) notes.push(`$${(beyondHorizon / 100).toFixed(2)} of known payouts land beyond the ${horizonDays}-day view (not in totals) — widen the horizon to see them.`);
-    if (unassignedPending !== 0) notes.push(`$${(unassignedPending / 100).toFixed(2)} of pending money has no payout date stamped yet — re-export later and it will appear with dates.`);
+    // ── Projected: captured charges Shopify hasn't assigned a payout date to yet. The money
+    // is REAL (already charged); we date it by the measured charge→payout business-day delay,
+    // rolled to a business day, never before today. Distinct 'projected' tier so committed
+    // vs projected stays honest, but the calendar shows the full incoming picture. ──
+    let projected = 0;
+    const projByDate = new Map<string, { net: number; n: number }>();
+    for (const pc of pendingUnassigned) {
+      let land = rollToBusinessDay(addBusinessDays(pc.chargeDate, chargeToPayoutDays));
+      if (land < today) land = today; // overdue charges expected imminently
+      const g = projByDate.get(land) || { net: 0, n: 0 };
+      g.net += pc.net; g.n++;
+      projByDate.set(land, g);
+    }
+    for (const [land, g] of [...projByDate.entries()].sort()) {
+      if (land > horizonEnd) { beyondHorizon += g.net; continue; }
+      if (g.net === 0) continue;
+      projected += g.net;
+      events.push({
+        date: land, kind: 'projected', amount_cents: g.net,
+        store_id: store.id, store_name: store.name,
+        source: `${g.n} captured charges, expected payout ~${land} (charge +${chargeToPayoutDays} business days)`,
+      });
+    }
+
+    if (beyondHorizon !== 0) notes.push(`$${(beyondHorizon / 100).toFixed(2)} lands beyond the ${horizonDays}-day view — widen the horizon to see it.`);
     if (failedTotal !== 0) dataGaps.push(`${store.name}: $${(failedTotal / 100).toFixed(2)} of transactions sit on FAILED payouts — Shopify will retry, but verify in the Payouts screen.`);
 
     // ── Refunds & chargebacks over the last 30 days (loss visibility) ──
@@ -293,7 +351,8 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       dataGaps.push(`${store.name}: no exports uploaded — no landing dates available. Upload the Shopify payments/transactions + bank exports via Bulk Upload.`);
       notes.push('No evidence uploaded; nothing to project.');
     } else {
-      notes.push(`Exports know payouts through ${lastKnownPayoutDate} — re-upload a fresh transactions export to extend the calendar.`);
+      const committed = inTransit + scheduled;
+      notes.push(`$${(committed / 100).toFixed(2)} committed by Shopify (through ${lastKnownPayoutDate}) + $${(projected / 100).toFixed(2)} projected from captured charges = $${((committed + projected) / 100).toFixed(2)} incoming. Synced live from Shopify.`);
     }
 
     const cards: any[] = db.prepare(
@@ -308,6 +367,8 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       matched_payouts: lags.length,
       in_transit_cents: inTransit,
       scheduled_cents: scheduled,
+      projected_cents: projected,
+      charge_to_payout_days: chargeToPayoutDays,
       reserves_held_cents: reservesHeld,
       refunds_30d_cents: refunds30,
       chargebacks_30d_cents: chargebacks30,
@@ -341,6 +402,7 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     totals: {
       in_transit_cents: storeResults.reduce((s, x) => s + x.in_transit_cents, 0),
       scheduled_cents: storeResults.reduce((s, x) => s + x.scheduled_cents, 0),
+      projected_cents: storeResults.reduce((s, x) => s + x.projected_cents, 0),
       reserves_held_cents: storeResults.reduce((s, x) => s + x.reserves_held_cents, 0),
       refunds_30d_cents: storeResults.reduce((s, x) => s + x.refunds_30d_cents, 0),
       chargebacks_30d_cents: storeResults.reduce((s, x) => s + x.chargebacks_30d_cents, 0),

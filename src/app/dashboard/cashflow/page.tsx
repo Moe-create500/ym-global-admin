@@ -14,6 +14,7 @@ function dayLabel(dateStr: string): string {
 const KIND_STYLE: Record<string, { chip: string; label: string }> = {
   in_transit: { chip: 'bg-blue-900/50 text-blue-300', label: 'in transit' },
   scheduled: { chip: 'bg-emerald-900/50 text-emerald-300', label: 'scheduled' },
+  projected: { chip: 'bg-violet-900/50 text-violet-300', label: 'projected' },
 };
 
 export default function CashflowPage() {
@@ -91,7 +92,7 @@ export default function CashflowPage() {
       {!loading && projection && (
         <>
           {/* Totals strip */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-5">
             <div className="bg-slate-900 border border-blue-900/40 rounded-xl p-3">
               <p className="text-[10px] text-blue-400 uppercase tracking-wider">In transit</p>
               <p className="text-lg font-bold text-white">{cents(t.in_transit_cents)}</p>
@@ -100,7 +101,12 @@ export default function CashflowPage() {
             <div className="bg-slate-900 border border-emerald-900/40 rounded-xl p-3">
               <p className="text-[10px] text-emerald-400 uppercase tracking-wider">Scheduled</p>
               <p className="text-lg font-bold text-white">{cents(t.scheduled_cents)}</p>
-              <p className="text-[10px] text-slate-500">queued by Shopify</p>
+              <p className="text-[10px] text-slate-500">committed by Shopify</p>
+            </div>
+            <div className="bg-slate-900 border border-violet-900/40 rounded-xl p-3">
+              <p className="text-[10px] text-violet-400 uppercase tracking-wider">Projected</p>
+              <p className="text-lg font-bold text-white">{cents(t.projected_cents || 0)}</p>
+              <p className="text-[10px] text-slate-500">captured charges, dated by delay</p>
             </div>
             <div className="bg-slate-900 border border-rose-900/40 rounded-xl p-3">
               <p className="text-[10px] text-rose-400 uppercase tracking-wider">Refunds + chargebacks 30d</p>
