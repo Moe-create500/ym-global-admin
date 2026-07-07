@@ -157,10 +157,12 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     // ── Scheduled: Shopify has queued it; lands payout_date + lag ──
     let scheduled = 0;
     let lastKnownPayoutDate = today;
+    const summaryPayoutDates = new Set<string>();
     for (const r of payoutRows) {
       const pdate = (r.payout_date || r.date) as string | null;
       if (!pdate) continue;
       if (pdate > lastKnownPayoutDate) lastKnownPayoutDate = pdate;
+      summaryPayoutDates.add(pdate);
       if (!/sched|transit/i.test(r.payout_status || '')) continue;
       if (r.amount_cents == null || pdate < today) continue;
       const land = rollToBusinessDay(addDays(pdate, lag));
@@ -169,6 +171,29 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
         date: land, kind: 'scheduled', amount_cents: r.amount_cents,
         store_id: store.id, store_name: store.name,
         source: `scheduled payout ${pdate}`,
+      });
+    }
+
+    // ── Pending transactions: the per-transaction export stamps every pending charge with
+    // its exact future Payout Date — sales already made are CONFIRMED payouts, not forecast.
+    // Group pending rows by payout_date; skip dates the payouts summary already covers.
+    const txRows = evidenceRows(db, store.id, ['shopify_payments']);
+    const pendingByPayout = new Map<string, number>();
+    for (const r of txRows) {
+      if (!/pending/i.test(r.payout_status || '')) continue;
+      if (!r.payout_date || r.net_cents == null) continue;
+      pendingByPayout.set(r.payout_date, (pendingByPayout.get(r.payout_date) || 0) + r.net_cents);
+    }
+    for (const [pdate, net] of [...pendingByPayout.entries()].sort()) {
+      if (pdate > lastKnownPayoutDate) lastKnownPayoutDate = pdate;
+      if (summaryPayoutDates.has(pdate) && /sched|transit/i.test(payoutRows.find(r => (r.payout_date || r.date) === pdate)?.payout_status || '')) continue; // summary already carries this payout
+      if (pdate < today || net <= 0) continue;
+      const land = rollToBusinessDay(addDays(pdate, lag));
+      scheduled += net;
+      events.push({
+        date: land, kind: 'scheduled', amount_cents: net,
+        store_id: store.id, store_name: store.name,
+        source: `pending charges → payout ${pdate} (per-transaction export)`,
       });
     }
 
