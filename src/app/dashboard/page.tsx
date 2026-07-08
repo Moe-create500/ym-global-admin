@@ -264,7 +264,7 @@ function DashboardContent() {
   }
 
   const rangeLabel = range === 'daily' ? 'Today' : range === 'yesterday' ? 'Yesterday' : range === 'monthly' ? 'MTD' : 'YTD';
-  const prevLabel = range === 'daily' ? 'yesterday' : range === 'yesterday' ? '2 days ago' : range === 'monthly' ? 'last month' : 'last year';
+  const prevLabel = range === 'daily' ? 'yesterday, same time' : range === 'yesterday' ? '2 days ago' : range === 'monthly' ? 'last month' : 'last year';
 
   useEffect(() => {
     loadData();
@@ -319,8 +319,13 @@ function DashboardContent() {
       if (range === 'yesterday') pnlParams.set('to', from);
       if (storeId) pnlParams.set('storeId', storeId); else pnlParams.set('visibleOnly', '1');
 
+      // "Today" compares against yesterday UP TO THE SAME TIME OF DAY — comparing a
+      // partial day against yesterday's full day reads as a fake crash every morning.
       const prevPnlParams = new URLSearchParams({ period: 'daily', from: prev.from, to: prev.to });
       if (storeId) prevPnlParams.set('storeId', storeId); else prevPnlParams.set('visibleOnly', '1');
+      const prevUrl = range === 'daily'
+        ? `/api/pnl/same-time-yesterday?${storeId ? `storeId=${storeId}` : 'visibleOnly=1'}`
+        : `/api/pnl?${prevPnlParams}`;
 
       // Also fetch last 30 days for the chart
       const chartFrom = getPacificDate(-29);
@@ -332,7 +337,7 @@ function DashboardContent() {
       const [storesRes, pnlRes, prevPnlRes, chartRes] = await Promise.all([
         fetch(`/api/stores?range=${storesRange}`),
         fetch(`/api/pnl?${pnlParams}`),
-        fetch(`/api/pnl?${prevPnlParams}`),
+        fetch(prevUrl),
         fetch(`/api/pnl?${chartParams}`),
       ]);
       const storesData = await storesRes.json();
