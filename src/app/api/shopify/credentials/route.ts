@@ -28,6 +28,14 @@ export async function POST(req: NextRequest) {
 
   try {
     const probe = await probeStore(db, storeId, Date.now());
+    // API is now this store's single source of truth for payout/transaction evidence.
+    // CSV uploads of the same money use different reference formats and can NEVER dedup
+    // against API rows — leaving them would double every total (Purebite 2026-07-07).
+    if (probe.payouts_visible) {
+      db.prepare(
+        `DELETE FROM cfo_evidence WHERE store_id = ? AND kind IN ('shopify_payouts','shopify_payments') AND (filename IS NULL OR filename NOT LIKE 'shopify-api:%')`
+      ).run(storeId);
+    }
     return NextResponse.json({
       success: true,
       shop_domain: normalizeShopDomain(shopDomain),
