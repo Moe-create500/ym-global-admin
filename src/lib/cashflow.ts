@@ -143,6 +143,20 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     const txRows = evidenceRows(db, store.id, ['shopify_payments']);
     const hasEvidence = payoutRows.length > 0 || txRows.length > 0;
 
+    // LIVE landing confirmations: Shopify deposits in the store's Teller-connected bank
+    // accounts ("ACH CREDIT SHOPIFY …"), synced every 30 min. Same role as an uploaded
+    // bank statement, but always current — payout→bank matching, measured lag, and the
+    // missing-money alarm all run off the live feed automatically.
+    try {
+      const teller: any[] = db.prepare(
+        `SELECT bt.date, bt.amount_cents FROM bank_transactions bt
+         JOIN bank_accounts ba ON ba.id = bt.bank_account_id
+         WHERE ba.store_id = ? AND bt.amount_cents != 0
+           AND (bt.description LIKE '%shopify%' OR bt.counterparty LIKE '%shopify%')`
+      ).all(store.id);
+      for (const t of teller) bankRows.push({ date: t.date, amount_cents: t.amount_cents, net_cents: t.amount_cents });
+    } catch { /* no teller tables/accounts */ }
+
     // ── Measure landing lag: match paid payouts to bank rows (amount + nearest date) ──
     // Positive payouts match deposits; negative (refund-heavy) payouts match withdrawals.
     // Window [pdate−1, pdate+7] tolerates timezone off-by-one; nearest-date-first pairing
