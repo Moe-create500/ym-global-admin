@@ -240,13 +240,13 @@ export async function GET(req: NextRequest) {
   let liveShopify: any = null;
   let liveReserves: number | null = null;
   try {
-    const { getCreds, getLiveShopifyFigures } = await import('@/lib/shopify-sync');
+    const { getCreds, getLiveShopifyFigures, anchorGuardWarnings } = await import('@/lib/shopify-sync');
     if (getCreds(db, storeId)) {
       const fig = await getLiveShopifyFigures(db, storeId, Date.now());
       shopifyBalance = fig.pending_balance_cents + fig.scheduled_cents;
       shopifyPayout = fig.paid_unlanded_cents;
       liveReserves = fig.reserves_cents;
-      liveShopify = { source: 'shopify_api', ...fig };
+      liveShopify = { source: 'shopify_api', ...fig, guard_warnings: anchorGuardWarnings(db, storeId, Date.now()) };
     }
   } catch (e: any) {
     liveShopify = { source: 'manual_fallback', error: (e?.message || String(e)).slice(0, 150) };

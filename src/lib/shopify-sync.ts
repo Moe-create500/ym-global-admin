@@ -230,7 +230,17 @@ export async function syncShopifyPayments(db: Database.Database, storeId: string
     summary.balance_cents = first ? toCents(first.amount) : null;
   } catch { /* balance scope optional */ }
 
-  const note = `payouts ${summary.payouts.pulled} (${summary.payouts.imported} new/${summary.payouts.updated} upd), txns ${summary.transactions.pulled} (${summary.transactions.imported} new/${summary.transactions.updated} upd), disputes ${summary.disputes.pulled}`;
+  // GUARD: the pending-transaction net sum must tie to Shopify's own balance — a gap
+  // means missing/stale rows and the projection can't be trusted until it's resolved.
+  let tieWarn = '';
+  if (summary.balance_cents != null) {
+    const pendingSum = txnRows.filter((r: any) => /pending/i.test(r.payout_status || '')).reduce((s: number, r: any) => s + (r.net_cents ?? 0), 0);
+    const tieGap = pendingSum - summary.balance_cents;
+    if (Math.abs(tieGap) > 500) tieWarn = ` ⚠ TIE GAP $${(tieGap / 100).toFixed(2)}: pending rows sum $${(pendingSum / 100).toFixed(2)} vs Shopify balance $${(summary.balance_cents / 100).toFixed(2)}`;
+    summary.tie_gap_cents = tieGap;
+  }
+
+  const note = `payouts ${summary.payouts.pulled} (${summary.payouts.imported} new/${summary.payouts.updated} upd), txns ${summary.transactions.pulled} (${summary.transactions.imported} new/${summary.transactions.updated} upd), disputes ${summary.disputes.pulled}${tieWarn}`;
   db.prepare('UPDATE shopify_credentials SET last_synced_at = datetime(\'now\'), last_sync_note = ? WHERE store_id = ?').run(note, storeId);
   summary.note = note;
   return summary;
@@ -305,6 +315,114 @@ export async function getLiveShopifyFigures(db: Database.Database, storeId: stri
   if (reserves < 0) reserves = 0;
 
   return { pending_balance_cents: pending, scheduled_cents: scheduled, paid_unlanded_cents: paidUnlanded, reserves_cents: reserves, as_of: new Date(nowMs).toISOString(), anchor_date: anchor?.anchor_date || null };
+}
+
+/** All subsets of candidates whose amounts sum exactly to target (n capped at 16). */
+function subsetsSumming(candidates: { ref: string; cents: number }[], target: number): string[][] {
+  const n = Math.min(candidates.length, 16);
+  const hits: string[][] = [];
+  for (let mask = 1; mask < (1 << n); mask++) {
+    let sum = 0;
+    for (let i = 0; i < n; i++) if (mask & (1 << i)) sum += candidates[i].cents;
+    if (sum === target) hits.push(candidates.filter((_, i) => mask & (1 << i)).map(c => c.ref));
+    if (hits.length > 5) break;
+  }
+  return hits;
+}
+
+/** THE ANCHOR RECONCILIATION GATE — every balance update is a conservation check:
+ *    new = old + payout deposits since − card debits since
+ *  Any shortfall is solved by amount-matching against the candidate payouts; a unique
+ *  match AUTO-FLAGS those payouts as exceptions (in flight, not in the balance). This is
+ *  how the \$414.96 case gets caught with no human eyes: the balance the user types simply
+ *  won't contain it, and the math names it. */
+export async function reconcileAnchor(db: Database.Database, storeId: string, newBalanceCents: number, nowMs: number): Promise<any> {
+  const prior = getMainAnchor(db, storeId);
+  const today = pacificDate(new Date(nowMs));
+  const payouts = (await shopifyGet(db, storeId, 'shopify_payments/payouts.json?limit=250', nowMs))?.payouts || [];
+
+  const D1 = prior?.anchor_date || null;
+  // candidate deposits that should be inside the NEW anchor but weren't in the old one:
+  // payouts paid in (D1, today], plus the old anchor's exceptions (they were in flight)
+  const candidates: { ref: string; cents: number; date: string }[] = [];
+  for (const p of payouts) {
+    if ((p.status || '').toLowerCase() !== 'paid') continue;
+    if (D1 && !(p.date > D1 && p.date <= today)) continue;
+    if (!D1) continue; // first anchor: no window to reconcile
+    candidates.push({ ref: String(p.id), cents: toCents(p.amount), date: p.date });
+  }
+  for (const ref of prior?.exceptions || []) {
+    if (candidates.find(c => c.ref === ref)) continue;
+    const p = payouts.find((x: any) => String(x.id) === ref);
+    if (p) candidates.push({ ref, cents: toCents(p.amount), date: p.date });
+  }
+
+  const debits: any[] = D1 ? db.prepare(
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND date > ? AND date <= ?`
+  ).all(storeId, D1, today) : [{ t: 0 }];
+  const debitSum = debits[0]?.t || 0;
+
+  const result: any = {
+    prior_balance_cents: prior?.balance_cents ?? null, prior_date: D1,
+    new_balance_cents: newBalanceCents, candidates, debit_sum_cents: debitSum,
+  };
+  let exceptions: string[] = [];
+  if (prior && D1) {
+    const expected = prior.balance_cents + candidates.reduce((s, c) => s + c.cents, 0) - debitSum;
+    const gap = expected - newBalanceCents; // > 0 → some candidate deposits have NOT posted
+    result.expected_cents = expected;
+    result.gap_cents = gap;
+    if (Math.abs(gap) <= 500) { // ≤$5 tolerance: earnings-rate credits and rounding
+      result.resolution = 'tied';
+      result.message = `Tied within tolerance (gap ${(gap / 100).toFixed(2)}). All ${candidates.length} candidate deposits are in the balance.`;
+    } else if (gap > 0) {
+      const matches = subsetsSumming(candidates, gap);
+      if (matches.length === 1) {
+        exceptions = matches[0];
+        result.resolution = 'auto_exceptions';
+        result.message = `Auto-detected ${exceptions.length} payout(s) not yet posted (${(gap / 100).toFixed(2)} in flight): ${exceptions.join(', ')} — flagged as in-transit exceptions.`;
+      } else if (matches.length > 1) {
+        exceptions = matches[0];
+        result.resolution = 'ambiguous';
+        result.message = `${(gap / 100).toFixed(2)} not posted; ${matches.length} payout combinations fit — flagged the first (${exceptions.join(', ')}). Verify on the Payouts screen.`;
+      } else {
+        result.resolution = 'unexplained_shortfall';
+        result.message = `Balance is ${(gap / 100).toFixed(2)} LOWER than flows explain and no payout combination fits — possible unlogged withdrawal from Main. Investigate.`;
+      }
+    } else {
+      result.resolution = 'unexplained_overage';
+      result.message = `Balance is ${(-gap / 100).toFixed(2)} HIGHER than flows explain — possible unlogged deposit or missed card-payment log. Investigate.`;
+    }
+  } else {
+    result.resolution = 'first_anchor';
+    result.message = 'First anchor set — future updates will be conservation-checked automatically.';
+  }
+
+  db.prepare(
+    `UPDATE bank_accounts SET balance_available_cents = ?, balance_ledger_cents = ?, balance_updated_at = datetime('now'), anchor_exceptions = ? WHERE store_id = ? AND institution_name = 'Shopify Balance'`
+  ).run(newBalanceCents, newBalanceCents, JSON.stringify(exceptions), storeId);
+  result.exceptions = exceptions;
+  return result;
+}
+
+/** Continuous guard warnings — leaks the numbers can reveal without human eyes. */
+export function anchorGuardWarnings(db: Database.Database, storeId: string, nowMs: number): string[] {
+  const warnings: string[] = [];
+  const anchor = getMainAnchor(db, storeId);
+  if (!anchor) return warnings;
+  const today = pacificDate(new Date(nowMs));
+  // card debits logged after the anchor: Main is now LOWER than the books show
+  const debits: any = db.prepare(
+    `SELECT COALESCE(SUM(amount_cents),0) AS t, COUNT(*) AS n FROM card_payments_log WHERE store_id = ? AND date > ?`
+  ).get(storeId, anchor.anchor_date);
+  if (debits?.t > 0) {
+    warnings.push(`$${(debits.t / 100).toFixed(2)} of card payments (${debits.n}) logged since the Main anchor (${anchor.anchor_date}) — the real balance is likely lower. Re-anchor.`);
+  }
+  if (anchor.anchor_date < today) {
+    const ageDays = Math.round((new Date(today).getTime() - new Date(anchor.anchor_date).getTime()) / 86_400_000);
+    if (ageDays >= 3) warnings.push(`Main balance anchor is ${ageDays} days old — payout/deposit labels degrade with age. Re-anchor with a fresh balance.`);
+  }
+  return warnings;
 }
 
 /** Live probe: mint a token and confirm the store identity + payments scope. */

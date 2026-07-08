@@ -204,6 +204,11 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
         try { anchorExceptions = new Set(JSON.parse(anchorRow.anchor_exceptions || '[]')); } catch { /* ignore */ }
       }
     } catch { /* no anchor */ }
+    try {
+      // continuous guardrails: stale anchor, debits since anchor, etc.
+      const { anchorGuardWarnings } = require('./shopify-sync');
+      for (const w of anchorGuardWarnings(db, store.id, Date.now())) dataGaps.push(`${store.name}: ${w}`);
+    } catch { /* non-fatal */ }
 
     let inTransit = 0;
     let landedToday = 0;

@@ -931,6 +931,13 @@ function CFOContent() {
 
           {/* ASSETS SECTION */}
           <div className="mb-8">
+            {(data.details.shopify_live as any)?.guard_warnings?.length > 0 && (
+              <div className="mb-3 bg-amber-950/30 border border-amber-800/50 rounded-lg px-4 py-2 space-y-0.5">
+                {(data.details.shopify_live as any).guard_warnings.map((w: string, i: number) => (
+                  <p key={i} className="text-[11px] text-amber-300">🛡 {w}</p>
+                ))}
+              </div>
+            )}
             <h2 className="text-lg font-bold text-emerald-400 mb-4 flex items-center gap-2">
               <span className="w-3 h-3 rounded-full bg-emerald-500" />
               Assets
@@ -952,6 +959,23 @@ function CFOContent() {
                       <td className="px-5 py-3 text-slate-400 text-xs">
                         {acc.account_name} ****{acc.last_four}
                         <span className="text-slate-600 ml-2">Updated {timeAgo(acc.balance_updated_at)}</span>
+                        {acc.institution_name === 'Shopify Balance' && (
+                          <button
+                            onClick={async () => {
+                              const v = window.prompt('New Main account balance (from Shopify Balance screen), e.g. 1505.61:');
+                              if (!v) return;
+                              const centsVal = Math.round(parseFloat(v) * 100);
+                              if (!isFinite(centsVal)) return;
+                              const r = await fetch('/api/cfo/anchor', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ storeId, balanceCents: centsVal }) });
+                              const d = await r.json();
+                              window.alert(d.error ? `Failed: ${d.error}` : `Reconciliation gate: ${d.message}`);
+                              if (!d.error) window.location.reload();
+                            }}
+                            className="ml-2 text-blue-400 hover:text-blue-300 text-[10px]"
+                          >
+                            ↻ update via reconciliation gate
+                          </button>
+                        )}
                       </td>
                       <td className={`px-5 py-3 text-right font-medium ${acc.balance_available_cents < 0 ? 'text-red-400' : 'text-emerald-400'}`}>{cents(acc.balance_available_cents)}</td>
                     </tr>
