@@ -277,10 +277,43 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
       }
     }
   } catch { /* no per-second evidence → full-day behavior */ }
-  const boundaryAdj = preT1Net + postT2Net;
-  if (boundaryAdj !== 0) {
-    base.net_income_cents = pnl.net - boundaryAdj;
-    (base as any).boundary_prorate = { pre_t1_cents: preT1Net, post_t2_cents: postT2Net };
+  // Convert boundary net-revenue into a FULL component pro-rate: excluding only revenue
+  // while leaving the excluded hours' day-billed costs (ads, fulfillment…) in the window
+  // would understate profit (Purebite 07-03: $2,590 revenue out, $2,141 ads left in →
+  // profit looked like $541 instead of ~$2,255). Every P&L component scales by that day's
+  // revenue fraction, so all downstream timing items stay coherent with the same window.
+  const prorateDay = (dateStr: string, boundaryNetRev: number): number => {
+    if (boundaryNetRev === 0) return 0;
+    const day: any = db.prepare(
+      `SELECT revenue_cents AS rev, shopify_fees_cents AS fees,
+              (cogs_cents + shipping_cost_cents + pick_pack_cents + packaging_cents) AS fulfillment,
+              ad_spend_cents AS ad, app_costs_cents AS app, other_costs_cents AS other,
+              chargeback_cents AS chargeback, net_profit_cents AS net
+       FROM daily_pnl WHERE store_id = ? AND date = ?`
+    ).get(storeId, dateStr);
+    if (!day) return 0;
+    const dayNetRev = (day.rev || 0) - (day.fees || 0);
+    if (dayNetRev <= 0) return 0;
+    const frac = Math.max(0, Math.min(1, boundaryNetRev / dayNetRev));
+    pnl.revenue -= Math.round((day.rev || 0) * frac);
+    pnl.fees -= Math.round((day.fees || 0) * frac);
+    pnl.fulfillment -= Math.round((day.fulfillment || 0) * frac);
+    pnl.ad -= Math.round((day.ad || 0) * frac);
+    pnl.app -= Math.round((day.app || 0) * frac);
+    pnl.other -= Math.round((day.other || 0) * frac);
+    pnl.chargeback -= Math.round((day.chargeback || 0) * frac);
+    const profitShare = Math.round((day.net || 0) * frac);
+    pnl.net -= profitShare;
+    return profitShare;
+  };
+  const preT1Profit = prorateDay(periodStart, preT1Net);
+  const postT2Profit = prorateDay(periodEnd, postT2Net);
+  if (preT1Profit !== 0 || postT2Profit !== 0) {
+    base.net_income_cents = pnl.net;
+    (base as any).boundary_prorate = {
+      pre_t1_cents: preT1Profit, post_t2_cents: postT2Profit,
+      pre_t1_netrev_cents: preT1Net, post_t2_netrev_cents: postT2Net,
+    };
   }
 
   // ── Cash payments made within the window (reduce liabilities, leave bank) ──
@@ -526,9 +559,9 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
         AND (bt.date != ? OR bt.created_at IS NULL OR bt.created_at > ?)
         AND (bt.date != ? OR bt.created_at IS NULL OR bt.created_at <= ?)
     `).get(storeId, periodStart, periodEnd, ...boundaryArgs) as any).t;
-    // Shopify nets fees out of payouts; boundary-prorated identically to net_income so the
-    // residual is invariant — profit attribution moves, drift math doesn't.
-    const accruedNet = pnl.revenue - pnl.fees - (preT1Net + postT2Net);
+    // Shopify nets fees out of payouts. pnl.revenue/fees are already boundary-prorated
+    // above, so this compares window-exact accrual against window-exact cash.
+    const accruedNet = pnl.revenue - pnl.fees;
     const bsRevenue = dA('cash_shopify_cents') + dA('shopify_payout_cents') + landedPayouts;
     const revTiming = bsRevenue - accruedNet;
     // Only claim a revenue-timing gap when we can actually SEE the payout rail — a store with

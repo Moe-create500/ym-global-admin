@@ -305,7 +305,7 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
             </div>
             {(recon as any).boundary_prorate && (
               <p className="text-[10px] text-slate-500 mt-0.5">
-                Pro-rated at the exact snapshot seconds: excludes {cents(Math.abs((recon as any).boundary_prorate.pre_t1_cents))} earned before the opening snapshot (prior window&apos;s profit) and {cents(Math.abs((recon as any).boundary_prorate.post_t2_cents))} after the closing snapshot (next window&apos;s).
+                Pro-rated at the exact snapshot seconds: excludes {cents(Math.abs((recon as any).boundary_prorate.pre_t1_cents))} profit earned before the opening snapshot (prior window&apos;s — revenue AND that share of the day&apos;s costs) and {cents(Math.abs((recon as any).boundary_prorate.post_t2_cents))} after the closing snapshot (next window&apos;s).
               </p>
             )}
           </div>
