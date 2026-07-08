@@ -237,15 +237,22 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
       </div>
 
       <div className="p-5">
-        {/* Headline comparison */}
-        <div className="grid grid-cols-2 gap-3 mb-5">
-          <div className="bg-slate-800/40 rounded-lg p-3">
-            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Equity moved</p>
-            <p className="text-lg font-bold text-white">{signed(recon.delta_equity_cents)}</p>
-          </div>
+        {/* Headline comparison — the gap IS the question everything below answers */}
+        <div className="grid grid-cols-3 gap-3 mb-5">
           <div className="bg-slate-800/40 rounded-lg p-3">
             <p className="text-[10px] text-slate-500 uppercase tracking-wider">P&amp;L net profit</p>
             <p className="text-lg font-bold text-white">{signed(recon.net_income_cents)}</p>
+            <p className="text-[9px] text-slate-600">earned this window</p>
+          </div>
+          <div className="bg-slate-800/40 rounded-lg p-3">
+            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Equity moved</p>
+            <p className="text-lg font-bold text-white">{signed(recon.delta_equity_cents)}</p>
+            <p className="text-[9px] text-slate-600">net worth change</p>
+          </div>
+          <div className="bg-indigo-950/40 border border-indigo-800/40 rounded-lg p-3">
+            <p className="text-[10px] text-indigo-400 uppercase tracking-wider">The gap to explain</p>
+            <p className="text-lg font-bold text-indigo-200">{signed(recon.gap_cents)}</p>
+            <p className="text-[9px] text-slate-600">every dollar of this gets named below</p>
           </div>
         </div>
 
