@@ -298,9 +298,16 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
 
         {/* Bridge waterfall */}
         <div className="space-y-1.5 text-sm">
-          <div className="flex items-center justify-between py-1.5 border-b border-slate-800">
-            <span className="text-slate-300">P&amp;L net profit</span>
-            <span className="font-mono text-white">{signed(recon.net_income_cents)}</span>
+          <div className="py-1.5 border-b border-slate-800">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-300">P&amp;L net profit <span className="text-[9px] bg-blue-900/50 text-blue-300 px-1 rounded ml-1">second-exact</span></span>
+              <span className="font-mono text-white">{signed(recon.net_income_cents)}</span>
+            </div>
+            {(recon as any).boundary_prorate && (
+              <p className="text-[10px] text-slate-500 mt-0.5">
+                Pro-rated at the exact snapshot seconds: excludes {cents(Math.abs((recon as any).boundary_prorate.pre_t1_cents))} earned before the opening snapshot (prior window&apos;s profit) and {cents(Math.abs((recon as any).boundary_prorate.post_t2_cents))} after the closing snapshot (next window&apos;s).
+              </p>
+            )}
           </div>
           {recon.items.length === 0 && (
             <div className="py-1.5 text-xs text-slate-500 italic">No reconciling items — equity should equal profit exactly.</div>

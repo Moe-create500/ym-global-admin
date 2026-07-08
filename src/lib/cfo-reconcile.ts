@@ -250,6 +250,39 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
   base.pnl = pnl;
   base.net_income_cents = pnl.net;
 
+  // ── Exact-second boundary pro-rate (per-transaction evidence) ──
+  // daily_pnl counts FULL calendar days, but snapshots are mid-day: charges made on t1's
+  // date BEFORE the snapshot second belong to the PRIOR window (their cash was already in
+  // t1 equity), and charges on t2's date AFTER the snapshot second belong to the NEXT one.
+  // With per-second Shopify transaction data we split boundary days exactly — consecutive
+  // windows share the same cut, so every dollar of profit lives in exactly one window.
+  // Only the revenue−fees side is second-stamped (costs are day-billed); the accrued-net
+  // used by the revenue-timing item is adjusted identically, so the residual is unchanged —
+  // this fixes what the numbers SAY, attributing profit to the true window.
+  let preT1Net = 0, postT2Net = 0;
+  try {
+    const pacDate = (ts: string) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ts.replace(' ', 'T') + 'Z'));
+    const evUploads: any[] = db.prepare(
+      "SELECT rows_json FROM cfo_evidence WHERE store_id = ? AND kind = 'shopify_payments'"
+    ).all(storeId);
+    for (const u of evUploads) {
+      let rows: any[] = [];
+      try { rows = JSON.parse(u.rows_json) || []; } catch { continue; }
+      for (const r of rows) {
+        if (!r.ts_utc || r.net_cents == null) continue;
+        if (!/charge|refund|chargeback|dispute/.test((r.type || '').toLowerCase())) continue;
+        const d = pacDate(r.ts_utc);
+        if (d === periodStart && r.ts_utc <= periodStartTs) preT1Net += r.net_cents;
+        else if (d === periodEnd && r.ts_utc > periodEndTs) postT2Net += r.net_cents;
+      }
+    }
+  } catch { /* no per-second evidence → full-day behavior */ }
+  const boundaryAdj = preT1Net + postT2Net;
+  if (boundaryAdj !== 0) {
+    base.net_income_cents = pnl.net - boundaryAdj;
+    (base as any).boundary_prorate = { pre_t1_cents: preT1Net, post_t2_cents: postT2Net };
+  }
+
   // ── Cash payments made within the window (reduce liabilities, leave bank) ──
   // Boundary-second filtering: a payment dated on t1's snapshot DATE but recorded BEFORE the
   // exact snapshot second is already inside t1's balances — counting it again double-counts
@@ -493,7 +526,9 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
         AND (bt.date != ? OR bt.created_at IS NULL OR bt.created_at > ?)
         AND (bt.date != ? OR bt.created_at IS NULL OR bt.created_at <= ?)
     `).get(storeId, periodStart, periodEnd, ...boundaryArgs) as any).t;
-    const accruedNet = pnl.revenue - pnl.fees; // Shopify nets fees out of payouts
+    // Shopify nets fees out of payouts; boundary-prorated identically to net_income so the
+    // residual is invariant — profit attribution moves, drift math doesn't.
+    const accruedNet = pnl.revenue - pnl.fees - (preT1Net + postT2Net);
     const bsRevenue = dA('cash_shopify_cents') + dA('shopify_payout_cents') + landedPayouts;
     const revTiming = bsRevenue - accruedNet;
     // Only claim a revenue-timing gap when we can actually SEE the payout rail — a store with
