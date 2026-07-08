@@ -42,7 +42,25 @@ export async function GET(req: NextRequest) {
   const withEstimate = unfulfilledCounts?.with_estimate || 0;
   const withoutEstimate = totalUnfulfilled - withEstimate;
   const estimatedCents = ssCharges?.estimated_cents || 0;
-  const avgPerOrder = withEstimate > 0 ? Math.round(estimatedCents / withEstimate) : 0;
+  let avgPerOrder = withEstimate > 0 ? Math.round(estimatedCents / withEstimate) : 0;
+  let avgSource = 'current estimates';
+  if (avgPerOrder <= 0 && withoutEstimate > 0) {
+    // No unfulfilled order carries an estimate yet — use the real historical average:
+    // actual billed ShipSourced charges per order, most recent 60 days (falls back to
+    // all-time if the store has no recent billed orders).
+    const hist: any = db.prepare(
+      `SELECT COALESCE(AVG(ss_charge_cents),0) AS avg, COUNT(*) AS n FROM orders
+       WHERE store_id = ? AND ss_charge_cents > 0 AND ss_charge_is_estimate = 0
+         AND created_at >= datetime('now', '-60 days')`
+    ).get(storeId);
+    if (hist?.n > 0) { avgPerOrder = Math.round(hist.avg); avgSource = `billed history 60d (${hist.n} orders)`; }
+    else {
+      const all: any = db.prepare(
+        `SELECT COALESCE(AVG(ss_charge_cents),0) AS avg, COUNT(*) AS n FROM orders WHERE store_id = ? AND ss_charge_cents > 0 AND ss_charge_is_estimate = 0`
+      ).get(storeId);
+      if (all?.n > 0) { avgPerOrder = Math.round(all.avg); avgSource = `billed history all-time (${all.n} orders)`; }
+    }
+  }
   const projectedCents = estimatedCents + (withoutEstimate * avgPerOrder);
 
   const fulfillment = {
@@ -53,6 +71,7 @@ export async function GET(req: NextRequest) {
     unfulfilled_with_estimate: withEstimate,
     without_estimate: withoutEstimate,
     avg_per_order_cents: avgPerOrder,
+    avg_source: avgSource,
     paid_cents: ssPaid?.total || 0,
     total_owed_cents: (store.ss_net_owed_cents || 0),
     balance_cents: store.ss_net_owed_cents || 0,
@@ -423,6 +442,18 @@ export async function POST(req: NextRequest) {
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
 
   const db = getDb();
+
+  // FRESHNESS GATE: a snapshot is a reconciliation input — both Shopify (payments) and
+  // ShipSourced (orders/fulfillment charges) must be current at the same moment, or the
+  // snapshot bakes in phantom drift. Shopify auto-syncs inline here if stale.
+  try {
+    const { ensureFreshForReconcile } = await import('@/lib/shopify-sync');
+    const fresh = await ensureFreshForReconcile(db, storeId, Date.now());
+    if (!fresh.ok) {
+      return NextResponse.json({ error: `Snapshot refused — ${fresh.message}` }, { status: 409 });
+    }
+  } catch { /* gate must never hard-crash snapshots for unconnected stores */ }
+
   const now = new Date();
   const date = now.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
   const id = crypto.randomUUID();

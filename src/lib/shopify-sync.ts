@@ -425,6 +425,36 @@ export function anchorGuardWarnings(db: Database.Database, storeId: string, nowM
   return warnings;
 }
 
+/** FRESHNESS GATE for reconciliation/snapshots: both data sources must be current.
+ *  Shopify payments: if stale (>40 min) and connected, syncs inline right now.
+ *  ShipSourced (orders/charges): reported stale if >45 min — the cron refreshes it;
+ *  computing a reconciliation from mismatched-freshness sources manufactures phantom
+ *  drift, so the caller must refuse and retry. */
+export async function ensureFreshForReconcile(db: Database.Database, storeId: string, nowMs: number): Promise<{
+  ok: boolean; message: string; shopify_age_min: number | null; shipsourced_age_min: number | null;
+}> {
+  const ageMin = (ts: any): number | null => ts ? Math.round((nowMs - new Date(String(ts).replace(' ', 'T') + 'Z').getTime()) / 60000) : null;
+
+  const store: any = db.prepare('SELECT last_synced_at FROM stores WHERE id = ?').get(storeId);
+  const ssAge = ageMin(store?.last_synced_at);
+
+  const creds = getCreds(db, storeId);
+  let shAge = creds ? ageMin(creds.last_synced_at) : null;
+  if (creds && (shAge == null || shAge > 40)) {
+    try {
+      await syncShopifyPayments(db, storeId, nowMs);
+      shAge = 0;
+    } catch (e: any) {
+      return { ok: false, message: `Shopify sync failed (${(e?.message || e).toString().slice(0, 120)}) — data would be stale, refusing to compute.`, shopify_age_min: shAge, shipsourced_age_min: ssAge };
+    }
+  }
+
+  if (ssAge == null || ssAge > 45) {
+    return { ok: false, message: `ShipSourced order data is ${ssAge == null ? 'not yet synced' : `${ssAge} min old`} — auto-sync runs every 30 min. Retry in a few minutes so both sides compare at the same moment.`, shopify_age_min: shAge, shipsourced_age_min: ssAge };
+  }
+  return { ok: true, message: `both sources fresh (Shopify ${creds ? `${shAge}m` : 'not connected'}, ShipSourced ${ssAge}m)`, shopify_age_min: shAge, shipsourced_age_min: ssAge };
+}
+
 /** Live probe: mint a token and confirm the store identity + payments scope. */
 export async function probeStore(db: Database.Database, storeId: string, nowMs: number): Promise<{ shop: string; currency: string; payouts_visible: boolean }> {
   const shop = await shopifyGet(db, storeId, 'shop.json', nowMs);
