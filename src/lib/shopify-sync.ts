@@ -249,14 +249,20 @@ export function pacificDate(d: Date): string {
  *  was set. THE ANCHOR RULE: any payout expected to land ON OR BEFORE the anchor date is
  *  presumed INSIDE the anchor balance — it must never also count as in-transit. Ambiguity
  *  always resolves toward the bank side (brief undercount possible, overcount never). */
-export function getMainAnchor(db: Database.Database, storeId: string): { balance_cents: number; anchor_date: string } | null {
+export function getMainAnchor(db: Database.Database, storeId: string): { balance_cents: number; anchor_date: string; exceptions: string[] } | null {
   try {
+    try { db.exec('ALTER TABLE bank_accounts ADD COLUMN anchor_exceptions TEXT'); } catch { /* exists */ }
     const row: any = db.prepare(
-      "SELECT balance_available_cents, balance_updated_at FROM bank_accounts WHERE store_id = ? AND institution_name = 'Shopify Balance' AND status = 'active' LIMIT 1"
+      "SELECT balance_available_cents, balance_updated_at, anchor_exceptions FROM bank_accounts WHERE store_id = ? AND institution_name = 'Shopify Balance' AND status = 'active' LIMIT 1"
     ).get(storeId);
     if (!row || row.balance_available_cents == null || !row.balance_updated_at) return null;
     const anchorDate = pacificDate(new Date(String(row.balance_updated_at).replace(' ', 'T') + 'Z'));
-    return { balance_cents: row.balance_available_cents, anchor_date: anchorDate };
+    // exceptions: payout references KNOWN not to be in the anchored balance (visible as
+    // Deposited on the Payouts screen but absent from Main's statement at anchor time).
+    // They stay in-transit despite the Anchor Rule — exact books, still no double count.
+    let exceptions: string[] = [];
+    try { exceptions = JSON.parse(row.anchor_exceptions || '[]'); } catch { /* ignore */ }
+    return { balance_cents: row.balance_available_cents, anchor_date: anchorDate, exceptions };
   } catch { return null; }
 }
 
@@ -276,10 +282,11 @@ export async function getLiveShopifyFigures(db: Database.Database, storeId: stri
 
   const payouts = (await shopifyGet(db, storeId, 'shopify_payments/payouts.json?limit=250', nowMs))?.payouts || [];
   let scheduled = 0, paidUnlanded = 0;
+  const exceptions = new Set(anchor?.exceptions || []);
   for (const p of payouts) {
     const st = (p.status || '').toLowerCase();
     if (/sched|in_transit/.test(st)) scheduled += toCents(p.amount);
-    else if (st === 'paid' && p.date > transitAfter) paidUnlanded += toCents(p.amount);
+    else if (st === 'paid' && (p.date > transitAfter || exceptions.has(String(p.id)))) paidUnlanded += toCents(p.amount);
   }
 
   // Reserve total: sum of reserve holdback events from the synced per-transaction evidence

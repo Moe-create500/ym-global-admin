@@ -193,13 +193,15 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     // that balance — it must not also appear as incoming. Ambiguity resolves to the bank
     // side: brief undercount possible, overcount never.
     let anchorDate: string | null = null;
+    let anchorExceptions = new Set<string>();
     try {
       const anchorRow: any = db.prepare(
-        "SELECT balance_updated_at FROM bank_accounts WHERE store_id = ? AND institution_name = 'Shopify Balance' AND status = 'active' LIMIT 1"
+        "SELECT balance_updated_at, anchor_exceptions FROM bank_accounts WHERE store_id = ? AND institution_name = 'Shopify Balance' AND status = 'active' LIMIT 1"
       ).get(store.id);
       if (anchorRow?.balance_updated_at) {
         anchorDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' })
           .format(new Date(String(anchorRow.balance_updated_at).replace(' ', 'T') + 'Z'));
+        try { anchorExceptions = new Set(JSON.parse(anchorRow.anchor_exceptions || '[]')); } catch { /* ignore */ }
       }
     } catch { /* no anchor */ }
 
@@ -208,7 +210,10 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     for (const p of paidPayouts) {
       const expectedLand = rollToBusinessDay(addDays(p.pdate, lag));
       const confirmedDate = (p as any).landed as string | undefined; // matched bank row date
-      if (!confirmedDate && anchorDate && expectedLand <= anchorDate) continue; // Anchor Rule: inside the bank balance already
+      // Anchor Rule: landing on/before the anchor date = inside the bank balance already —
+      // UNLESS the payout is a flagged exception (Deposited on the Payouts screen but absent
+      // from Main's statement at anchor time). Exceptions stay in-transit: exact, no double count.
+      if (!confirmedDate && anchorDate && expectedLand <= anchorDate && !anchorExceptions.has(String(p.reference || ''))) continue;
       if (confirmedDate) {
         if (confirmedDate === today) {
           landedToday += p.amount_cents;
