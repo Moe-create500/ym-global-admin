@@ -288,6 +288,11 @@ export default function CreditCardsPage() {
                   </div>
                 </div>
                 <p className="text-[10px] text-slate-600 mt-2">Updated {timeAgo(card.balance_updated_at)}</p>
+                {(card as any).last_sync_error && (
+                  <p className="text-[10px] text-red-300 mt-1 bg-red-950/40 border border-red-900/50 rounded px-2 py-1">
+                    ⚠ {(card as any).last_sync_error}
+                  </p>
+                )}
               </button>
             ))}
           </div>

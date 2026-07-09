@@ -78,18 +78,25 @@ export async function POST() {
     const account = accounts[ai];
     if (ai > 0) await sleep(3000); // pace between accounts
     try {
-      // Sync balance
+      // Sync balance — persist failures so a dead enrollment can't rot silently
+      // (Amex enrollments require periodic re-auth; a lapsed one 404s on every account)
+      try { db.exec('ALTER TABLE bank_accounts ADD COLUMN last_sync_error TEXT'); } catch { /* exists */ }
       try {
         const balance = await getAccountBalance(account.access_token, account.teller_account_id);
         const available = Math.round(parseFloat(balance.available || '0') * 100);
         const ledger = Math.round(parseFloat(balance.ledger || '0') * 100);
         db.prepare(`
           UPDATE bank_accounts SET balance_available_cents = ?, balance_ledger_cents = ?,
-            balance_updated_at = datetime('now'), updated_at = datetime('now')
+            balance_updated_at = datetime('now'), updated_at = datetime('now'), last_sync_error = NULL
           WHERE id = ?
         `).run(available, ledger, account.id);
       } catch (balErr: any) {
-        errors.push(`${account.account_name}: balance error - ${balErr.message}`);
+        const msg = String(balErr.message || balErr);
+        const friendly = /not_found|404|410|unauthorized|401/i.test(msg)
+          ? 'CONNECTION EXPIRED — reconnect this bank via Connect Card (Teller re-auth required)'
+          : msg.slice(0, 180);
+        db.prepare('UPDATE bank_accounts SET last_sync_error = ? WHERE id = ?').run(friendly, account.id);
+        errors.push(`${account.account_name}: ${friendly}`);
       }
 
       await sleep(1000); // pace between balance and transactions
