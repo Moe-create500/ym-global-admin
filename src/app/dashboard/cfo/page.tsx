@@ -1211,8 +1211,26 @@ function CFOContent() {
                           <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
                         </div>
                       ) : (
-                        <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('fulfillment_details'); setOverrideInput(cfoOverrides['fulfillment_details'] || ''); }}>
-                          {cfoOverrides['fulfillment_details'] || 'ShipSourced balance owed'}
+                        <span className="flex items-center gap-2">
+                          <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('fulfillment_details'); setOverrideInput(cfoOverrides['fulfillment_details'] || ''); }}>
+                            {cfoOverrides['fulfillment_details'] || 'ShipSourced balance owed'}
+                          </span>
+                          <button
+                            onClick={async (e) => {
+                              const btn = e.currentTarget;
+                              btn.textContent = 'syncing…'; btn.disabled = true;
+                              try {
+                                const r = await fetch(`/api/sync/shipsourced?storeId=${storeId}`, { method: 'POST' });
+                                const d = await r.json();
+                                if (d.error) { btn.textContent = '✗ failed'; }
+                                else window.location.reload();
+                              } catch { btn.textContent = '✗ failed'; }
+                            }}
+                            className="px-1.5 py-0.5 bg-emerald-800/60 hover:bg-emerald-700 text-emerald-200 rounded text-[10px] shrink-0"
+                            title="Pull the latest balance from ShipSourced right now"
+                          >
+                            ↻ sync
+                          </button>
                         </span>
                       )}
                     </td>
