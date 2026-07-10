@@ -73,7 +73,7 @@ export default function StaticAdsPage() {
   useEffect(() => {
     if (!storeId) return;
     setProductId(''); setSelectedImageUrl(''); setAudienceId(''); setSelectedIds(new Set());
-    fetch(`/api/products?storeId=${storeId}`).then(r => r.json()).then(d => setProducts(d.products || [])).catch(() => {});
+    fetch(`/api/products?storeId=${storeId}&onBrand=1`).then(r => r.json()).then(d => setProducts(d.products || [])).catch(() => {});
     fetch(`/api/static-ads/audiences?storeId=${storeId}`).then(r => r.json()).then(d => setAudiences(d.audiences || [])).catch(() => {});
     loadGallery(storeId);
   }, [storeId, loadGallery]);

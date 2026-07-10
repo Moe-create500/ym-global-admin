@@ -41,13 +41,22 @@ export async function GET(req: NextRequest) {
   // For non-admin users: on-brand filter — only return products whose title
   // contains the store name. This hides mass-imported junk products that
   // are assigned to every store but don't actually belong to the brand.
+  // Admins can opt in with ?onBrand=1 (used by the Picture Ads page). Some
+  // stores have no title matches at all — fall back to unfiltered for them.
   const isAdmin = _auth.authorized && (_auth.role === 'admin' || _auth.role === 'data_corrector');
-  if (!isAdmin && storeId) {
+  const onBrand = searchParams.get('onBrand') === '1';
+  if ((!isAdmin || onBrand) && storeId) {
     const store: any = db.prepare('SELECT name FROM stores WHERE id = ?').get(storeId);
     if (store?.name) {
       const brandName = store.name.toLowerCase().replace(/[™®©]/g, '');
-      where += ` AND LOWER(REPLACE(REPLACE(REPLACE(p.title, '™', ''), '®', ''), '©', '')) LIKE ?`;
-      params.push(`%${brandName}%`);
+      const brandClause = `LOWER(REPLACE(REPLACE(REPLACE(p.title, '™', ''), '®', ''), '©', '')) LIKE ?`;
+      const hasMatch = onBrand
+        ? db.prepare(`SELECT 1 FROM products p WHERE p.store_id = ? AND ${brandClause} LIMIT 1`).get(storeId, `%${brandName}%`)
+        : true; // non-admin keeps the strict filter regardless
+      if (hasMatch) {
+        where += ` AND ${brandClause}`;
+        params.push(`%${brandName}%`);
+      }
     }
   }
 
