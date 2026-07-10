@@ -18,9 +18,14 @@ interface Creative {
   title: string;
   imageUrl: string;
   createdAt: string;
-  productTitle: string | null;
-  audienceName: string | null;
   templateName: string;
+}
+interface Batch {
+  key: string;
+  date: string;
+  productTitle: string;
+  audienceName: string;
+  creatives: Creative[];
 }
 
 // Stores hidden from the Picture Ads store picker (no ads run for these)
@@ -52,7 +57,9 @@ export default function StaticAdsPage() {
   const [lastImage, setLastImage] = useState<{ imageUrl: string; template: string; audience: string } | null>(null);
   const [copyVariations, setCopyVariations] = useState<Record<string, string>[]>([]);
 
-  const [gallery, setGallery] = useState<Creative[]>([]);
+  const [batches, setBatches] = useState<Batch[]>([]);
+  const [totalAds, setTotalAds] = useState(0);
+  const [openBatches, setOpenBatches] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [zipping, setZipping] = useState(false);
 
@@ -69,7 +76,13 @@ export default function StaticAdsPage() {
 
   const loadGallery = useCallback((sid: string) => {
     fetch(`/api/static-ads/creatives?storeId=${sid}`)
-      .then(r => r.json()).then(d => setGallery(d.creatives || [])).catch(() => {});
+      .then(r => r.json()).then(d => {
+        const b: Batch[] = d.batches || [];
+        setBatches(b);
+        setTotalAds(d.total || 0);
+        // Newest batch open by default, everything else collapsed
+        setOpenBatches(new Set(b.length ? [b[0].key] : []));
+      }).catch(() => {});
   }, []);
 
   // Per-store data
@@ -340,33 +353,69 @@ export default function StaticAdsPage() {
 
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
-              <p className={`${labelCls} mb-0`}>Generated ads ({gallery.length})</p>
+              <p className={`${labelCls} mb-0`}>Generated ads ({totalAds} in {batches.length} batches)</p>
               <button onClick={downloadZip} disabled={!selectedIds.size || zipping}
                 className="text-xs bg-slate-800 border border-slate-700 hover:border-blue-500 disabled:opacity-40 text-slate-300 rounded-lg px-3 py-1.5 transition-colors">
                 {zipping ? 'Zipping…' : `Download ZIP (${selectedIds.size})`}
               </button>
             </div>
-            {gallery.length === 0 ? (
+            {batches.length === 0 ? (
               <p className="text-sm text-slate-500 py-8 text-center">No picture ads generated for this store yet.</p>
             ) : (
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                {gallery.map(c => (
-                  <div key={c.id}
-                    className={`relative rounded-lg overflow-hidden border-2 cursor-pointer transition-colors ${
-                      selectedIds.has(c.id) ? 'border-blue-500' : 'border-slate-800 hover:border-slate-600'
-                    }`}
-                    onClick={() => toggleSelect(c.id)}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={c.imageUrl} alt={c.title} loading="lazy" className="w-full aspect-square object-cover" />
-                    <div className="absolute inset-x-0 bottom-0 bg-black/70 px-2 py-1">
-                      <p className="text-[10px] text-slate-200 truncate">{c.title}</p>
-                      <p className="text-[9px] text-slate-400 truncate">{c.productTitle || ''}</p>
+              <div className="space-y-2">
+                {batches.map(b => {
+                  const open = openBatches.has(b.key);
+                  const batchIds = b.creatives.map(c => c.id);
+                  const allSelected = batchIds.every(id => selectedIds.has(id));
+                  return (
+                    <div key={b.key} className="border border-slate-800 rounded-lg overflow-hidden">
+                      <div className="flex items-center gap-2 bg-slate-800/60 px-3 py-2">
+                        <button onClick={() => setOpenBatches(prev => {
+                          const next = new Set(prev);
+                          if (next.has(b.key)) next.delete(b.key); else next.add(b.key);
+                          return next;
+                        })} className="flex-1 flex items-center gap-2 text-left min-w-0">
+                          <span className={`text-slate-500 text-xs transition-transform ${open ? 'rotate-90' : ''}`}>▶</span>
+                          <span className="text-sm text-slate-200 truncate">{b.productTitle}</span>
+                          <span className="text-xs text-slate-500 truncate">· {b.audienceName}</span>
+                          <span className="text-xs text-slate-500 whitespace-nowrap ml-auto pl-2">{b.date} · {b.creatives.length} ads</span>
+                        </button>
+                        <button onClick={() => setSelectedIds(prev => {
+                          const next = new Set(prev);
+                          if (allSelected) batchIds.forEach(id => next.delete(id));
+                          else batchIds.forEach(id => next.add(id));
+                          return next;
+                        })} className="text-[11px] text-blue-400 hover:text-blue-300 whitespace-nowrap">
+                          {allSelected ? 'unselect all' : 'select all'}
+                        </button>
+                      </div>
+                      {open && (
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 p-3">
+                          {b.creatives.map(c => (
+                            <div key={c.id}
+                              className={`relative rounded-lg overflow-hidden border-2 cursor-pointer transition-colors ${
+                                selectedIds.has(c.id) ? 'border-blue-500' : 'border-slate-800 hover:border-slate-600'
+                              }`}
+                              onClick={() => toggleSelect(c.id)}>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={`${c.imageUrl}?w=300`} alt={c.title} loading="lazy"
+                                className="w-full aspect-square object-cover" />
+                              <div className="absolute inset-x-0 bottom-0 bg-black/70 px-2 py-1 flex items-center gap-1">
+                                <p className="text-[10px] text-slate-200 truncate flex-1">{c.templateName || c.title}</p>
+                                <a href={c.imageUrl} target="_blank" rel="noreferrer"
+                                  onClick={e => e.stopPropagation()}
+                                  className="text-[10px] text-blue-400 hover:text-blue-300 whitespace-nowrap">full ↗</a>
+                              </div>
+                              {selectedIds.has(c.id) && (
+                                <div className="absolute top-1.5 right-1.5 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center text-white text-xs">✓</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                    {selectedIds.has(c.id) && (
-                      <div className="absolute top-1.5 right-1.5 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center text-white text-xs">✓</div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
