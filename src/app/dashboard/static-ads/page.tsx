@@ -23,6 +23,9 @@ interface Creative {
   templateName: string;
 }
 
+// Stores hidden from the Picture Ads store picker (no ads run for these)
+const HIDDEN_STORES = ['apex loom', 'neeyahpure', 'vitaedge', 'ymo - amazon', 'zen essential', 'zenchoice'];
+
 export default function StaticAdsPage() {
   const [stores, setStores] = useState<Store[]>([]);
   const [storeId, setStoreId] = useState('');
@@ -56,7 +59,7 @@ export default function StaticAdsPage() {
   // Load stores + templates once
   useEffect(() => {
     fetch('/api/stores').then(r => r.json()).then(d => {
-      const s = d.stores || [];
+      const s = (d.stores || []).filter((st: Store) => !HIDDEN_STORES.includes(st.name.trim().toLowerCase()));
       setStores(s);
       if (s.length && !storeId) setStoreId(s[0].id);
     }).catch(() => {});
