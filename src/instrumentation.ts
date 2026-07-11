@@ -24,8 +24,37 @@ export async function register() {
           const pr = await syncAllProducts();
           productSynced = pr.synced;
         }
+        // Bank balances + transactions (Teller) — without this the Banking page
+        // only updates when someone clicks Sync
+        let bankNote = 'banks skipped';
+        try {
+          const { syncBankAccounts } = await import('@/lib/bank-sync');
+          const bankResult = await syncBankAccounts();
+          bankNote = `${bankResult.accounts_synced} banks, ${bankResult.transactions_imported} bank txns`;
+          if (bankResult.errors.length > 0) {
+            console.error(`[auto-sync] ${label}: ${bankResult.errors.length} bank errors; first: ${bankResult.errors.slice(0, 3).join(' | ').slice(0, 400)}`);
+          }
+        } catch (e) {
+          console.error(`[auto-sync] ${label} bank sync error:`, e);
+        }
+
+        // Fulfillment-status refresh vs ShipSourced — keeps the CFO unfulfilled
+        // estimate honest (order sync only inserts, never updates statuses)
+        let statusNote = 'statuses skipped';
+        try {
+          const { refreshAllOrderStatuses } = await import('@/lib/order-status-refresh');
+          const { getDb } = await import('@/lib/db');
+          const sr = await refreshAllOrderStatuses(getDb());
+          statusNote = `${sr.fulfilled + sr.cancelled} order statuses corrected`;
+          if (sr.errors.length > 0) {
+            console.error(`[auto-sync] ${label}: ${sr.errors.length} status-refresh errors; first: ${sr.errors.slice(0, 3).join(' | ').slice(0, 400)}`);
+          }
+        } catch (e) {
+          console.error(`[auto-sync] ${label} status refresh error:`, e);
+        }
+
         const totalSynced = storeResult.results.reduce((s, r) => s + r.synced, 0);
-        console.log(`[auto-sync] ${label} done: ${totalSynced} store records, ${fbResult.synced} ad records, ${productSynced} products`);
+        console.log(`[auto-sync] ${label} done: ${totalSynced} store records, ${fbResult.synced} ad records, ${productSynced} products, ${bankNote}, ${statusNote}`);
         // Surface FB sync failures — a checkpointed/expired token otherwise fails
         // silently as "0 ad records" while ad spend quietly goes stale.
         if (fbResult.errors.length > 0) {

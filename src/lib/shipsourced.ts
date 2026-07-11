@@ -141,12 +141,13 @@ export interface SSOrderListResponse {
   totalPages: number;
 }
 
-export async function getClientOrdersList(clientId: string, page = 1, limit = 200): Promise<SSOrderListResponse> {
+export async function getClientOrdersList(clientId: string, page = 1, limit = 200, status?: string): Promise<SSOrderListResponse> {
   const params = new URLSearchParams({
     storeId: clientId,
     page: String(page),
     limit: String(limit),
   });
+  if (status) params.set('status', status);
   return apiFetch(`/api/orders/list?${params}`);
 }
 
