@@ -23,6 +23,8 @@ export async function POST(req: NextRequest) {
   const errors: string[] = [];
 
   for (const account of accounts) {
+    // Manual-anchor accounts (e.g. Shopify Balance) have no Teller feed — skip
+    if (!account.access_token || !account.teller_account_id) continue;
     try {
       // Sync balance
       try {

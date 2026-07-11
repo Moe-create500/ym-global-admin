@@ -102,6 +102,13 @@ function BankingContent() {
 
   const [stores, setStores] = useState<{ id: string; name: string }[]>([]);
 
+  // Shopify Balance anchor editor (that account has no Teller feed — its balance
+  // is set manually and conservation-checked via /api/cfo/anchor)
+  const [anchorEditId, setAnchorEditId] = useState<string | null>(null);
+  const [anchorValue, setAnchorValue] = useState('');
+  const [anchorSaving, setAnchorSaving] = useState(false);
+  const [anchorMsg, setAnchorMsg] = useState('');
+
   useEffect(() => {
     fetch('/api/stores').then(r => r.json()).then(d => setStores(d.stores || []));
   }, []);
@@ -119,6 +126,25 @@ function BankingContent() {
     setAccounts(data.accounts || []);
     setSummary(data.summary || { total_available_cents: 0, total_ledger_cents: 0, account_count: 0 });
     setLoading(false);
+  }
+
+  async function saveAnchor(account: BankAccount) {
+    const dollars = parseFloat(anchorValue);
+    if (isNaN(dollars)) { setAnchorMsg('Enter a valid amount'); return; }
+    setAnchorSaving(true); setAnchorMsg('');
+    try {
+      const res = await fetch('/api/cfo/anchor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId: account.store_id, balanceCents: Math.round(dollars * 100) }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'anchor update failed');
+      setAnchorMsg(d.message || 'Anchor updated');
+      setAnchorEditId(null); setAnchorValue('');
+      loadAccounts();
+    } catch (e: any) { setAnchorMsg(e.message); }
+    setAnchorSaving(false);
   }
 
   async function loadLoans() {
@@ -410,11 +436,14 @@ function BankingContent() {
 
           {/* Account Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-            {accounts.map(account => (
-              <button
+            {accounts.map(account => {
+              const isAnchor = account.institution_name === 'Shopify Balance';
+              return (
+              <div
                 key={account.id}
+                role="button"
                 onClick={() => loadTransactions(account.id)}
-                className={`bg-slate-900 border rounded-xl p-5 text-left transition-colors ${
+                className={`bg-slate-900 border rounded-xl p-5 text-left cursor-pointer transition-colors ${
                   selectedAccount === account.id ? 'border-blue-600' : 'border-slate-800 hover:border-slate-700'
                 }`}
               >
@@ -437,9 +466,32 @@ function BankingContent() {
                     <p className="text-sm font-semibold text-white">{cents(account.balance_ledger_cents || 0)}</p>
                   </div>
                 </div>
-                <p className="text-[10px] text-slate-600 mt-2">Updated {timeAgo(account.balance_updated_at)}</p>
-              </button>
-            ))}
+                <div className="flex items-center justify-between mt-2">
+                  <p className="text-[10px] text-slate-600">
+                    Updated {timeAgo(account.balance_updated_at)}{isAnchor ? ' — manual anchor, no bank feed' : ''}
+                  </p>
+                  {isAnchor && anchorEditId !== account.id && (
+                    <button onClick={e => { e.stopPropagation(); setAnchorEditId(account.id); setAnchorValue(''); setAnchorMsg(''); }}
+                      className="text-[10px] text-blue-400 hover:text-blue-300">update balance</button>
+                  )}
+                </div>
+                {isAnchor && anchorEditId === account.id && (
+                  <div className="mt-2 flex gap-2" onClick={e => e.stopPropagation()}>
+                    <input type="number" step="0.01" value={anchorValue} onChange={e => setAnchorValue(e.target.value)}
+                      placeholder="Current balance $" autoFocus
+                      className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500" />
+                    <button onClick={() => saveAnchor(account)} disabled={anchorSaving}
+                      className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg px-3 py-1">
+                      {anchorSaving ? 'Checking…' : 'Save'}
+                    </button>
+                    <button onClick={() => setAnchorEditId(null)} className="text-xs text-slate-400 hover:text-white">✕</button>
+                  </div>
+                )}
+                {isAnchor && anchorMsg && (
+                  <p className="text-[10px] text-amber-400 mt-1.5" onClick={e => e.stopPropagation()}>{anchorMsg}</p>
+                )}
+              </div>
+            );})}
           </div>
 
           {/* Transactions */}
