@@ -45,16 +45,18 @@ export default function StaticAdsPage() {
   const [showNewAudience, setShowNewAudience] = useState(false);
   const [audienceText, setAudienceText] = useState('');
   const [creatingAudience, setCreatingAudience] = useState(false);
+  const [autoAudienceLoading, setAutoAudienceLoading] = useState(false);
 
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [templateId, setTemplateId] = useState('');
+  const [templateIds, setTemplateIds] = useState<Set<string>>(new Set());
 
   const [customInstructions, setCustomInstructions] = useState('');
 
   const [generating, setGenerating] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [copyLoading, setCopyLoading] = useState(false);
   const [error, setError] = useState('');
-  const [lastImage, setLastImage] = useState<{ imageUrl: string; template: string; audience: string } | null>(null);
+  const [sessionImages, setSessionImages] = useState<{ imageUrl: string; template: string; audience: string }[]>([]);
   const [copyVariations, setCopyVariations] = useState<Record<string, string>[]>([]);
 
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -107,7 +109,26 @@ export default function StaticAdsPage() {
     ? products.filter(p => p.title.toLowerCase().includes(productFilter.toLowerCase()))
     : products;
 
-  const ready = storeId && productId && audienceId && templateId;
+  const ready = storeId && productId && audienceId && templateIds.size > 0;
+
+  async function autoGenerateAudience() {
+    if (!storeId || !productId) return;
+    setAutoAudienceLoading(true); setError('');
+    try {
+      const res = await fetch('/api/static-ads/audiences/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId, productId }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Audience generation failed');
+      const list = await fetch(`/api/static-ads/audiences?storeId=${storeId}`).then(r => r.json());
+      setAudiences(list.audiences || []);
+      setAudienceId(d.id);
+      setShowNewAudience(false);
+    } catch (e: any) { setError(e.message); }
+    setAutoAudienceLoading(false);
+  }
 
   async function createAudience() {
     if (!audienceText.trim()) return;
@@ -130,18 +151,29 @@ export default function StaticAdsPage() {
 
   async function generateImage() {
     if (!ready) return;
-    setGenerating(true); setError(''); setLastImage(null);
-    try {
-      const res = await fetch('/api/static-ads/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeId, productId, audienceId, templateId, customInstructions, selectedImageUrl: selectedImageUrl || undefined }),
-      });
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.error || 'Generation failed');
-      setLastImage(d.creative);
-      loadGallery(storeId);
-    } catch (e: any) { setError(e.message); }
+    const ids = Array.from(templateIds);
+    setGenerating(true); setError(''); setSessionImages([]);
+    setProgress({ done: 0, total: ids.length });
+    const failures: string[] = [];
+    for (let i = 0; i < ids.length; i++) {
+      try {
+        const res = await fetch('/api/static-ads/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ storeId, productId, audienceId, templateId: ids[i], customInstructions, selectedImageUrl: selectedImageUrl || undefined }),
+        });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error || 'Generation failed');
+        setSessionImages(prev => [...prev, d.creative]);
+        loadGallery(storeId);
+      } catch (e: any) {
+        const name = templates.find(t => t.id === ids[i])?.name || ids[i];
+        failures.push(`${name}: ${e.message}`);
+      }
+      setProgress({ done: i + 1, total: ids.length });
+    }
+    if (failures.length) setError(`${failures.length}/${ids.length} failed — ${failures.join(' · ')}`);
+    setProgress(null);
     setGenerating(false);
   }
 
@@ -152,7 +184,7 @@ export default function StaticAdsPage() {
       const res = await fetch('/api/static-ads/generate-copy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeId, productId, audienceId, templateId, count: 3 }),
+        body: JSON.stringify({ storeId, productId, audienceId, templateId: Array.from(templateIds)[0], count: 3 }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || 'Copy generation failed');
@@ -268,10 +300,17 @@ export default function StaticAdsPage() {
                   </button>
                 </div>
               ) : (
-                <select value={audienceId} onChange={e => setAudienceId(e.target.value)} className={inputCls}>
-                  <option value="">— select audience —</option>
-                  {audiences.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
+                <div className="space-y-2">
+                  <select value={audienceId} onChange={e => setAudienceId(e.target.value)} className={inputCls}>
+                    <option value="">— select audience —</option>
+                    {audiences.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                  <button onClick={autoGenerateAudience} disabled={!productId || autoAudienceLoading}
+                    title="Fable 5 reads the product and builds the full audience: psychographics, usage moments, objections, and the claims they need to hear"
+                    className="w-full bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 disabled:opacity-40 text-white text-sm font-medium rounded-lg py-2 transition-colors">
+                    {autoAudienceLoading ? 'Fable 5 is building the audience… (~1 min)' : '✨ Generate Audience from Product'}
+                  </button>
+                </div>
               )}
             </div>
 
@@ -283,16 +322,25 @@ export default function StaticAdsPage() {
           </div>
 
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <label className={labelCls}>Template ({templates.length})</label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className={`${labelCls} mb-0`}>Templates ({templates.length}) — {templateIds.size} selected, 1 ad each</label>
+              {templateIds.size > 0 && (
+                <button onClick={() => setTemplateIds(new Set())} className="text-[11px] text-blue-400 hover:text-blue-300">clear</button>
+              )}
+            </div>
             <div className="grid grid-cols-3 gap-2 max-h-96 overflow-y-auto pr-1">
               {templates.map(t => {
                 const preview = t.template_data.preview_file
                   ? `/api/static-ads/templates/preview/${t.template_data.preview_file}`
                   : t.thumbnail_url;
                 return (
-                  <button key={t.id} onClick={() => setTemplateId(t.id)}
-                    className={`rounded-lg overflow-hidden border-2 text-left transition-colors ${
-                      templateId === t.id ? 'border-blue-500' : 'border-slate-700 hover:border-slate-500'
+                  <button key={t.id} onClick={() => setTemplateIds(prev => {
+                    const next = new Set(prev);
+                    if (next.has(t.id)) next.delete(t.id); else next.add(t.id);
+                    return next;
+                  })}
+                    className={`relative rounded-lg overflow-hidden border-2 text-left transition-colors ${
+                      templateIds.has(t.id) ? 'border-blue-500' : 'border-slate-700 hover:border-slate-500'
                     }`}>
                     <div className="aspect-square bg-slate-800 flex items-center justify-center">
                       {preview ? (
@@ -303,6 +351,9 @@ export default function StaticAdsPage() {
                       )}
                     </div>
                     <p className="text-[10px] text-slate-300 px-1.5 py-1 truncate">{t.name}</p>
+                    {templateIds.has(t.id) && (
+                      <div className="absolute top-1 right-1 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center text-white text-[10px]">✓</div>
+                    )}
                   </button>
                 );
               })}
@@ -312,7 +363,9 @@ export default function StaticAdsPage() {
           <div className="flex gap-3">
             <button onClick={generateImage} disabled={!ready || generating}
               className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-medium rounded-lg py-3 transition-colors">
-              {generating ? 'Generating… (~30-60s)' : 'Generate Picture Ad'}
+              {generating && progress
+                ? `Generating ${Math.min(progress.done + 1, progress.total)}/${progress.total}…`
+                : templateIds.size > 1 ? `Generate ${templateIds.size} Picture Ads` : 'Generate Picture Ad'}
             </button>
             <button onClick={previewCopy} disabled={!ready || copyLoading}
               className="bg-slate-800 border border-slate-700 hover:border-blue-500 disabled:opacity-40 text-slate-300 text-sm rounded-lg px-4 transition-colors">
@@ -323,13 +376,22 @@ export default function StaticAdsPage() {
 
         {/* ── Output column ── */}
         <div className="xl:col-span-3 space-y-5">
-          {lastImage && (
+          {sessionImages.length > 0 && (
             <div className="bg-slate-900 border border-blue-800 rounded-xl p-4">
               <p className="text-xs text-slate-400 mb-2">
-                Latest — <span className="text-slate-200">{lastImage.template}</span> · {lastImage.audience}
+                This run — {sessionImages.length} ad{sessionImages.length > 1 ? 's' : ''}
+                {generating && progress ? ` (${progress.total - sessionImages.length} more coming…)` : ''}
               </p>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={lastImage.imageUrl} alt="Generated ad" className="rounded-lg max-h-[480px] mx-auto" />
+              <div className={`grid gap-3 ${sessionImages.length === 1 ? 'grid-cols-1' : 'grid-cols-2 lg:grid-cols-3'}`}>
+                {sessionImages.map((img, i) => (
+                  <a key={i} href={img.imageUrl} target="_blank" rel="noreferrer" className="block">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={img.imageUrl} alt={img.template}
+                      className={`rounded-lg mx-auto ${sessionImages.length === 1 ? 'max-h-[480px]' : 'w-full'}`} />
+                    <p className="text-[10px] text-slate-400 mt-1 truncate">{img.template}</p>
+                  </a>
+                ))}
+              </div>
             </div>
           )}
 
