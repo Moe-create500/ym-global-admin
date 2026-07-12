@@ -714,18 +714,24 @@ export async function createCampaign(
     objective?: string;
     status?: string;
     specialAdCategories?: string[];
+    // CBO: set a campaign-level daily budget — Meta distributes it across
+    // ad sets; ad sets then carry NO budget of their own.
+    cboDailyBudgetCents?: number;
   }
 ): Promise<{ id: string }> {
   const objective = options.objective || 'OUTCOME_SALES';
-  const payload = {
+  const cbo = !!options.cboDailyBudgetCents;
+  const payload: Record<string, any> = {
     name: options.name,
     objective,
     buying_type: 'AUCTION',
     status: options.status || 'PAUSED',
     special_ad_categories: options.specialAdCategories || [],
-    // Required by Meta API v24+ when not using campaign budget optimization (CBO).
-    // false = each ad set has its own budget (true ABO), no sharing.
-    is_adset_budget_sharing_enabled: false,
+    ...(cbo
+      ? { daily_budget: options.cboDailyBudgetCents, bid_strategy: 'LOWEST_COST_WITHOUT_CAP' }
+      // Required by Meta API v24+ when not using campaign budget optimization (CBO).
+      // false = each ad set has its own budget (true ABO), no sharing.
+      : { is_adset_budget_sharing_enabled: false }),
   };
 
   try {
@@ -779,11 +785,13 @@ export async function createAdSet(
   const body: Record<string, any> = {
     name: options.name,
     campaign_id: options.campaignId,
-    daily_budget: budget,
+    // CBO campaigns own the budget — the ad set must not carry one
+    ...(options.cbo ? {} : { daily_budget: budget }),
     optimization_goal: options.optimizationGoal || 'OFFSITE_CONVERSIONS',
     billing_event: options.billingEvent || 'IMPRESSIONS',
     status: options.status || 'PAUSED',
-    bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
+    // CBO: bid strategy lives on the campaign, not the ad set
+    ...(options.cbo ? {} : { bid_strategy: 'LOWEST_COST_WITHOUT_CAP' }),
     targeting: options.targeting || {
       geo_locations: { countries: ['US'] },
       age_min: 25,

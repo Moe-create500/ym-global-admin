@@ -152,7 +152,8 @@ export default function LaunchFlowPage() {
   const [dailyBudget, setDailyBudget] = useState('10');
   const [goLive, setGoLive] = useState(true);
   const [countries, setCountries] = useState('US');
-  const [durationDays, setDurationDays] = useState(7);
+  // No end date — ads live in the campaign and run until turned off
+  const durationDays = 0;
 
   // Batch mode: launched from the Picture Ads gallery with pre-selected ads
   const [batchCreatives, setBatchCreatives] = useState<{ id: string; imageUrl: string; templateName: string; productId: string | null }[] | null>(null);
@@ -415,8 +416,7 @@ export default function LaunchFlowPage() {
       : d.id === 'campaign' ? (campaignMode === 'existing'
           ? (campaigns.find(c => c.id === (wf?.config?.existingCampaignId || existingCampaignId))?.name || 'existing campaign')
           : (profile?.profile_name || 'FB campaign (paused)'))
-      : d.id === 'adset' ? `$${wf?.config ? (wf.config.dailyBudgetCents / 100).toFixed(0) : dailyBudget}/day · ${
-          (wf?.config?.schedule?.durationDays ?? durationDays) > 0 ? `${wf?.config?.schedule?.durationDays ?? durationDays}d cap` : 'no end'}`
+      : d.id === 'adset' ? `$${wf?.config ? (wf.config.dailyBudgetCents / 100).toFixed(0) : dailyBudget}/day CBO · until stopped`
       : d.id === 'ads' ? 'upload + attach copy (paused)'
       : d.id === 'gate_launch' ? 'final approval before spend'
       : 'flips everything ACTIVE';
@@ -648,32 +648,22 @@ export default function LaunchFlowPage() {
           {errBox}
           {!wf ? (
             <>
-              <div className="grid grid-cols-2 gap-2">
-                <div><label className={labelCls}>Daily budget $</label>
-                  <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>
-                <div><label className={labelCls}>Days to run</label>
-                  <input type="number" min={0} max={90} value={durationDays}
-                    onChange={e => setDurationDays(Math.min(Math.max(Number(e.target.value) || 0, 0), 90))} className={inputCls} />
-                  <p className="text-[9px] text-slate-500 mt-0.5">0 = until stopped</p></div>
-              </div>
+              <div><label className={labelCls}>Daily budget $</label>
+                <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>
               <div><label className={labelCls}>Countries (comma-separated)</label>
                 <input value={countries} onChange={e => setCountries(e.target.value)} placeholder="US, CA, GB" className={inputCls} /></div>
-              <p className={`text-[11px] ${durationDays > 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                {durationDays > 0
-                  ? `Starts right away when live · auto-stops after ${durationDays} days — max total spend $${(parseFloat(dailyBudget || '10') * durationDays).toFixed(2)}. Facebook enforces the end date.`
-                  : '⚠ No end date — runs until you stop it manually.'}
+              <p className="text-[11px] text-slate-400">
+                Starts right away when live · stays in the campaign and runs until you turn it off (${parseFloat(dailyBudget || '10').toFixed(2)}/day).
               </p>
             </>
           ) : (
             <p className="text-xs text-slate-300">
               {(wf.config.targeting?.countries || ['US']).join(', ')} · ${(wf.config.dailyBudgetCents / 100).toFixed(2)}/day
-              {(wf.config.schedule?.durationDays ?? 0) > 0
-                ? ` · auto-stops after ${wf.config.schedule.durationDays}d (max $${((wf.config.dailyBudgetCents * wf.config.schedule.durationDays) / 100).toFixed(2)})`
-                : ' · no end date'}
+              {' · runs until turned off'}
             </p>
           )}
           <p className="text-xs text-slate-400">
-            Broad targeting — 18–65, all genders, Advantage+ audience OFF.{' '}
+            CBO — the daily budget sits on the campaign; Meta distributes it. Broad targeting — 18–65, all genders, Advantage+ audience OFF.{' '}
             {campaignMode === 'existing'
               ? 'Pixel + optimization are copied from the ad sets already in the chosen campaign.'
               : profile?.pixel_id ? `Optimizes for purchases via pixel ${profile.pixel_id}.` : 'No pixel on this profile — optimizes for link clicks.'}
@@ -691,8 +681,6 @@ export default function LaunchFlowPage() {
       case 'gate_launch': {
         const n = wf ? (wf.config.adCount || adCount) : adCount;
         const b = wf ? (wf.config.dailyBudgetCents / 100).toFixed(2) : parseFloat(dailyBudget || '10').toFixed(2);
-        const dur = wf ? (wf.config.schedule?.durationDays ?? 0) : durationDays;
-        const endD = dur > 0 ? new Date(Date.now() + dur * 86_400_000) : null;
         return (
         <div className="space-y-3">
           {!wf && <button onClick={() => setGoLive(v => !v)}
@@ -701,11 +689,9 @@ export default function LaunchFlowPage() {
           </button>}
           <div className="bg-slate-800/60 rounded-lg p-2.5 space-y-1">
             <p className="text-[10px] text-slate-500 uppercase">What approval starts</p>
-            <p className="text-xs text-white">{n} ads · <span className="text-amber-300 font-semibold">${b}/day</span></p>
+            <p className="text-xs text-white">{n} ads · <span className="text-amber-300 font-semibold">${b}/day CBO</span> (budget on the campaign)</p>
             <p className="text-xs text-white">
-              starts immediately → {endD
-                ? <>{endD.toLocaleDateString()} · <span className="text-emerald-400 font-semibold">max ${(parseFloat(b) * dur).toFixed(2)} total</span>, FB auto-stops it</>
-                : <span className="text-amber-400 font-semibold">no end date — runs until stopped (~${(parseFloat(b) * 30).toFixed(0)}/mo)</span>}
+              starts immediately · <span className="text-amber-400 font-semibold">runs until you turn it off</span> (~${(parseFloat(b) * 30).toFixed(0)}/mo)
             </p>
             <p className="text-[11px] text-slate-400">{profile?.profile_name || profile?.ad_account_id} → {pages.find(p => p.id === (wf?.config?.pageId || pageId))?.name || 'page'}</p>
           </div>
@@ -782,7 +768,7 @@ export default function LaunchFlowPage() {
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => setSchedModal(false)}>
           <div className="bg-slate-900 border border-slate-700 rounded-xl p-5 w-96" onClick={e => e.stopPropagation()}>
             <p className="text-sm font-semibold text-white mb-3">⏰ Schedule this launch</p>
-            <p className="text-[11px] text-slate-400 mb-3">Runs the exact configuration on the canvas — {batchMode ? `${batchCreatives!.length} selected ads` : `${adCount} fresh ads`}, ${dailyBudget}/day{durationDays > 0 ? `, ${durationDays}d cap` : ''} — on a recurring schedule, fully server-side.</p>
+            <p className="text-[11px] text-slate-400 mb-3">Runs the exact configuration on the canvas — {batchMode ? `${batchCreatives!.length} selected ads` : `${adCount} fresh ads`}, ${dailyBudget}/day CBO — on a recurring schedule, fully server-side.</p>
             <div className="space-y-3">
               <div><label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Name</label>
                 <input value={schedName} onChange={e => setSchedName(e.target.value)}
@@ -808,7 +794,7 @@ export default function LaunchFlowPage() {
                 {schedAutoLive ? '⚡ Goes LIVE automatically each run' : 'Each run ends PAUSED (manual go-live)'}
               </button>
               {schedAutoLive && (
-                <p className="text-[11px] text-amber-400">Every run spends real money without asking: ${dailyBudget}/day{durationDays > 0 ? ` × ${durationDays}d = max $${(parseFloat(dailyBudget || '10') * durationDays).toFixed(0)} per run` : ' with no end date'}.</p>
+                <p className="text-[11px] text-amber-400">Every run spends real money without asking: ${dailyBudget}/day per campaign, running until you turn it off.</p>
               )}
               {schedMsg && <p className="text-xs text-red-400">{schedMsg}</p>}
               <div className="flex gap-2">

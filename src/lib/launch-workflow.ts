@@ -302,15 +302,24 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     if (!profile?.access_token || !profile?.ad_account_id) throw new Error('FB profile missing token or ad account');
     if (cfg.existingCampaignId) {
       result.campaignId = cfg.existingCampaignId;
-      return { detail: `Using existing campaign ${cfg.existingCampaignId}`, result };
+      // Is the existing campaign CBO? Its ad sets must not carry budgets then.
+      try {
+        const res = await fetch(`https://graph.facebook.com/v24.0/${cfg.existingCampaignId}?fields=daily_budget,lifetime_budget&access_token=${profile.access_token}`);
+        const d = await res.json();
+        result.campaignIsCbo = !!(d.daily_budget || d.lifetime_budget);
+      } catch { result.campaignIsCbo = false; }
+      return { detail: `Using existing campaign ${cfg.existingCampaignId}${result.campaignIsCbo ? ' (CBO — campaign owns the budget)' : ''}`, result };
     }
     const { createCampaign } = await import('@/lib/facebook');
-    // Always PAUSED — the launch gate + activate step control going live
+    // CBO: minimum spend lives on the CAMPAIGN; Meta distributes across ad
+    // sets. Always PAUSED — the launch gate + activate step control going live.
     const campaign = await createCampaign(profile.ad_account_id, profile.access_token, {
       name: cfg.campaignName, status: 'PAUSED',
+      cboDailyBudgetCents: cfg.dailyBudgetCents,
     });
     result.campaignId = campaign.id;
-    return { detail: `Campaign ${campaign.id} (paused)`, result };
+    result.campaignIsCbo = true;
+    return { detail: `CBO campaign ${campaign.id} (paused, $${(cfg.dailyBudgetCents / 100).toFixed(2)}/day at campaign level)`, result };
   }
 
   if (step.key === 'adset') {
@@ -343,10 +352,12 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     }
     const hasPixel = !!pixelId;
 
+    const isCbo = !!result.campaignIsCbo;
     const adset = await createAdSet(profile.ad_account_id, profile.access_token, {
       name: `${cfg.campaignName} | AdSet 1`,
       campaignId: result.campaignId,
       dailyBudgetCents: cfg.dailyBudgetCents,
+      cbo: isCbo, // CBO campaign owns the budget — ad set carries none
       status: 'PAUSED',
       // No pixel → conversions optimization is invalid; optimize for link clicks
       optimizationGoal: optimizationGoal || (hasPixel ? 'OFFSITE_CONVERSIONS' : 'LINK_CLICKS'),
@@ -360,19 +371,14 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
         age_max: 65,
         targeting_automation: { advantage_audience: 0 },
       },
-      // Starts immediately when activated; end_time makes Meta stop delivery
-      // automatically — total spend is bounded at daily × days
+      // Optional expiry when configured; default = runs until turned off
       ...(() => {
         const sched = cfg.schedule || {};
         return sched.durationDays > 0 ? { endTime: new Date(Date.now() + sched.durationDays * 86_400_000).toISOString() } : {};
       })(),
     });
     result.adSetId = adset.id;
-    const sched = cfg.schedule || {};
-    const schedNote = sched.durationDays > 0
-      ? `, auto-stops after ${sched.durationDays}d (max $${((cfg.dailyBudgetCents * sched.durationDays) / 100).toFixed(2)} total)`
-      : ', no end date';
-    return { detail: `Ad set ${adset.id}${basedOn}${hasPixel ? '' : ' (no pixel — link clicks)'}, broad targeting, Advantage+ off${schedNote}`, result };
+    return { detail: `Ad set ${adset.id}${basedOn}${isCbo ? ' (CBO — budget on campaign)' : ''}${hasPixel ? '' : ' (no pixel — link clicks)'}, broad targeting, Advantage+ off, runs until turned off`, result };
   }
 
   if (step.key.startsWith('ad_')) {
