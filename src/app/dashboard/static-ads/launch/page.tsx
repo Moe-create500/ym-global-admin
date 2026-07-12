@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
-import { ReactFlow, Background, Controls, Handle, Position, type Node, type Edge, type NodeProps } from '@xyflow/react';
+import { ReactFlow, Background, Controls, Handle, Position, MarkerType, type Node, type Edge, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
 interface Store { id: string; name: string }
@@ -21,6 +21,7 @@ const HIDDEN_STORES = ['apex loom', 'neeyahpure', 'vitaedge', 'ymo - amazon', 'z
 type NodeStatus = 'idle' | 'pending' | 'running' | 'done' | 'error' | 'gate';
 interface FlowNodeData extends Record<string, unknown> {
   icon: string; title: string; subtitle: string; status: NodeStatus; progress?: string; isGate?: boolean;
+  tpos: Position; spos: Position;
 }
 
 const NODE_DEFS = [
@@ -45,7 +46,7 @@ function FlowNode({ data, selected }: NodeProps<Node<FlowNodeData>>) {
     : 'border-slate-700';
   return (
     <div className={`w-44 rounded-xl border-2 bg-slate-900 px-3 py-2.5 ${ring} ${selected ? 'outline outline-2 outline-blue-500/60' : ''}`}>
-      <Handle type="target" position={Position.Left} className="!bg-slate-500 !w-2 !h-2" />
+      <Handle type="target" position={data.tpos} className="!bg-slate-500 !w-2 !h-2" />
       <div className="flex items-center gap-2">
         <span className="text-lg">{data.icon}</span>
         <div className="min-w-0">
@@ -63,7 +64,7 @@ function FlowNode({ data, selected }: NodeProps<Node<FlowNodeData>>) {
           {data.status === 'gate' ? 'needs approval' : data.status}
         </span>
       </div>
-      <Handle type="source" position={Position.Right} className="!bg-slate-500 !w-2 !h-2" />
+      <Handle type="source" position={data.spos} className="!bg-slate-500 !w-2 !h-2" />
     </div>
   );
 }
@@ -85,6 +86,10 @@ export default function LaunchFlowPage() {
   const [adCount, setAdCount] = useState(10);
   const [dailyBudget, setDailyBudget] = useState('10');
   const [goLive, setGoLive] = useState(true);
+  const [countries, setCountries] = useState('US');
+  const [ageMin, setAgeMin] = useState(25);
+  const [ageMax, setAgeMax] = useState(65);
+  const [gender, setGender] = useState<'all' | 'women' | 'men'>('all');
 
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [wf, setWf] = useState<Workflow | null>(null);
@@ -162,6 +167,7 @@ export default function LaunchFlowPage() {
           profileId, pageId, landingUrl, adCount,
           dailyBudgetCents: Math.round(parseFloat(dailyBudget || '10') * 100),
           launchStatus: goLive ? 'ACTIVE' : 'PAUSED',
+          targeting: { countries: countries.split(',').map(c => c.trim()).filter(Boolean), ageMin, ageMax, gender },
         },
       }),
     });
@@ -214,6 +220,9 @@ export default function LaunchFlowPage() {
     return true;
   }), [goLive, wf]);
 
+  // Serpentine layout: row 1 flows left→right, row 2 flows right→left directly
+  // beneath, so every edge is short and readable — no diagonal wrap line.
+  const PER_ROW = 5;
   const nodes: Node<FlowNodeData>[] = useMemo(() => activeDefs.map((d, i) => {
     const st = d.id === 'product' ? { status: (productId ? 'done' : 'idle') as NodeStatus } : nodeStatus(d.stepKeys);
     const subtitle =
@@ -227,20 +236,34 @@ export default function LaunchFlowPage() {
       : d.id === 'ads' ? 'upload + attach copy (paused)'
       : d.id === 'gate_launch' ? 'final approval before spend'
       : 'flips everything ACTIVE';
+
+    const row = Math.floor(i / PER_ROW);
+    const col = i % PER_ROW;
+    const x = row % 2 === 0 ? 40 + col * 230 : 40 + (PER_ROW - 1 - col) * 230;
+    const y = 40 + row * 200;
+    const rowEnd = col === PER_ROW - 1 && i < activeDefs.length - 1;
+    // handle sides follow the serpentine direction; row transitions go vertical
+    const tpos = col === 0 && row > 0 ? Position.Top : row % 2 === 0 ? Position.Left : Position.Right;
+    const spos = rowEnd ? Position.Bottom : row % 2 === 0 ? Position.Right : Position.Left;
+
     return {
       id: d.id, type: 'flowNode',
-      position: { x: 40 + (i % 5) * 210, y: 60 + Math.floor(i / 5) * 190 },
-      data: { icon: d.icon, title: d.title, subtitle, status: st.status, progress: (st as any).progress, isGate: d.id.startsWith('gate') },
+      position: { x, y },
+      data: { icon: d.icon, title: d.title, subtitle, status: st.status, progress: (st as any).progress, isGate: d.id.startsWith('gate'), tpos, spos },
     };
   }), [activeDefs, wf, productId, products, profile, adCount, dailyBudget, running]);
 
   const edges: Edge[] = useMemo(() => activeDefs.slice(0, -1).map((d, i) => {
     const next = activeDefs[i + 1];
     const targetStatus = nodes.find(n => n.id === next.id)?.data.status;
+    const done = targetStatus === 'done' || nodes.find(n => n.id === d.id)?.data.status === 'done';
+    const color = done ? '#34d399' : '#475569';
     return {
       id: `${d.id}-${next.id}`, source: d.id, target: next.id,
+      type: 'smoothstep',
       animated: targetStatus === 'running' || targetStatus === 'gate',
-      style: { stroke: targetStatus === 'done' || nodes.find(n => n.id === d.id)?.data.status === 'done' ? '#34d399' : '#475569', strokeWidth: 2 },
+      markerEnd: { type: MarkerType.ArrowClosed, color, width: 16, height: 16 },
+      style: { stroke: color, strokeWidth: 2 },
     };
   }), [activeDefs, nodes]);
 
@@ -248,9 +271,21 @@ export default function LaunchFlowPage() {
   const inputCls = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500';
   const labelCls = 'block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5';
 
+  const adsManagerUrl = profile
+    ? `https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=${(profile.ad_account_id || '').replace('act_', '')}`
+    : '';
+
   // ─── Inspector for the selected node ───
   function Inspector() {
     const r = wf?.result || {};
+    const def = NODE_DEFS.find(d => d.id === selectedNode);
+    const nodeErr = wf?.steps.find(s =>
+      s.status === 'error' && (def?.stepKeys || []).some(k => k.endsWith('_') ? s.key.startsWith(k) : s.key === k));
+    const errBox = nodeErr ? (
+      <div className="mb-3 bg-red-900/30 border border-red-800 text-red-300 text-xs rounded-lg px-3 py-2">
+        <p className="font-semibold mb-0.5">Step failed:</p>{nodeErr.detail}
+      </div>
+    ) : null;
     switch (selectedNode) {
       case 'product': return (
         <div className="space-y-3">
@@ -287,6 +322,7 @@ export default function LaunchFlowPage() {
       ) : <p className="text-xs text-slate-500">Fable 5 writes the FB primary text, headline and description from the product + audience. Output appears here for review.</p>;
       case 'images': return (
         <div className="space-y-3">
+          {errBox}
           {!wf && <div><label className={labelCls}>Number of picture ads</label>
             <input type="number" min={1} max={20} value={adCount}
               onChange={e => setAdCount(Math.min(Math.max(Number(e.target.value) || 1, 1), 20))} className={inputCls} /></div>}
@@ -304,7 +340,34 @@ export default function LaunchFlowPage() {
         </div>);
       case 'gate_review': return (
         <div className="space-y-3">
-          <p className="text-xs text-slate-400">The workflow STOPS here. Inspect the audience, copy and every image on this canvas — nothing touches Facebook until you approve.</p>
+          <p className="text-xs text-slate-400">The workflow STOPS here — nothing touches Facebook until you approve. Everything you&apos;re approving:</p>
+          {r.audience && (
+            <div className="bg-slate-800/60 rounded-lg p-2.5">
+              <p className="text-[10px] text-slate-500 uppercase">Audience</p>
+              <p className="text-xs text-white">{r.audience.name}</p>
+              <p className="text-[11px] text-slate-400 line-clamp-2">{r.audience.description}</p>
+            </div>
+          )}
+          {r.copy && (
+            <div className="bg-slate-800/60 rounded-lg p-2.5">
+              <p className="text-[10px] text-slate-500 uppercase">Copy</p>
+              <p className="text-xs text-white">{r.copy.headline}</p>
+              <p className="text-[11px] text-slate-400 whitespace-pre-wrap line-clamp-4">{r.copy.primaryText}</p>
+            </div>
+          )}
+          {(r.creatives || []).filter(Boolean).length > 0 && (
+            <div className="bg-slate-800/60 rounded-lg p-2.5">
+              <p className="text-[10px] text-slate-500 uppercase mb-1.5">{(r.creatives || []).filter(Boolean).length} picture ads (click to view full)</p>
+              <div className="grid grid-cols-4 gap-1">
+                {(r.creatives || []).filter(Boolean).map((c: any) => (
+                  <a key={c.id} href={c.imageUrl} target="_blank" rel="noreferrer">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={`${c.imageUrl}?w=150`} alt={c.template} className="rounded aspect-square object-cover w-full" />
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
           {currentGate?.key === 'gate_review' && (
             <button onClick={() => approve('gate_review')} className="w-full bg-amber-500 hover:bg-amber-400 text-black font-semibold rounded-lg py-2.5 text-sm">
               ✓ Approve — create paused FB objects
@@ -322,33 +385,79 @@ export default function LaunchFlowPage() {
               <option value="">{pagesLoading ? 'loading…' : '— select —'}</option>
               {pages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select></div>
-          {r.campaignId && <p className="text-xs text-emerald-400">Campaign: {r.campaignId}</p>}
+          {errBox}
+          {r.campaignId && (
+            <p className="text-xs text-emerald-400">Campaign: {r.campaignId} — <a href={adsManagerUrl} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Ads Manager ↗</a></p>
+          )}
         </div>);
       case 'adset': return (
         <div className="space-y-3">
-          {!wf && <div><label className={labelCls}>Daily budget $</label>
-            <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>}
+          {errBox}
+          {!wf ? (
+            <>
+              <div><label className={labelCls}>Daily budget $</label>
+                <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>
+              <div><label className={labelCls}>Countries (comma-separated)</label>
+                <input value={countries} onChange={e => setCountries(e.target.value)} placeholder="US, CA, GB" className={inputCls} /></div>
+              <div className="grid grid-cols-3 gap-2">
+                <div><label className={labelCls}>Age min</label>
+                  <input type="number" min={18} max={65} value={ageMin} onChange={e => setAgeMin(Number(e.target.value) || 18)} className={inputCls} /></div>
+                <div><label className={labelCls}>Age max</label>
+                  <input type="number" min={18} max={65} value={ageMax} onChange={e => setAgeMax(Number(e.target.value) || 65)} className={inputCls} /></div>
+                <div><label className={labelCls}>Gender</label>
+                  <select value={gender} onChange={e => setGender(e.target.value as any)} className={inputCls}>
+                    <option value="all">All</option><option value="women">Women</option><option value="men">Men</option>
+                  </select></div>
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-slate-300">
+              {(wf.config.targeting?.countries || ['US']).join(', ')} · ages {wf.config.targeting?.ageMin ?? 25}–{wf.config.targeting?.ageMax ?? 65} · {wf.config.targeting?.gender || 'all'} · ${(wf.config.dailyBudgetCents / 100).toFixed(2)}/day
+            </p>
+          )}
           <p className="text-xs text-slate-400">{profile?.pixel_id ? `Optimizes for purchases via pixel ${profile.pixel_id}` : 'No pixel on this profile — optimizes for link clicks'}</p>
-          {r.adSetId && <p className="text-xs text-emerald-400">Ad set: {r.adSetId}</p>}
+          {r.adSetId && (
+            <p className="text-xs text-emerald-400">Ad set: {r.adSetId} — <a href={adsManagerUrl} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Ads Manager ↗</a></p>
+          )}
         </div>);
       case 'ads': return (
         <div className="space-y-2">
+          {errBox}
           <p className="text-xs text-slate-400">Each image is uploaded to Meta and becomes a paused ad carrying the copy + Shop Now → your landing URL.</p>
           {(r.adIds || []).filter(Boolean).map((id: string, i: number) => <p key={id} className="text-xs text-emerald-400">Ad {i + 1}: {id}</p>)}
         </div>);
-      case 'gate_launch': return (
+      case 'gate_launch': {
+        const n = wf ? (wf.config.adCount || adCount) : adCount;
+        const b = wf ? (wf.config.dailyBudgetCents / 100).toFixed(2) : parseFloat(dailyBudget || '10').toFixed(2);
+        return (
         <div className="space-y-3">
           {!wf && <button onClick={() => setGoLive(v => !v)}
             className={`w-full rounded-lg px-3 py-2 text-sm font-medium border ${goLive ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
             {goLive ? 'Will go LIVE after this gate' : 'Staying PAUSED (no gate needed)'}
           </button>}
-          <p className="text-xs text-slate-400">Everything exists on Facebook, paused. Approving here starts real spend at ${wf?.config ? (wf.config.dailyBudgetCents / 100).toFixed(2) : dailyBudget}/day.</p>
+          <div className="bg-slate-800/60 rounded-lg p-2.5 space-y-1">
+            <p className="text-[10px] text-slate-500 uppercase">What approval starts</p>
+            <p className="text-xs text-white">{n} ads · <span className="text-amber-300 font-semibold">${b}/day</span> · ~${(parseFloat(b) * 30).toFixed(0)}/month if left running</p>
+            <p className="text-[11px] text-slate-400">{profile?.profile_name || profile?.ad_account_id} → {pages.find(p => p.id === (wf?.config?.pageId || pageId))?.name || 'page'}</p>
+          </div>
+          <p className="text-xs text-slate-400">Everything already exists on Facebook, paused. Review it in <a href={adsManagerUrl} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Ads Manager ↗</a> first if you want.</p>
           {currentGate?.key === 'gate_launch' && (
             <button onClick={() => approve('gate_launch')} className="w-full bg-red-600 hover:bg-red-500 text-white font-semibold rounded-lg py-2.5 text-sm">
               🚦 Approve — GO LIVE, start spending
             </button>)}
         </div>);
-      case 'activate': return <p className="text-xs text-slate-400">Flips ads → ad set → campaign to ACTIVE, in that order. {wf?.steps.find(s => s.key === 'activate')?.detail || ''}</p>;
+      }
+      case 'activate': return (
+        <div className="space-y-2">
+          {errBox}
+          <p className="text-xs text-slate-400">Flips ads → ad set → campaign to ACTIVE, in that order — nothing serves until the campaign flips last.</p>
+          {wf?.steps.find(s => s.key === 'activate')?.status === 'done' && (
+            <a href={adsManagerUrl} target="_blank" rel="noreferrer"
+              className="block text-center bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium rounded-lg py-2">
+              ✓ LIVE — open Ads Manager
+            </a>
+          )}
+        </div>);
       default: return null;
     }
   }

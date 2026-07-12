@@ -136,6 +136,14 @@ export async function POST(req: NextRequest) {
         landingUrl: config.landingUrl,
         audienceId: config.audienceId || null,
         campaignName: config.campaignName || `${product.title.slice(0, 40)} | Launch ${new Date().toISOString().slice(0, 10)}`,
+        targeting: {
+          countries: Array.isArray(config.targeting?.countries) && config.targeting.countries.length
+            ? config.targeting.countries.map((c: string) => String(c).trim().toUpperCase()).filter(Boolean)
+            : ['US'],
+          ageMin: Math.min(Math.max(Number(config.targeting?.ageMin) || 25, 18), 65),
+          ageMax: Math.min(Math.max(Number(config.targeting?.ageMax) || 65, 18), 65),
+          gender: ['all', 'women', 'men'].includes(config.targeting?.gender) ? config.targeting.gender : 'all',
+        },
       }));
 
     const r: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(id);
@@ -289,6 +297,7 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     if (!result.campaignId) throw new Error('Campaign missing — rerun the campaign step');
     const { createAdSet } = await import('@/lib/facebook');
     const hasPixel = !!profile.pixel_id;
+    const t = cfg.targeting || { countries: ['US'], ageMin: 25, ageMax: 65, gender: 'all' };
     const adset = await createAdSet(profile.ad_account_id, profile.access_token, {
       name: `${cfg.campaignName} | AdSet 1`,
       campaignId: result.campaignId,
@@ -297,6 +306,12 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
       // No pixel → conversions optimization is invalid; optimize for link clicks
       optimizationGoal: hasPixel ? 'OFFSITE_CONVERSIONS' : 'LINK_CLICKS',
       pixelId: hasPixel ? profile.pixel_id : undefined,
+      targeting: {
+        geo_locations: { countries: t.countries },
+        age_min: t.ageMin,
+        age_max: t.ageMax,
+        ...(t.gender === 'women' ? { genders: [2] } : t.gender === 'men' ? { genders: [1] } : {}),
+      },
     });
     result.adSetId = adset.id;
     return { detail: `Ad set ${adset.id}${hasPixel ? '' : ' (no pixel — optimizing for link clicks)'}`, result };
