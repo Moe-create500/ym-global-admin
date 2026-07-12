@@ -138,12 +138,18 @@ export async function getAdAccounts(accessToken: string): Promise<FBAdAccount[]>
 
 // Get user's pages
 export async function getPages(accessToken: string): Promise<FBPage[]> {
-  const res = await fetch(
-    `${FB_GRAPH_URL}/me/accounts?fields=id,name,access_token,category&access_token=${accessToken}`
-  );
-  if (!res.ok) throw new Error(`FB pages fetch failed: ${await res.text()}`);
-  const data = await res.json();
-  return data.data || [];
+  // me/accounts defaults to 25 per page — without pagination any page past
+  // the first batch silently never shows up. Follow paging.next to the end.
+  const pages: FBPage[] = [];
+  let url = `${FB_GRAPH_URL}/me/accounts?fields=id,name,access_token,category&limit=200&access_token=${accessToken}`;
+  for (let i = 0; i < 10 && url; i++) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`FB pages fetch failed: ${await res.text()}`);
+    const data = await res.json();
+    pages.push(...(data.data || []));
+    url = data.paging?.next || '';
+  }
+  return pages;
 }
 
 // Get daily ad insights for an ad account
