@@ -207,15 +207,30 @@ export default function LaunchFlowPage() {
   const loadStoreData = useCallback((sid: string) => {
     fetch(`/api/products?storeId=${sid}&onBrand=1`).then(r => r.json()).then(d => setProducts(d.products || [])).catch(() => {});
     fetch(`/api/static-ads/workflow?storeId=${sid}`).then(r => r.json()).then(d => {
-      setWorkflows(d.workflows || []);
+      const rows: Workflow[] = d.workflows || [];
+      setWorkflows(rows);
       setProfiles(d.profiles || []);
       setShopifyDomain(d.shopifyDomain || '');
       // Never prefill the homepage — the product-link resolver fills the real
       // product page once a product is chosen; ads go to product pages.
       setLandingUrl('');
       if ((d.profiles || []).length === 1) setProfileId(d.profiles[0].id);
+
+      // A refresh must NOT lose the run: restore the last-viewed workflow if
+      // it's unfinished, else the most recent unfinished one — one click resumes.
+      setWf(prev => {
+        if (prev) return prev;
+        const unfinished = (w: Workflow) => ['running', 'awaiting_approval', 'error'].includes(w.status);
+        const savedId = typeof window !== 'undefined' ? localStorage.getItem('launch_active_wf') : null;
+        return rows.find(w => w.id === savedId && unfinished(w)) || rows.find(unfinished) || null;
+      });
     }).catch(() => {});
   }, []);
+
+  // Remember which run this tab is looking at (survives refresh)
+  useEffect(() => {
+    if (wf?.id) localStorage.setItem('launch_active_wf', wf.id);
+  }, [wf?.id]);
 
   useEffect(() => {
     if (!storeId) return;
@@ -789,9 +804,16 @@ export default function LaunchFlowPage() {
             className="bg-slate-800 border border-slate-700 hover:border-blue-500 disabled:opacity-40 text-slate-200 text-sm font-medium rounded-lg px-4 py-2">
             ⏰ Schedule
           </button>}
+          {wf?.status === 'running' && !running && (
+            <button onClick={() => void advanceLoop(wf.id)}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-lg px-4 py-2">
+              ▶ Resume run
+            </button>
+          )}
           {wf?.status === 'error' && !running && <button onClick={retry} className="bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg px-4 py-2">Retry + continue</button>}
-          {wf && (wf.status === 'done' || wf.status === 'cancelled') && (
-            <button onClick={() => { setWf(null); setError(''); }} className="bg-slate-800 border border-slate-700 text-slate-300 text-sm rounded-lg px-4 py-2">New run</button>
+          {wf && !running && (
+            <button onClick={() => { setWf(null); setError(''); localStorage.removeItem('launch_active_wf'); }}
+              className="bg-slate-800 border border-slate-700 text-slate-300 text-sm rounded-lg px-4 py-2">New run</button>
           )}
           <Link href="/dashboard/static-ads" className="text-xs text-blue-400 hover:text-blue-300">← Picture Ads</Link>
         </div>
