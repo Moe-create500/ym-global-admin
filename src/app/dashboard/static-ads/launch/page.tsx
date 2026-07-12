@@ -493,7 +493,14 @@ export default function LaunchFlowPage() {
       s.status === 'error' && (def?.stepKeys || []).some(k => k.endsWith('_') ? s.key.startsWith(k) : s.key === k));
     const errBox = nodeErr ? (
       <div className="mb-3 bg-red-900/30 border border-red-800 text-red-300 text-xs rounded-lg px-3 py-2">
-        <p className="font-semibold mb-0.5">Step failed:</p>{nodeErr.detail}
+        <p className="font-semibold mb-0.5">Step failed:</p>
+        <p className="break-words">{nodeErr.detail}</p>
+        {wf?.status === 'error' && !running && (
+          <button onClick={retry}
+            className="mt-2 w-full bg-red-600 hover:bg-red-500 text-white font-semibold rounded-lg py-2 text-xs">
+            ↻ Retry this step + continue the run
+          </button>
+        )}
       </div>
     ) : null;
     switch (selectedNode) {
