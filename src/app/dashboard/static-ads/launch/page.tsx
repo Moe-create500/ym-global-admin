@@ -164,7 +164,21 @@ export default function LaunchFlowPage() {
   const [existingCampaignId, setExistingCampaignId] = useState('');
   const batchMode = !!batchCreatives?.length;
 
-  const [flowTab, setFlowTab] = useState<'ads' | 'newProduct' | 'schedules'>('ads');
+  const [flowTab, setFlowTab] = useState<'ads' | 'newProduct' | 'videos' | 'schedules'>('ads');
+
+  // New Product Launch form
+  const [npBrand, setNpBrand] = useState('');
+  const [npName, setNpName] = useState('');
+  const [npPrice, setNpPrice] = useState('29.99');
+  const [npBrief, setNpBrief] = useState('');
+  const [npRefUrls, setNpRefUrls] = useState('');
+
+  // Video ads (Kalodata pool)
+  const [vidStats, setVidStats] = useState<{ pending: number; used: number; failed: number } | null>(null);
+  const [vidRecent, setVidRecent] = useState<any[]>([]);
+  const [vidCount, setVidCount] = useState(9);
+  const [vidUploading, setVidUploading] = useState(false);
+  const [vidMsg, setVidMsg] = useState('');
 
   // Recurring launch schedules
   interface Schedule { id: string; name: string; storeName?: string; cadence: string; timeOfDay: string; dayOfWeek: number | null; autoLive: boolean; isActive: boolean; lastRunAt: string | null; lastResult: string | null; nextRunAt: string; config?: any }
@@ -391,6 +405,80 @@ export default function LaunchFlowPage() {
     setFlowTab('schedules');
   }
 
+  const loadVideoPool = useCallback((sid: string) => {
+    fetch(`/api/static-ads/videos?storeId=${sid}`).then(r => r.json())
+      .then(d => { setVidStats(d.stats || null); setVidRecent(d.recent || []); }).catch(() => {});
+  }, []);
+  useEffect(() => { if (storeId) loadVideoPool(storeId); }, [storeId, loadVideoPool]);
+
+  async function uploadKalodata(file: File) {
+    setVidUploading(true); setVidMsg('');
+    const fd = new FormData();
+    fd.append('storeId', storeId); fd.append('file', file);
+    const res = await fetch('/api/static-ads/videos', { method: 'POST', body: fd });
+    const d = await res.json();
+    setVidMsg(res.ok ? `Imported ${d.imported} new videos (${d.parsed} in file, ${d.skipped} already known)` : (d.error || 'import failed'));
+    setVidUploading(false);
+    loadVideoPool(storeId);
+  }
+
+  async function startNewProduct() {
+    setError('');
+    const refUrls = npRefUrls.split('\n').map(s => s.trim()).filter(s => s.startsWith('http'));
+    const res = await fetch('/api/static-ads/workflow', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'create', storeId,
+        config: {
+          ...launchConfig(), landingUrl: undefined, creativeIds: undefined,
+          newProduct: {
+            brandName: npBrand.trim(), productName: npName.trim(),
+            priceCents: Math.round(parseFloat(npPrice || '0') * 100),
+            brief: npBrief.trim(), referenceImageUrls: refUrls,
+          },
+        },
+      }),
+    });
+    const d = await res.json();
+    if (!res.ok) { setError(d.error || 'create failed'); return; }
+    setWf(d.workflow);
+    void advanceLoop(d.workflow.id);
+  }
+
+  async function startVideoLaunch() {
+    setError('');
+    const res = await fetch('/api/static-ads/workflow', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'create', storeId, productId,
+        config: { ...launchConfig(), creativeIds: undefined, adCount: 0, videoCount: vidCount },
+      }),
+    });
+    const d = await res.json();
+    if (!res.ok) { setError(d.error || 'create failed'); return; }
+    setWf(d.workflow);
+    void advanceLoop(d.workflow.id);
+  }
+
+  async function scheduleDailyMix(w: Workflow) {
+    setError('');
+    const res = await fetch('/api/static-ads/workflow', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'schedule_create', storeId: w.storeId, productId: w.productId,
+        name: `Daily top-up — 3 videos + 2 pics @ 11:50PM`,
+        config: {
+          ...w.config, videoCount: 3, adCount: 2, creativeIds: undefined, newProduct: null,
+          existingCampaignId: w.result?.campaignId, campaignName: undefined, audienceId: null,
+        },
+        cadence: 'daily', timeOfDay: '23:50', autoLive: true,
+      }),
+    });
+    const d = await res.json();
+    if (!res.ok) { setError(d.error || 'schedule failed'); return; }
+    loadSchedules(); setFlowTab('schedules');
+  }
+
   function openScheduleEditor(s: Schedule) {
     setEditSched(s);
     setEditForm({
@@ -525,6 +613,64 @@ export default function LaunchFlowPage() {
   }), [activeDefs, nodes]);
 
   const currentGate = wf?.status === 'awaiting_approval' ? wf.steps.find(s => s.status !== 'done' && s.key.startsWith('gate_')) : null;
+
+  // Special-mode runs (new product / videos) live on their own tabs
+  useEffect(() => {
+    if (!wf) return;
+    if (wf.config?.mode === 'new_product') setFlowTab('newProduct');
+    else if ((wf.config?.videoCount || 0) > 0) setFlowTab('videos');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wf?.id]);
+
+  // Plain step-list runner for new-product and video workflows (no canvas)
+  function StepRunPanel({ w }: { w: Workflow }) {
+    return (
+      <div className="bg-slate-900 border border-blue-800 rounded-xl p-4 mt-4">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm text-white font-medium">{w.name}</p>
+          <span className={`text-[11px] px-2 py-0.5 rounded-full ${
+            w.status === 'done' ? 'bg-emerald-900/50 text-emerald-400' : w.status === 'error' ? 'bg-red-900/50 text-red-400'
+            : w.status === 'awaiting_approval' ? 'bg-amber-900/50 text-amber-400' : 'bg-blue-900/50 text-blue-400'
+          }`}>{w.status} · {w.steps.filter(s => s.status === 'done').length}/{w.steps.length}</span>
+        </div>
+        <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+          {w.steps.map(s => (
+            <div key={s.key} className="flex items-start gap-2 text-sm py-0.5">
+              <span className="w-4 flex-shrink-0 mt-0.5">
+                {s.status === 'done' ? <span className="text-emerald-400">✓</span>
+                  : s.status === 'error' ? <span className="text-red-400">✗</span>
+                  : running && w.steps.find(x => x.status !== 'done')?.key === s.key
+                    ? <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                    : <span className="text-slate-600">○</span>}
+              </span>
+              <span className={s.status === 'done' ? 'text-slate-300' : s.status === 'error' ? 'text-red-300' : 'text-slate-500'}>
+                {s.label}{s.detail && <span className="text-slate-500"> — {s.detail}</span>}
+              </span>
+            </div>
+          ))}
+        </div>
+        {w.result?.landingUrl && (
+          <a href={w.result.landingUrl} target="_blank" rel="noreferrer" className="block mt-2 text-xs text-blue-400 hover:text-blue-300">Lander: {w.result.landingUrl} ↗</a>
+        )}
+        {currentGate && (
+          <button onClick={() => approve(currentGate.key)} className="mt-3 w-full bg-red-600 hover:bg-red-500 text-white font-semibold rounded-lg py-2.5 text-sm">
+            🚦 Approve — GO LIVE, start spending
+          </button>
+        )}
+        {w.status === 'error' && !running && (
+          <button onClick={retry} className="mt-3 w-full bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg py-2">↻ Retry failed steps + continue</button>
+        )}
+        {w.status === 'running' && !running && (
+          <button onClick={() => void advanceLoop(w.id)} className="mt-3 w-full bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg py-2">▶ Resume run</button>
+        )}
+        {w.status === 'done' && (w.config?.videoCount || 0) > 0 && w.result?.campaignId && (
+          <button onClick={() => void scheduleDailyMix(w)} className="mt-3 w-full bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 text-white text-sm font-semibold rounded-lg py-2.5">
+            📅 Schedule daily top-up — 3 videos + 2 picture ads @ 11:50 PM into this campaign
+          </button>
+        )}
+      </div>
+    );
+  }
   const inputCls = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500';
   const labelCls = 'block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5';
 
@@ -843,7 +989,11 @@ export default function LaunchFlowPage() {
             </button>
             <button onClick={() => setFlowTab('newProduct')}
               className={`text-xs rounded-md px-3 py-1.5 font-medium transition-colors ${flowTab === 'newProduct' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}>
-              🧪 New Product Launch
+              🧪 New Product
+            </button>
+            <button onClick={() => setFlowTab('videos')}
+              className={`text-xs rounded-md px-3 py-1.5 font-medium transition-colors ${flowTab === 'videos' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}>
+              🎬 Video Ads{vidStats?.pending ? ` (${vidStats.pending})` : ''}
             </button>
             <button onClick={() => setFlowTab('schedules')}
               className={`text-xs rounded-md px-3 py-1.5 font-medium transition-colors ${flowTab === 'schedules' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}>
@@ -1010,7 +1160,135 @@ export default function LaunchFlowPage() {
             )}
           </div>
         </div>
-      ) : flowTab === 'newProduct' ? <NewProductScaffold /> : (
+      ) : flowTab === 'newProduct' ? (
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="max-w-2xl space-y-4">
+            <p className="text-sm text-slate-400">Brand-new product, end to end: 7 Amazon-style listing images → live Shopify product → Shrine-style lander → audience → picture ads → gated CBO campaign.</p>
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className={labelCls}>Store</label>
+                  <select value={storeId} onChange={e => setStoreId(e.target.value)} className={inputCls} disabled={!!wf && running}>
+                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select></div>
+                <div><label className={labelCls}>Price $</label>
+                  <input type="number" min={1} step="0.01" value={npPrice} onChange={e => setNpPrice(e.target.value)} className={inputCls} /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className={labelCls}>Brand name</label>
+                  <input value={npBrand} onChange={e => setNpBrand(e.target.value)} placeholder="e.g. Purebite" className={inputCls} /></div>
+                <div><label className={labelCls}>Product name</label>
+                  <input value={npName} onChange={e => setNpName(e.target.value)} placeholder="e.g. D3+K2 Drops" className={inputCls} /></div>
+              </div>
+              <div><label className={labelCls}>Product brief — what it is, who it&apos;s for, key benefits</label>
+                <textarea rows={3} value={npBrief} onChange={e => setNpBrief(e.target.value)} className={inputCls} /></div>
+              <div><label className={labelCls}>Reference photo URLs (one per line, up to 3)</label>
+                <textarea rows={2} value={npRefUrls} onChange={e => setNpRefUrls(e.target.value)} placeholder="https://…" className={inputCls} /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className={labelCls}>FB Ad Account</label>
+                  <select value={profileId} onChange={e => setProfileId(e.target.value)} className={inputCls}>
+                    <option value="">— select —</option>
+                    {profiles.map(p => <option key={p.id} value={p.id}>{p.profile_name || p.ad_account_name || p.ad_account_id}</option>)}
+                  </select></div>
+                <div><label className={labelCls}>FB Page</label>
+                  <select value={pageId} onChange={e => setPageId(e.target.value)} className={inputCls} disabled={pagesLoading}>
+                    <option value="">{pagesLoading ? 'loading…' : '— select —'}</option>
+                    {pages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select></div>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div><label className={labelCls}>Budget $/day (CBO)</label>
+                  <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>
+                <div><label className={labelCls}>Picture ads</label>
+                  <input type="number" min={1} max={20} value={adCount} onChange={e => setAdCount(Math.min(Math.max(Number(e.target.value) || 1, 1), 20))} className={inputCls} /></div>
+                <div><label className={labelCls}>Go live?</label>
+                  <button onClick={() => setGoLive(v => !v)}
+                    className={`w-full rounded-lg px-3 py-2 text-sm font-medium border ${goLive ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                    {goLive ? 'ACTIVE (gated)' : 'Stay PAUSED'}
+                  </button></div>
+              </div>
+              <button onClick={startNewProduct}
+                disabled={running || !storeId || !npBrand.trim() || !npName.trim() || !(parseFloat(npPrice) > 0) || !npRefUrls.includes('http') || !profileId || !pageId}
+                className="w-full bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 disabled:opacity-40 text-white font-semibold rounded-lg py-3">
+                {running ? 'Running…' : '🧪 Launch new product end-to-end'}
+              </button>
+            </div>
+            {wf && wf.config?.mode === 'new_product' && <StepRunPanel w={wf} />}
+          </div>
+        </div>
+      ) : flowTab === 'videos' ? (
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="max-w-2xl space-y-4">
+            <p className="text-sm text-slate-400">Kalodata → Facebook: import the top-performing TikTok ads for a product, launch the best 9 in one CBO campaign, then let the daily schedule feed 3 videos + 2 picture ads every night.</p>
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+              <div className="flex items-center gap-3">
+                <div className="flex-1"><label className={labelCls}>Store</label>
+                  <select value={storeId} onChange={e => setStoreId(e.target.value)} className={inputCls}>
+                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select></div>
+                <div className="text-center px-3">
+                  <p className="text-xl font-bold text-white">{vidStats?.pending ?? 0}</p>
+                  <p className="text-[10px] text-slate-500 uppercase">videos ready</p>
+                </div>
+                <div className="text-center px-3">
+                  <p className="text-xl font-bold text-emerald-400">{vidStats?.used ?? 0}</p>
+                  <p className="text-[10px] text-slate-500 uppercase">launched</p>
+                </div>
+              </div>
+              <div>
+                <label className={labelCls}>Import Kalodata export (.xlsx)</label>
+                <input type="file" accept=".xlsx" disabled={vidUploading}
+                  onChange={e => { const f = e.target.files?.[0]; if (f) void uploadKalodata(f); e.target.value = ''; }}
+                  className="w-full text-xs text-slate-400 file:bg-slate-800 file:border-0 file:text-slate-200 file:rounded-lg file:px-3 file:py-2 file:mr-3" />
+                {vidUploading && <p className="text-xs text-blue-400 mt-1">Parsing…</p>}
+                {vidMsg && <p className="text-xs text-slate-300 mt-1">{vidMsg}</p>}
+              </div>
+              {vidRecent.length > 0 && (
+                <div className="max-h-32 overflow-y-auto space-y-1">
+                  {vidRecent.slice(0, 8).map(v => (
+                    <p key={v.id} className="text-[11px] text-slate-400 truncate">
+                      <span className={v.status === 'used' ? 'text-emerald-400' : v.status === 'failed' ? 'text-red-400' : 'text-slate-500'}>●</span>
+                      {' '}${Math.round(v.revenue).toLocaleString()} rev · @{v.author} — {v.caption}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className={labelCls}>Your product (copy + landing)</label>
+                  <select value={productId} onChange={e => setProductId(e.target.value)} className={inputCls}>
+                    <option value="">— select —</option>
+                    {products.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+                  </select></div>
+                <div><label className={labelCls}>Videos to launch</label>
+                  <input type="number" min={1} max={20} value={vidCount} onChange={e => setVidCount(Math.min(Math.max(Number(e.target.value) || 1, 1), 20))} className={inputCls} /></div>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div><label className={labelCls}>FB Ad Account</label>
+                  <select value={profileId} onChange={e => setProfileId(e.target.value)} className={inputCls}>
+                    <option value="">—</option>
+                    {profiles.map(p => <option key={p.id} value={p.id}>{p.profile_name || p.ad_account_id}</option>)}
+                  </select></div>
+                <div><label className={labelCls}>FB Page</label>
+                  <select value={pageId} onChange={e => setPageId(e.target.value)} className={inputCls} disabled={pagesLoading}>
+                    <option value="">{pagesLoading ? '…' : '—'}</option>
+                    {pages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select></div>
+                <div><label className={labelCls}>Budget $/day (CBO)</label>
+                  <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>
+              </div>
+              <div><label className={labelCls}>Landing URL {landingLoading ? '· resolving…' : ''}</label>
+                <input value={landingUrl} onChange={e => setLandingUrl(e.target.value)} className={inputCls} placeholder="auto-resolves when product picked" /></div>
+              <button onClick={startVideoLaunch}
+                disabled={running || !storeId || !productId || !profileId || !pageId || !landingUrl.startsWith('http') || !(vidStats?.pending)}
+                className="w-full bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 disabled:opacity-40 text-white font-semibold rounded-lg py-3">
+                {running ? 'Running…' : `🎬 Launch top ${vidCount} videos in one CBO campaign`}
+              </button>
+            </div>
+            {wf && (wf.config?.videoCount || 0) > 0 && <StepRunPanel w={wf} />}
+          </div>
+        </div>
+      ) : (
       <div className="flex-1 flex min-h-0">
         <div className="flex-1 bg-slate-950">
           <ReactFlow

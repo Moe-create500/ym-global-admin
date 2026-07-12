@@ -9,6 +9,7 @@ import type Database from 'better-sqlite3';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
+import { reserveVideos } from '@/lib/video-pool';
 
 export interface Step { key: string; label: string; status: 'pending' | 'done' | 'error'; detail?: string }
 export interface LaunchWorkflow {
@@ -55,13 +56,15 @@ export function getWorkflow(db: Database.Database, id: string): LaunchWorkflow |
   return r ? rowToWorkflow(r) : null;
 }
 
-function save(db: Database.Database, id: string, fields: { steps?: Step[]; result?: any; status?: string; error?: string | null }) {
+function save(db: Database.Database, id: string, fields: { steps?: Step[]; result?: any; status?: string; error?: string | null; config?: any; productId?: string }) {
   const sets: string[] = ["updated_at = datetime('now')"];
   const params: any[] = [];
   if (fields.steps) { sets.push('steps_json = ?'); params.push(JSON.stringify(fields.steps)); }
   if (fields.result) { sets.push('result_json = ?'); params.push(JSON.stringify(fields.result)); }
   if (fields.status) { sets.push('status = ?'); params.push(fields.status); }
   if (fields.error !== undefined) { sets.push('error = ?'); params.push(fields.error); }
+  if (fields.config) { sets.push('config_json = ?'); params.push(JSON.stringify(fields.config)); }
+  if (fields.productId) { sets.push('product_id = ?'); params.push(fields.productId); }
   params.push(id);
   db.prepare(`UPDATE ad_workflows SET ${sets.join(', ')} WHERE id = ?`).run(...params);
 }
@@ -71,8 +74,16 @@ function save(db: Database.Database, id: string, fields: { steps?: Step[]; resul
 export function createLaunchWorkflow(db: Database.Database, storeId: string, productIdIn: string | undefined, config: any): LaunchWorkflow {
   ensureWorkflowTables(db);
   let productId = productIdIn;
-  if (!storeId || !config?.profileId || !config?.pageId || !config?.landingUrl) {
-    throw new Error('storeId, config.profileId, config.pageId, config.landingUrl required');
+  const newProduct = config?.newProduct && typeof config.newProduct === 'object' ? config.newProduct : null;
+  const videoCount = Math.min(Math.max(Number(config?.videoCount) || 0, 0), 20);
+  if (!storeId || !config?.profileId || !config?.pageId) {
+    throw new Error('storeId, config.profileId, config.pageId required');
+  }
+  // New-product runs create the product + lander themselves; everything else
+  // must arrive with a landing URL.
+  if (!newProduct && !config?.landingUrl) throw new Error('config.landingUrl required');
+  if (newProduct && (!newProduct.brandName || !newProduct.productName || !Number(newProduct.priceCents) || !Array.isArray(newProduct.referenceImageUrls) || !newProduct.referenceImageUrls.length)) {
+    throw new Error('newProduct needs brandName, productName, priceCents and at least one reference image URL');
   }
 
   // ── Batch mode: launch EXISTING generated ads instead of generating new ones ──
@@ -93,24 +104,52 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
     if (!productId) productId = rows.find(r => r.product_id)?.product_id;
   }
 
-  if (!productId) throw new Error('productId required');
-  const product: any = db.prepare('SELECT title FROM products WHERE id = ?').get(productId);
-  if (!product) throw new Error('Product not found');
+  let productTitle = '';
+  if (newProduct) {
+    // Product doesn't exist yet — the np_product step creates it (Shopify +
+    // local row) and rewrites the workflow's product id.
+    productId = `new:${crypto.randomUUID()}`;
+    productTitle = `${newProduct.brandName} ${newProduct.productName}`;
+  } else {
+    if (!productId) throw new Error('productId required');
+    const product: any = db.prepare('SELECT title FROM products WHERE id = ?').get(productId);
+    if (!product) throw new Error('Product not found');
+    productTitle = product.title;
+  }
 
-  const adCount = batchMode ? prefill.creatives.length : Math.min(Math.max(Number(config.adCount) || 10, 1), 20);
+  // Videos come from the Kalodata pool — reserve the best pending ones now
+  const wfId = crypto.randomUUID();
+  let reservedVideos: any[] = [];
+  if (videoCount > 0) {
+    reservedVideos = reserveVideos(db, storeId, videoCount, wfId);
+    if (reservedVideos.length === 0) throw new Error('No pending videos in the pool — import a Kalodata file first');
+    prefill.videos = reservedVideos.map((v: any) => ({ id: v.id, url: v.tiktok_url, caption: (v.caption || '').slice(0, 120), revenue: v.revenue }));
+  }
+  const vidN = reservedVideos.length;
+
+  const adCount = batchMode ? prefill.creatives.length
+    : Math.min(Math.max(Number(config.adCount) ?? 10, 0), 20);
+  if (adCount === 0 && vidN === 0) throw new Error('Nothing to launch: adCount and videoCount are both 0');
   const goLive = config.launchStatus === 'ACTIVE';
   const useExistingCampaign = !!config.existingCampaignId;
   // Everything on Facebook is created PAUSED regardless of config — the
   // launch gate + activate step are the ONLY way anything starts spending.
   const steps: Step[] = [
+    ...(newProduct ? [
+      ...Array.from({ length: 7 }, (_, i) => ({ key: `np_image_${i + 1}`, label: `Listing image ${i + 1}/7 (Amazon-style)`, status: 'pending' as const })),
+      { key: 'np_product', label: `Create "${productTitle}" on Shopify (7 images, active)`, status: 'pending' as const },
+      { key: 'np_lander', label: 'Build the product lander (Fable 5, Shrine-style)', status: 'pending' as const },
+    ] : []),
     ...(batchMode && prefill.audienceId ? [] : [{ key: 'audience', label: 'Generate audience (Fable 5)', status: 'pending' as const }]),
     { key: 'copy', label: 'Write ad copy (Fable 5)', status: 'pending' },
     ...(batchMode ? [] : Array.from({ length: adCount }, (_, i) => ({ key: `image_${i + 1}`, label: `Generate picture ad ${i + 1}/${adCount}`, status: 'pending' as const }))),
+    ...Array.from({ length: vidN }, (_, i) => ({ key: `vdl_${i + 1}`, label: `Download TikTok video ${i + 1}/${vidN}`, status: 'pending' as const })),
     { key: 'campaign', label: useExistingCampaign ? 'Attach to existing FB campaign (its budget untouched)' : `Create CBO campaign (paused, $${((Number(config.dailyBudgetCents) || 1000) / 100).toFixed(2)}/day)`, status: 'pending' },
     { key: 'adset', label: useExistingCampaign
       ? `Create ad set in campaign${Number(config.minSpendTargetCents) > 0 ? ` (min $${(Number(config.minSpendTargetCents) / 100).toFixed(2)}/day)` : ''}`
       : 'Create ad set (paused, budget lives on the campaign)', status: 'pending' },
-    ...Array.from({ length: adCount }, (_, i) => ({ key: `ad_${i + 1}`, label: `Upload + create ad ${i + 1}/${adCount} (paused)`, status: 'pending' as const })),
+    ...Array.from({ length: adCount }, (_, i) => ({ key: `ad_${i + 1}`, label: `Upload + create picture ad ${i + 1}/${adCount} (paused)`, status: 'pending' as const })),
+    ...Array.from({ length: vidN }, (_, i) => ({ key: `vad_${i + 1}`, label: `Upload + create video ad ${i + 1}/${vidN} (paused)`, status: 'pending' as const })),
     ...(goLive ? [
       { key: 'gate_launch', label: 'LAUNCH GATE — final approval before ads go LIVE and spend begins', status: 'pending' as const },
       { key: 'activate', label: 'Activate campaign + ad set + ads', status: 'pending' as const },
@@ -118,16 +157,28 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
   ];
 
   // The URL this run actually uses becomes the product's saved lander —
-  // next runs prefill it instantly and consistently
-  db.prepare(`INSERT INTO product_landing_pages (store_id, product_id, url, source, updated_at) VALUES (?, ?, ?, 'manual', datetime('now'))
-    ON CONFLICT(store_id, product_id) DO UPDATE SET url = excluded.url, source = 'manual', updated_at = datetime('now')`)
-    .run(storeId, productId, String(config.landingUrl));
+  // next runs prefill it instantly and consistently (new-product runs save
+  // theirs when the lander step builds it)
+  if (config.landingUrl) {
+    db.prepare(`INSERT INTO product_landing_pages (store_id, product_id, url, source, updated_at) VALUES (?, ?, ?, 'manual', datetime('now'))
+      ON CONFLICT(store_id, product_id) DO UPDATE SET url = excluded.url, source = 'manual', updated_at = datetime('now')`)
+      .run(storeId, productId, String(config.landingUrl));
+  }
 
-  const id = crypto.randomUUID();
+  const id = wfId;
+  const nameBits = [`${productTitle.slice(0, 50)}`, adCount ? `${adCount} pics` : '', vidN ? `${vidN} videos` : '', batchMode ? '(batch)' : '', newProduct ? '(new product)' : ''].filter(Boolean).join(' — ');
   db.prepare(`INSERT INTO ad_workflows (id, store_id, product_id, name, steps_json, config_json, result_json) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, storeId, productId, `${product.title.slice(0, 60)} — ${adCount} ads${batchMode ? ' (batch)' : ''}`, JSON.stringify(steps), JSON.stringify({
+    .run(id, storeId, productId, nameBits, JSON.stringify(steps), JSON.stringify({
       adCount,
-      mode: batchMode ? 'batch' : 'generate',
+      videoCount: vidN,
+      newProduct: newProduct ? {
+        brandName: String(newProduct.brandName).slice(0, 80),
+        productName: String(newProduct.productName).slice(0, 120),
+        priceCents: Math.round(Number(newProduct.priceCents)),
+        brief: String(newProduct.brief || '').slice(0, 2000),
+        referenceImageUrls: newProduct.referenceImageUrls.slice(0, 3),
+      } : null,
+      mode: newProduct ? 'new_product' : batchMode ? 'batch' : 'generate',
       creativeIds: batchMode ? creativeIds : undefined,
       existingCampaignId: useExistingCampaign ? config.existingCampaignId : null,
       dailyBudgetCents: Math.max(Number(config.dailyBudgetCents) || 1000, 100),
@@ -139,7 +190,7 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
       audienceId: config.audienceId || null,
       selectedImageUrl: config.selectedImageUrl || null,
       customInstructions: typeof config.customInstructions === 'string' && config.customInstructions.trim() ? config.customInstructions.trim().slice(0, 500) : null,
-      campaignName: config.campaignName || `${product.title.slice(0, 40)} | Launch ${new Date().toISOString().slice(0, 10)}`,
+      campaignName: config.campaignName || `${productTitle.slice(0, 40)} | Launch ${new Date().toISOString().slice(0, 10)}`,
       targeting: {
         countries: Array.isArray(config.targeting?.countries) && config.targeting.countries.length
           ? config.targeting.countries.map((c: string) => String(c).trim().toUpperCase()).filter(Boolean)
@@ -191,6 +242,67 @@ export async function advanceWorkflow(db: Database.Database, id: string, opts?: 
   const step = steps.find(s => s.status !== 'done');
   if (!step) {
     save(db, wf.id, { status: 'done', error: null });
+    return getWorkflow(db, id)!;
+  }
+
+  // Listing images (new product) — parallel batch of 7 Amazon-style shots
+  if (step.key.startsWith('np_image_')) {
+    const { generateListingImage } = await import('@/lib/listing-images');
+    const result = { ...wf.result };
+    result.listingImages = result.listingImages || [];
+    const np = wf.config.newProduct;
+    const pending = steps.filter(s => s.key.startsWith('np_image_') && s.status !== 'done');
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < pending.length) {
+        const mine = pending[cursor++];
+        const idx = Number(mine.key.split('_')[2]) - 1;
+        try {
+          const img = await generateListingImage(db, {
+            storeId: wf.storeId, brandName: np.brandName, productName: np.productName,
+            brief: np.brief, referenceImageUrls: np.referenceImageUrls, idx,
+          });
+          result.listingImages[idx] = { id: img.id, filePath: img.filePath, label: img.label };
+          mine.status = 'done'; mine.detail = img.label;
+        } catch (e: any) {
+          mine.status = 'error'; mine.detail = String(e?.message || e).slice(0, 300);
+        }
+        save(db, wf.id, { steps, result });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, pending.length) }, worker));
+    const failed = pending.filter(s => s.status === 'error');
+    save(db, wf.id, { steps, result, status: failed.length ? 'error' : 'running', error: failed.length ? `${failed.length}/7 listing images failed — retry re-runs only those` : null });
+    return getWorkflow(db, id)!;
+  }
+
+  // TikTok video downloads — parallel batch (3 at a time)
+  if (step.key.startsWith('vdl_')) {
+    const { downloadPoolVideo } = await import('@/lib/video-pool');
+    const result = { ...wf.result };
+    result.videoFiles = result.videoFiles || [];
+    const videos = result.videos || [];
+    const pending = steps.filter(s => s.key.startsWith('vdl_') && s.status !== 'done');
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < pending.length) {
+        const mine = pending[cursor++];
+        const idx = Number(mine.key.split('_')[1]) - 1;
+        const v = videos[idx];
+        if (!v) { mine.status = 'error'; mine.detail = 'No reserved video for this slot'; save(db, wf.id, { steps, result }); continue; }
+        try {
+          const filePath = await downloadPoolVideo(db, { id: v.id, store_id: wf.storeId, tiktok_url: v.url });
+          result.videoFiles[idx] = filePath;
+          mine.status = 'done'; mine.detail = `${v.id} (${v.caption?.slice(0, 40) || 'video'})`;
+        } catch (e: any) {
+          mine.status = 'error'; mine.detail = String(e?.message || e).slice(0, 300);
+        }
+        save(db, wf.id, { steps, result });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, pending.length) }, worker));
+    const failed = pending.filter(s => s.status === 'error');
+    save(db, wf.id, { steps, result, status: failed.length ? 'error' : 'running', error: failed.length ? `${failed.length} video downloads failed — retry re-runs them` : null });
     return getWorkflow(db, id)!;
   }
 
@@ -515,6 +627,134 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     if (campErr) throw new Error(`Campaign activation failed: ${campErr}`);
     const liveCount = adIds.length - adFailures.length;
     return { detail: `LIVE — ${liveCount}/${adIds.length} ads${adFailures.length ? ` (${adFailures.length} failed: ${adFailures[0].slice(0, 120)})` : ''}`, result };
+  }
+
+  if (step.key === 'np_product') {
+    const np = cfg.newProduct;
+    const files = (result.listingImages || []).filter(Boolean);
+    if (!files.length) throw new Error('Listing images missing — rerun the image steps');
+    const { shopifyMutate } = await import('@/lib/shopify-sync');
+    const now = Date.now();
+    const title = `${np.brandName} ${np.productName}`;
+
+    // Create with the hero image; add the rest one-by-one (keeps payloads small)
+    const firstB64 = fs.readFileSync(files[0].filePath).toString('base64');
+    const created = (await shopifyMutate(db, wf.storeId, 'POST', 'products.json', {
+      product: {
+        title,
+        vendor: np.brandName,
+        status: 'active',
+        published: true,
+        body_html: `<p>${np.brief.slice(0, 400)}</p>`,
+        variants: [{ price: (np.priceCents / 100).toFixed(2), inventory_management: null }],
+        images: [{ attachment: firstB64 }],
+      },
+    }, now))?.product;
+    if (!created?.id) throw new Error('Shopify product creation returned no id');
+
+    for (let i = 1; i < files.length; i++) {
+      try {
+        await shopifyMutate(db, wf.storeId, 'POST', `products/${created.id}/images.json`, {
+          image: { attachment: fs.readFileSync(files[i].filePath).toString('base64'), position: i + 1 },
+        }, now);
+      } catch (e: any) { /* one bad image shouldn't sink the product */ }
+    }
+
+    // Local product row so the rest of the pipeline (audience/copy/ads) works
+    const localId = crypto.randomUUID();
+    const heroSrc = created.images?.[0]?.src || created.image?.src || null;
+    db.prepare(`INSERT INTO products (id, store_id, shopify_product_id, title, image_url, price_cents, status, images, synced_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, datetime('now'))`)
+      .run(localId, wf.storeId, String(created.id), title, heroSrc, np.priceCents, JSON.stringify((created.images || []).map((im: any) => im.src)));
+
+    result.shopifyProductId = String(created.id);
+    result.productHandle = created.handle;
+    // Rewrite the workflow's product id — later steps read wf.productId
+    save(db, wf.id, { productId: localId });
+    wf.productId = localId;
+    return { detail: `${title} → Shopify #${created.id} (${files.length} images)`, result };
+  }
+
+  if (step.key === 'np_lander') {
+    const np = cfg.newProduct;
+    if (!result.shopifyProductId) throw new Error('Product missing — rerun np_product');
+    const { generateLanderHtml } = await import('@/lib/ad-copy');
+    const { shopifyMutate, shopifyGet } = await import('@/lib/shopify-sync');
+    const now = Date.now();
+
+    const html = await generateLanderHtml({
+      brandName: np.brandName, productName: np.productName, priceCents: np.priceCents, brief: np.brief,
+    });
+    await shopifyMutate(db, wf.storeId, 'PUT', `products/${result.shopifyProductId}.json`, {
+      product: { id: Number(result.shopifyProductId), body_html: html },
+    }, now);
+
+    const shop = (await shopifyGet(db, wf.storeId, 'shop.json', now))?.shop;
+    const domain = shop?.domain || shop?.myshopify_domain;
+    const landingUrl = `https://${domain}/products/${result.productHandle}`;
+    db.prepare(`INSERT INTO product_landing_pages (store_id, product_id, url, source, updated_at) VALUES (?, ?, ?, 'resolved', datetime('now'))
+      ON CONFLICT(store_id, product_id) DO UPDATE SET url = excluded.url, source = 'resolved', updated_at = datetime('now')`)
+      .run(wf.storeId, wf.productId, landingUrl);
+    // Later ad steps read cfg.landingUrl — persist it into the config
+    const newCfg = { ...cfg, landingUrl };
+    save(db, wf.id, { config: newCfg });
+    wf.config = newCfg;
+    result.landingUrl = landingUrl;
+    return { detail: landingUrl, result };
+  }
+
+  if (step.key.startsWith('vad_')) {
+    if (!profile?.access_token || !profile?.ad_account_id) throw new Error('FB profile missing token or ad account');
+    if (!result.adSetId) throw new Error('Ad set missing — rerun the adset step');
+    const idx = Number(step.key.split('_')[1]) - 1;
+    const filePath = result.videoFiles?.[idx];
+    const meta = result.videos?.[idx];
+    if (!filePath || !fs.existsSync(filePath)) throw new Error(`Video file ${idx + 1} missing — rerun its download step`);
+
+    const { uploadVideoFromBuffer, checkVideoProcessingStatus, createAdCreative, createAd } = await import('@/lib/facebook');
+    result.fbVideoIds = result.fbVideoIds || [];
+
+    // Upload once; re-poll on retries
+    let fbVideoId = result.fbVideoIds[idx];
+    if (!fbVideoId) {
+      const up = await uploadVideoFromBuffer(profile.ad_account_id, profile.access_token,
+        fs.readFileSync(filePath), `${cfg.campaignName} | video ${idx + 1}`);
+      fbVideoId = up.id;
+      result.fbVideoIds[idx] = fbVideoId;
+      save(db, wf.id, { result });
+    }
+
+    // Wait for processing + a thumbnail (required for video creatives)
+    let thumbnailUrl = '';
+    for (let i = 0; i < 24; i++) {
+      const st = await checkVideoProcessingStatus(fbVideoId, profile.access_token);
+      if (st.thumbnailUrl) thumbnailUrl = st.thumbnailUrl;
+      if (st.status === 'ready' && thumbnailUrl) break;
+      if (st.status === 'error') throw new Error(`FB video processing failed for ${fbVideoId}`);
+      await new Promise(r => setTimeout(r, 5000));
+    }
+    if (!thumbnailUrl) throw new Error(`Video ${fbVideoId} has no thumbnail yet — retry in a minute`);
+
+    const adCreative = await createAdCreative(profile.ad_account_id, profile.access_token, {
+      name: `${cfg.campaignName} | video ${idx + 1}`,
+      pageId: cfg.pageId,
+      videoId: fbVideoId,
+      thumbnailUrl,
+      title: result.copy?.headline || '',
+      message: result.copy?.primaryText || '',
+      ctaType: 'SHOP_NOW',
+      ctaLink: cfg.landingUrl,
+    });
+    const ad = await createAd(profile.ad_account_id, profile.access_token, {
+      name: `video ${idx + 1}${meta?.caption ? ` — ${meta.caption.slice(0, 40)}` : ''}`,
+      adSetId: result.adSetId,
+      creativeId: adCreative.id,
+      status: 'PAUSED',
+    });
+    result.adIds = result.adIds || [];
+    result.adIds[(cfg.adCount || 0) + idx] = ad.id;
+    if (meta?.id) db.prepare("UPDATE video_ads_pool SET status = 'used', used_at = datetime('now') WHERE id = ?").run(meta.id);
+    return { detail: `Video ad ${ad.id}`, result };
   }
 
   throw new Error(`Unknown step: ${step.key}`);

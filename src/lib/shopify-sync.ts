@@ -115,6 +115,22 @@ export async function shopifyGet(db: Database.Database, storeId: string, path: s
   return (await shopifyGetRaw(db, storeId, path, nowMs)).json;
 }
 
+/** POST/PUT to the Admin API with the store's centralized credentials. */
+export async function shopifyMutate(db: Database.Database, storeId: string, method: 'POST' | 'PUT', path: string, body: any, nowMs: number): Promise<any> {
+  const creds = getCreds(db, storeId);
+  if (!creds) throw new Error('No Shopify credentials saved for this store');
+  const token = await getAccessToken(db, storeId, nowMs);
+  const url = `https://${creds.shop_domain}/admin/api/${API_VERSION}/${path}`;
+  const res = await fetch(url, {
+    method,
+    headers: { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`${method} ${path.slice(0, 60)} failed (${res.status}): ${text.slice(0, 300)}`);
+  try { return JSON.parse(text); } catch { throw new Error(`Response not JSON: ${text.slice(0, 200)}`); }
+}
+
 /** Follow Shopify cursor pagination (Link: rel="next") up to maxPages. */
 async function shopifyGetAll(db: Database.Database, storeId: string, path: string, key: string, nowMs: number, maxPages = 20): Promise<any[]> {
   const out: any[] = [];
