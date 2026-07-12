@@ -29,7 +29,6 @@ const NODE_DEFS = [
   { id: 'audience', icon: '🧠', title: 'Audience', stepKeys: ['audience'] },
   { id: 'copy', icon: '✍️', title: 'Ad Copy', stepKeys: ['copy'] },
   { id: 'images', icon: '🖼️', title: 'Picture Ads', stepKeys: ['image_'] },
-  { id: 'gate_review', icon: '🛑', title: 'Review Gate', stepKeys: ['gate_review'] },
   { id: 'campaign', icon: '📣', title: 'Campaign', stepKeys: ['campaign'] },
   { id: 'adset', icon: '🎯', title: 'Ad Set', stepKeys: ['adset'] },
   { id: 'ads', icon: '🧩', title: 'Create Ads', stepKeys: ['ad_'] },
@@ -376,7 +375,6 @@ export default function LaunchFlowPage() {
       : d.id === 'audience' ? (wf?.result?.audience?.name || 'Fable 5 auto-generates')
       : d.id === 'copy' ? (wf?.result?.copy?.headline || 'Fable 5 writes it')
       : d.id === 'images' ? `${wf?.config?.adCount || adCount} ads from proven templates`
-      : d.id === 'gate_review' ? 'your approval required'
       : d.id === 'campaign' ? (campaignMode === 'existing'
           ? (campaigns.find(c => c.id === (wf?.config?.existingCampaignId || existingCampaignId))?.name || 'existing campaign')
           : (profile?.profile_name || 'FB campaign (paused)'))
@@ -563,41 +561,6 @@ export default function LaunchFlowPage() {
             </div>
           )}
           {!(r.creatives || []).filter(Boolean).length && wf && <p className="text-xs text-slate-500">Generating… thumbnails appear as each finishes.</p>}
-        </div>);
-      case 'gate_review': return (
-        <div className="space-y-3">
-          <p className="text-xs text-slate-400">The workflow STOPS here — nothing touches Facebook until you approve. Everything you&apos;re approving:</p>
-          {r.audience && (
-            <div className="bg-slate-800/60 rounded-lg p-2.5">
-              <p className="text-[10px] text-slate-500 uppercase">Audience</p>
-              <p className="text-xs text-white">{r.audience.name}</p>
-              <p className="text-[11px] text-slate-400 line-clamp-2">{r.audience.description}</p>
-            </div>
-          )}
-          {r.copy && (
-            <div className="bg-slate-800/60 rounded-lg p-2.5">
-              <p className="text-[10px] text-slate-500 uppercase">Copy</p>
-              <p className="text-xs text-white">{r.copy.headline}</p>
-              <p className="text-[11px] text-slate-400 whitespace-pre-wrap line-clamp-4">{r.copy.primaryText}</p>
-            </div>
-          )}
-          {(r.creatives || []).filter(Boolean).length > 0 && (
-            <div className="bg-slate-800/60 rounded-lg p-2.5">
-              <p className="text-[10px] text-slate-500 uppercase mb-1.5">{(r.creatives || []).filter(Boolean).length} picture ads (click to view full)</p>
-              <div className="grid grid-cols-4 gap-1">
-                {(r.creatives || []).filter(Boolean).map((c: any) => (
-                  <a key={c.id} href={c.imageUrl} target="_blank" rel="noreferrer">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={`${c.imageUrl}?w=150`} alt={c.template} className="rounded aspect-square object-cover w-full" />
-                  </a>
-                ))}
-              </div>
-            </div>
-          )}
-          {currentGate?.key === 'gate_review' && (
-            <button onClick={() => approve('gate_review')} className="w-full bg-amber-500 hover:bg-amber-400 text-black font-semibold rounded-lg py-2.5 text-sm">
-              ✓ Approve — create paused FB objects
-            </button>)}
         </div>);
       case 'campaign': return (
         <div className="space-y-3">

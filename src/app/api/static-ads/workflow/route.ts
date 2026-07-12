@@ -172,7 +172,6 @@ export async function POST(req: NextRequest) {
       ...(batchMode && prefill.audienceId ? [] : [{ key: 'audience', label: 'Generate audience (Fable 5)', status: 'pending' as const }]),
       { key: 'copy', label: 'Write ad copy (Fable 5)', status: 'pending' },
       ...(batchMode ? [] : Array.from({ length: adCount }, (_, i) => ({ key: `image_${i + 1}`, label: `Generate picture ad ${i + 1}/${adCount}`, status: 'pending' as const }))),
-      { key: 'gate_review', label: `REVIEW GATE — approve ${batchMode ? `the ${adCount} selected ads` : 'audience, copy & ads'} before anything touches Facebook`, status: 'pending' },
       { key: 'campaign', label: useExistingCampaign ? 'Attach to existing FB campaign' : 'Create FB campaign (paused)', status: 'pending' },
       { key: 'adset', label: `Create ad set (paused, $${((Number(config.dailyBudgetCents) || 1000) / 100).toFixed(2)}/day)`, status: 'pending' },
       ...Array.from({ length: adCount }, (_, i) => ({ key: `ad_${i + 1}`, label: `Upload + create ad ${i + 1}/${adCount} (paused)`, status: 'pending' as const })),
@@ -251,7 +250,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ workflow: { ...wf, status: 'done' } });
     }
 
-    // Gates never execute — they hold the workflow until explicitly approved
+    // Review gates are retired — auto-complete them (covers older runs)
+    if (step.key === 'gate_review') {
+      step.status = 'done';
+      step.detail = 'auto-approved (review gate removed — flow runs hands-off)';
+      save(db, wf.id, { steps, status: 'running', error: null });
+      const cont: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(wf.id);
+      return NextResponse.json({ workflow: rowToWorkflow(cont) });
+    }
+
+    // The launch gate still holds — it is the only guard before real spend
     if (step.key.startsWith('gate_')) {
       if (wf.status !== 'awaiting_approval') save(db, wf.id, { status: 'awaiting_approval', error: null });
       const held: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(wf.id);
