@@ -167,7 +167,9 @@ export default function LaunchFlowPage() {
   const [flowTab, setFlowTab] = useState<'ads' | 'newProduct' | 'schedules'>('ads');
 
   // Recurring launch schedules
-  interface Schedule { id: string; name: string; storeName?: string; cadence: string; timeOfDay: string; dayOfWeek: number | null; autoLive: boolean; isActive: boolean; lastRunAt: string | null; lastResult: string | null; nextRunAt: string }
+  interface Schedule { id: string; name: string; storeName?: string; cadence: string; timeOfDay: string; dayOfWeek: number | null; autoLive: boolean; isActive: boolean; lastRunAt: string | null; lastResult: string | null; nextRunAt: string; config?: any }
+  const [editSched, setEditSched] = useState<Schedule | null>(null);
+  const [editForm, setEditForm] = useState<any>({});
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [schedModal, setSchedModal] = useState(false);
   const [schedName, setSchedName] = useState('');
@@ -387,6 +389,41 @@ export default function LaunchFlowPage() {
     setSchedModal(false); setSchedName('');
     loadSchedules();
     setFlowTab('schedules');
+  }
+
+  function openScheduleEditor(s: Schedule) {
+    setEditSched(s);
+    setEditForm({
+      name: s.name, cadence: s.cadence, timeOfDay: s.timeOfDay, dayOfWeek: s.dayOfWeek ?? 1, autoLive: s.autoLive,
+      adCount: s.config?.adCount ?? 10,
+      dailyBudget: ((s.config?.dailyBudgetCents ?? 1000) / 100).toString(),
+      minSpend: s.config?.minSpendTargetCents ? (s.config.minSpendTargetCents / 100).toString() : '',
+      countries: (s.config?.targeting?.countries || ['US']).join(', '),
+      customInstructions: s.config?.customInstructions || '',
+      landingUrl: s.config?.landingUrl || '',
+    });
+  }
+
+  async function saveScheduleEdit() {
+    if (!editSched) return;
+    const f = editForm;
+    const res = await fetch('/api/static-ads/workflow', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'schedule_update', id: editSched.id,
+        name: f.name, cadence: f.cadence, timeOfDay: f.timeOfDay, dayOfWeek: Number(f.dayOfWeek), autoLive: !!f.autoLive,
+        config: {
+          adCount: Math.min(Math.max(Number(f.adCount) || 10, 1), 20),
+          dailyBudgetCents: Math.round(parseFloat(f.dailyBudget || '10') * 100),
+          minSpendTargetCents: f.minSpend ? Math.round(parseFloat(f.minSpend) * 100) : null,
+          targeting: { countries: String(f.countries).split(',').map((c: string) => c.trim()).filter(Boolean) },
+          customInstructions: f.customInstructions?.trim() || null,
+          landingUrl: f.landingUrl,
+        },
+      }),
+    });
+    if (res.ok) { setEditSched(null); loadSchedules(); }
+    else { const d = await res.json(); setSchedMsg(d.error || 'update failed'); }
   }
 
   async function scheduleAction(action: string, id: string) {
@@ -887,6 +924,56 @@ export default function LaunchFlowPage() {
         </div>
       )}
 
+      {editSched && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => setEditSched(null)}>
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-5 w-[26rem] max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <p className="text-sm font-semibold text-white mb-1">✏️ Edit schedule</p>
+            <p className="text-[11px] text-slate-500 mb-3">{editSched.storeName} · every aspect editable — timing changes recompute the next run</p>
+            <div className="space-y-3">
+              <div><label className={labelCls}>Name</label>
+                <input value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} className={inputCls} /></div>
+              <div className="grid grid-cols-2 gap-2">
+                <div><label className={labelCls}>Repeat</label>
+                  <select value={editForm.cadence} onChange={e => setEditForm({ ...editForm, cadence: e.target.value })} className={inputCls}>
+                    <option value="daily">Every day</option><option value="weekly">Every week</option>
+                  </select></div>
+                <div><label className={labelCls}>Time (PST)</label>
+                  <input type="time" value={editForm.timeOfDay} onChange={e => setEditForm({ ...editForm, timeOfDay: e.target.value })} className={inputCls} /></div>
+              </div>
+              {editForm.cadence === 'weekly' && (
+                <div><label className={labelCls}>Day</label>
+                  <select value={editForm.dayOfWeek} onChange={e => setEditForm({ ...editForm, dayOfWeek: Number(e.target.value) })} className={inputCls}>
+                    {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => <option key={i} value={i}>{d}</option>)}
+                  </select></div>
+              )}
+              <div className="grid grid-cols-3 gap-2">
+                <div><label className={labelCls}>Ads</label>
+                  <input type="number" min={1} max={20} value={editForm.adCount} onChange={e => setEditForm({ ...editForm, adCount: e.target.value })} className={inputCls} /></div>
+                <div><label className={labelCls}>Budget $/day</label>
+                  <input type="number" min={1} value={editForm.dailyBudget} onChange={e => setEditForm({ ...editForm, dailyBudget: e.target.value })} className={inputCls} /></div>
+                <div><label className={labelCls}>Min spend $</label>
+                  <input type="number" min={0} value={editForm.minSpend} onChange={e => setEditForm({ ...editForm, minSpend: e.target.value })} placeholder="—" className={inputCls} /></div>
+              </div>
+              <div><label className={labelCls}>Countries</label>
+                <input value={editForm.countries} onChange={e => setEditForm({ ...editForm, countries: e.target.value })} className={inputCls} /></div>
+              <div><label className={labelCls}>Custom details (every image)</label>
+                <textarea rows={2} value={editForm.customInstructions} onChange={e => setEditForm({ ...editForm, customInstructions: e.target.value })} className={inputCls} /></div>
+              <div><label className={labelCls}>Landing page URL</label>
+                <input value={editForm.landingUrl} onChange={e => setEditForm({ ...editForm, landingUrl: e.target.value })} className={inputCls} /></div>
+              <button onClick={() => setEditForm({ ...editForm, autoLive: !editForm.autoLive })}
+                className={`w-full rounded-lg px-3 py-2 text-sm font-medium border ${editForm.autoLive ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                {editForm.autoLive ? '⚡ Goes LIVE automatically each run' : 'Each run ends PAUSED (manual go-live)'}
+              </button>
+              {schedMsg && <p className="text-xs text-red-400">{schedMsg}</p>}
+              <div className="flex gap-2">
+                <button onClick={saveScheduleEdit} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg py-2">Save changes</button>
+                <button onClick={() => setEditSched(null)} className="text-sm text-slate-400 hover:text-white px-3">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {flowTab === 'schedules' ? (
         <div className="flex-1 overflow-y-auto p-6">
           <div className="max-w-3xl">
@@ -909,6 +996,8 @@ export default function LaunchFlowPage() {
                       </p>
                       {s.lastResult && <p className="text-[11px] text-slate-500 truncate">last: {s.lastResult}</p>}
                     </div>
+                    <button onClick={() => openScheduleEditor(s)}
+                      className="text-[11px] text-emerald-400 hover:text-emerald-300 whitespace-nowrap">edit</button>
                     <button onClick={() => scheduleAction('schedule_run_now', s.id)}
                       className="text-[11px] text-blue-400 hover:text-blue-300 whitespace-nowrap">run now</button>
                     <button onClick={() => scheduleAction('schedule_toggle', s.id)}

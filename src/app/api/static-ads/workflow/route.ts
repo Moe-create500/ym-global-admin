@@ -28,12 +28,17 @@ export async function GET(req: NextRequest) {
       ? db.prepare('SELECT w.*, s.name AS store_name FROM workflow_schedules w JOIN stores s ON s.id = w.store_id WHERE w.store_id = ? ORDER BY w.created_at DESC').all(storeId)
       : db.prepare('SELECT w.*, s.name AS store_name FROM workflow_schedules w JOIN stores s ON s.id = w.store_id ORDER BY w.created_at DESC').all();
     return NextResponse.json({
-      schedules: rows.map(r => ({
-        id: r.id, storeId: r.store_id, storeName: r.store_name, productId: r.product_id, name: r.name,
-        cadence: r.cadence, timeOfDay: r.time_of_day, dayOfWeek: r.day_of_week,
-        autoLive: !!r.auto_live, isActive: !!r.is_active,
-        lastRunAt: r.last_run_at, lastResult: r.last_result, nextRunAt: r.next_run_at,
-      })),
+      schedules: rows.map(r => {
+        let config: any = {};
+        try { config = JSON.parse(r.config_json || '{}'); } catch {}
+        return {
+          id: r.id, storeId: r.store_id, storeName: r.store_name, productId: r.product_id, name: r.name,
+          cadence: r.cadence, timeOfDay: r.time_of_day, dayOfWeek: r.day_of_week,
+          autoLive: !!r.auto_live, isActive: !!r.is_active,
+          lastRunAt: r.last_run_at, lastResult: r.last_result, nextRunAt: r.next_run_at,
+          config,
+        };
+      }),
     });
   }
 
@@ -156,6 +161,31 @@ export async function POST(req: NextRequest) {
       });
       return NextResponse.json({ schedule: s });
     }
+    if (body.action === 'schedule_update') {
+      ensureScheduleTable(db);
+      const s: any = db.prepare('SELECT * FROM workflow_schedules WHERE id = ?').get(body.id);
+      if (!s) return NextResponse.json({ error: 'Schedule not found' }, { status: 404 });
+
+      const cadence = ['daily', 'weekly'].includes(body.cadence) ? body.cadence : s.cadence;
+      const timeOfDay = /^\d{2}:\d{2}$/.test(body.timeOfDay || '') ? body.timeOfDay : s.time_of_day;
+      const dayOfWeek = cadence === 'weekly' ? (Number.isInteger(body.dayOfWeek) ? body.dayOfWeek : (s.day_of_week ?? 1)) : null;
+      const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 120) : s.name;
+      const autoLive = typeof body.autoLive === 'boolean' ? (body.autoLive ? 1 : 0) : s.auto_live;
+
+      // Merge config edits over the stored config — all launch aspects editable
+      let config: any = {};
+      try { config = JSON.parse(s.config_json || '{}'); } catch {}
+      if (body.config && typeof body.config === 'object') config = { ...config, ...body.config };
+
+      // Timing changed → recompute the next firing
+      const timingChanged = cadence !== s.cadence || timeOfDay !== s.time_of_day || dayOfWeek !== s.day_of_week;
+      const nextRun = timingChanged ? computeNextRun(cadence, timeOfDay, dayOfWeek) : s.next_run_at;
+
+      db.prepare(`UPDATE workflow_schedules SET name = ?, cadence = ?, time_of_day = ?, day_of_week = ?, auto_live = ?, config_json = ?, next_run_at = ? WHERE id = ?`)
+        .run(name, cadence, timeOfDay, dayOfWeek, autoLive, JSON.stringify(config), nextRun, body.id);
+      return NextResponse.json({ success: true });
+    }
+
     if (body.action === 'schedule_toggle') {
       ensureScheduleTable(db);
       const s: any = db.prepare('SELECT * FROM workflow_schedules WHERE id = ?').get(body.id);
