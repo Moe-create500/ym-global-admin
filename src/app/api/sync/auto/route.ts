@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getStaleStores, syncStore, syncFacebookAds } from '@/lib/sync';
-import { getNewClientOrders, getClientBillingConfig, getAllClientOrdersList } from '@/lib/shipsourced';
+import { getNewClientOrders, getClientBillingConfig, ssOrderKey } from '@/lib/shipsourced';
+import { refreshOrderStatuses } from '@/lib/order-status-refresh';
 import { getDisputes } from '@/lib/chargeflow';
 import crypto from 'crypto';
 
@@ -11,11 +12,14 @@ export const dynamic = 'force-dynamic';
 async function pullNewOrders(storeId: string, clientId: string) {
   const db = getDb();
 
-  const knownRows: any[] = db.prepare('SELECT order_number FROM orders WHERE store_id = ?').all(storeId);
-  const knownOrderNumbers = new Set(knownRows.map((r: any) => r.order_number));
+  // Identity is number+date: numbers alone collide across store migrations
+  // (Purebite's new SHIPHERO numbering restarted below old csv numbers, which
+  // made every new order look "already known" and froze imports for 2 months)
+  const knownRows: any[] = db.prepare('SELECT order_number, order_date FROM orders WHERE store_id = ?').all(storeId);
+  const knownKeys = new Set(knownRows.map((r: any) => ssOrderKey(String(r.order_number), String(r.order_date || ''))));
 
   const [ssOrders, billingConfig] = await Promise.all([
-    getNewClientOrders(clientId, knownOrderNumbers),
+    getNewClientOrders(clientId, knownKeys),
     getClientBillingConfig(clientId).catch(() => null),
   ]);
 
@@ -46,9 +50,6 @@ async function pullNewOrders(storeId: string, clientId: string) {
     orderNumber = orderNumber.replace(/^(SHIPHERO-|SH-)?/, '').trim();
     if (!orderNumber) continue;
 
-    // Skip if already exists
-    if (knownOrderNumbers.has(orderNumber)) continue;
-
     const createdAt = order.orderDate || order.createdAt || '';
     let orderDate = '';
     if (createdAt) {
@@ -58,6 +59,9 @@ async function pullNewOrders(storeId: string, clientId: string) {
       } catch { continue; }
     }
     if (!orderDate) continue;
+
+    // Skip if already exists (number+date identity)
+    if (knownKeys.has(ssOrderKey(orderNumber, orderDate))) continue;
 
     const totalCents = Math.round((order.totalPrice || 0) * 100);
     let lineItems: { name: string; qty: number; priceCents: number; sku: string }[] = [];
@@ -105,7 +109,7 @@ async function pullNewOrders(storeId: string, clientId: string) {
       lineItemsJson, lineItems.length, null,
       chargeCents, isEstimate
     );
-    knownOrderNumbers.add(orderNumber);
+    knownKeys.add(ssOrderKey(orderNumber, orderDate));
     imported++;
   }
 
@@ -150,45 +154,14 @@ async function pullNewOrders(storeId: string, clientId: string) {
   return { imported };
 }
 
-// Update fulfillment statuses for orders still marked as unfulfilled
+// Update fulfillment statuses for orders still marked as unfulfilled.
+// Delegates to the bounded status-refresh (open+cancelled sets, capped pages) —
+// the old implementation paged the client's ENTIRE order history into memory
+// via getAllClientOrdersList, a prime OOM suspect on this 2GB box.
 async function updateUnfulfilledStatuses(storeId: string, clientId: string) {
   const db = getDb();
-
-  // Get order numbers that are still unfulfilled locally
-  const unfulfilled: any[] = db.prepare(
-    "SELECT order_number FROM orders WHERE store_id = ? AND fulfillment_status IN ('unfulfilled', 'partial')"
-  ).all(storeId);
-
-  if (unfulfilled.length === 0) return { updated: 0 };
-
-  const unfulfilledMap = new Map(unfulfilled.map((r: any) => [r.order_number, true]));
-
-  // Pull all orders from ShipSourced and check statuses
-  const ssOrders = await getAllClientOrdersList(clientId);
-
-  const updateStmt = db.prepare(
-    'UPDATE orders SET fulfillment_status = ?, ss_charge_is_estimate = 0 WHERE store_id = ? AND order_number = ?'
-  );
-
-  let updated = 0;
-  for (const order of ssOrders) {
-    const rawExtId = order.externalOrderId || '';
-    const hashIdx = rawExtId.lastIndexOf('#');
-    let orderNumber = hashIdx >= 0 ? rawExtId.slice(hashIdx + 1) : rawExtId;
-    orderNumber = orderNumber.replace(/^(SHIPHERO-|SH-)?/, '').trim();
-    if (!orderNumber || !unfulfilledMap.has(orderNumber)) continue;
-
-    const newStatus = order.status === 'SHIPPED' ? 'fulfilled'
-      : order.status === 'NEW' ? 'unfulfilled'
-      : (order.status || '').toLowerCase();
-
-    if (newStatus !== 'unfulfilled' && newStatus !== 'partial') {
-      updateStmt.run(newStatus, storeId, orderNumber);
-      updated++;
-    }
-  }
-
-  return { updated };
+  const r = await refreshOrderStatuses(db, storeId, clientId);
+  return { updated: r.fulfilled + r.cancelled + r.reopened };
 }
 
 // Called by the dashboard on load to sync stale stores + Facebook ads

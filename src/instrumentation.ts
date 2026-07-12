@@ -45,7 +45,7 @@ export async function register() {
           const { refreshAllOrderStatuses } = await import('@/lib/order-status-refresh');
           const { getDb } = await import('@/lib/db');
           const sr = await refreshAllOrderStatuses(getDb());
-          statusNote = `${sr.fulfilled + sr.cancelled} order statuses corrected`;
+          statusNote = `${sr.fulfilled + sr.cancelled + sr.reopened} order statuses corrected`;
           if (sr.errors.length > 0) {
             console.error(`[auto-sync] ${label}: ${sr.errors.length} status-refresh errors; first: ${sr.errors.slice(0, 3).join(' | ').slice(0, 400)}`);
           }

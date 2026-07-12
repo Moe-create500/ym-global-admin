@@ -141,13 +141,14 @@ export interface SSOrderListResponse {
   totalPages: number;
 }
 
-export async function getClientOrdersList(clientId: string, page = 1, limit = 200, status?: string): Promise<SSOrderListResponse> {
+export async function getClientOrdersList(clientId: string, page = 1, limit = 200, status?: string, search?: string): Promise<SSOrderListResponse> {
   const params = new URLSearchParams({
     storeId: clientId,
     page: String(page),
     limit: String(limit),
   });
   if (status) params.set('status', status);
+  if (search) params.set('search', search);
   return apiFetch(`/api/orders/list?${params}`);
 }
 
@@ -163,15 +164,40 @@ export async function getAllClientOrdersList(clientId: string): Promise<SSOrder[
   return all;
 }
 
+/** Normalize an SS externalOrderId ('SHIPHERO-#2793', '#1042') to the bare number. */
+export function normalizeSSOrderNumber(externalOrderId: string): string {
+  const raw = externalOrderId || '';
+  const hashIdx = raw.lastIndexOf('#');
+  const n = hashIdx >= 0 ? raw.slice(hashIdx + 1) : raw;
+  return n.replace(/^(SHIPHERO-|SH-)?/, '').trim();
+}
+
+/** Pacific-date (YYYY-MM-DD) of an SS order — matches how orders.order_date is stored. */
+export function ssOrderDatePacific(order: { orderDate?: string | null; createdAt?: string | null }): string {
+  const raw = order.orderDate || order.createdAt || '';
+  if (!raw) return '';
+  try {
+    return new Date(raw).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  } catch { return ''; }
+}
+
+/** Identity key for an order. Number alone is NOT unique — store migrations restart
+ *  numbering (Purebite's SHIPHERO-#2793 from July collides with csv order 2793 from
+ *  January), so number+date is the identity. */
+export function ssOrderKey(orderNumber: string, orderDate: string): string {
+  return `${orderNumber}|${orderDate}`;
+}
+
 /**
  * Fetch only new orders from ShipSourced.
+ * `knownKeys` entries are ssOrderKey(number, pacificDate) composites.
  * Stops paginating once all orders on a page are already known.
  */
-export async function getNewClientOrders(clientId: string, knownOrderNumbers: Set<string>): Promise<SSOrder[]> {
+export async function getNewClientOrders(clientId: string, knownKeys: Set<string>): Promise<SSOrder[]> {
   const newOrders: SSOrder[] = [];
-  // Hard caps: if local order numbers never match the API's (e.g. a store migration
-  // changed numbering), the allKnown early-exit never fires and this pages the client's
-  // ENTIRE history into memory — on a 2GB box that OOM-crashes the app.
+  // Hard caps: if local order keys never match the API's, the allKnown early-exit
+  // never fires and this pages the client's ENTIRE history into memory — on a 2GB
+  // box that OOM-crashes the app.
   const MAX_PAGES = 30;
   const MAX_NEW = 3000;
   let page = 1;
@@ -181,10 +207,9 @@ export async function getNewClientOrders(clientId: string, knownOrderNumbers: Se
 
     let allKnown = true;
     for (const order of data.orders) {
-      const rawExtId = order.externalOrderId || '';
-      const hashIdx = rawExtId.lastIndexOf('#');
-      const orderNumber = hashIdx >= 0 ? rawExtId.slice(hashIdx + 1) : rawExtId.replace(/^(SHIPHERO-|SH-)?/, '').trim();
-      if (!knownOrderNumbers.has(orderNumber)) {
+      const orderNumber = normalizeSSOrderNumber(order.externalOrderId || '');
+      const key = ssOrderKey(orderNumber, ssOrderDatePacific(order));
+      if (!knownKeys.has(key)) {
         newOrders.push(order);
         allKnown = false;
       }
