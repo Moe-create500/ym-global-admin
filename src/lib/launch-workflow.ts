@@ -621,7 +621,17 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     if (adFailures.length === adIds.length && adIds.length > 0) {
       throw new Error(`No ad could be activated — first error: ${adFailures[0]}`);
     }
-    const adsetErr = await activate(result.adSetId);
+    let adsetErr = await activate(result.adSetId);
+    // Known CBO trap: combined ad-set minimum spends exceed the campaign
+    // budget — drop OUR min spend target and retry rather than dying
+    if (adsetErr && /minimum spend/i.test(adsetErr)) {
+      await fetch(`https://graph.facebook.com/v24.0/${result.adSetId}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ daily_min_spend_target: 0, access_token: token }),
+      }).catch(() => {});
+      adsetErr = await activate(result.adSetId);
+      if (!adsetErr) result.minSpendDropped = true;
+    }
     if (adsetErr) throw new Error(`Ad set activation failed: ${adsetErr}`);
     const campErr = await activate(result.campaignId);
     if (campErr) throw new Error(`Campaign activation failed: ${campErr}`);
