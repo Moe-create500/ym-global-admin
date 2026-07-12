@@ -16,7 +16,7 @@ const TRANSIENT_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 /** Strip HTML error pages (Cloudflare 502s etc.) down to something readable. */
 function cleanErrorText(text: string): string {
-  return text.replace(/<[^>]*>/g, ' ').replace(/<!--.*?-->/gs, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+  return text.replace(/<!--[\s\S]*?-->/g, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
 }
 
 async function fetchWithRetry(url: string, init: RequestInit, label: string, attempts = 3): Promise<Response> {
