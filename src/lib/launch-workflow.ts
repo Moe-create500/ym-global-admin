@@ -106,8 +106,10 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
     ...(batchMode && prefill.audienceId ? [] : [{ key: 'audience', label: 'Generate audience (Fable 5)', status: 'pending' as const }]),
     { key: 'copy', label: 'Write ad copy (Fable 5)', status: 'pending' },
     ...(batchMode ? [] : Array.from({ length: adCount }, (_, i) => ({ key: `image_${i + 1}`, label: `Generate picture ad ${i + 1}/${adCount}`, status: 'pending' as const }))),
-    { key: 'campaign', label: useExistingCampaign ? 'Attach to existing FB campaign' : 'Create FB campaign (paused)', status: 'pending' },
-    { key: 'adset', label: `Create ad set (paused, $${((Number(config.dailyBudgetCents) || 1000) / 100).toFixed(2)}/day)`, status: 'pending' },
+    { key: 'campaign', label: useExistingCampaign ? 'Attach to existing FB campaign (its budget untouched)' : `Create CBO campaign (paused, $${((Number(config.dailyBudgetCents) || 1000) / 100).toFixed(2)}/day)`, status: 'pending' },
+    { key: 'adset', label: useExistingCampaign
+      ? `Create ad set in campaign${Number(config.minSpendTargetCents) > 0 ? ` (min $${(Number(config.minSpendTargetCents) / 100).toFixed(2)}/day)` : ''}`
+      : 'Create ad set (paused, budget lives on the campaign)', status: 'pending' },
     ...Array.from({ length: adCount }, (_, i) => ({ key: `ad_${i + 1}`, label: `Upload + create ad ${i + 1}/${adCount} (paused)`, status: 'pending' as const })),
     ...(goLive ? [
       { key: 'gate_launch', label: 'LAUNCH GATE — final approval before ads go LIVE and spend begins', status: 'pending' as const },

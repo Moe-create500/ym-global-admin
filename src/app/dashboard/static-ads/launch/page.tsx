@@ -326,10 +326,17 @@ export default function LaunchFlowPage() {
   useEffect(() => { if (storeId) loadSchedules(storeId); }, [storeId, loadSchedules]);
 
   function launchConfig() {
+    const attaching = campaignMode === 'existing' && !!existingCampaignId;
+    // New campaign: the daily budget IS the campaign's CBO budget.
+    // Existing campaign: we never touch its budget — the single ad-set spend
+    // value becomes daily_min_spend_target (CBO) or the ad set budget (ABO).
+    const adSetSpendCents = minSpendTarget ? Math.round(parseFloat(minSpendTarget) * 100) : undefined;
     return {
       profileId, pageId, landingUrl, adCount,
-      dailyBudgetCents: Math.round(parseFloat(dailyBudget || '10') * 100),
-      minSpendTargetCents: minSpendTarget ? Math.round(parseFloat(minSpendTarget) * 100) : undefined,
+      dailyBudgetCents: attaching
+        ? (adSetSpendCents || 1000)
+        : Math.round(parseFloat(dailyBudget || '10') * 100),
+      minSpendTargetCents: adSetSpendCents,
       launchStatus: goLive ? 'ACTIVE' : 'PAUSED',
       targeting: { countries: countries.split(',').map(c => c.trim()).filter(Boolean) },
       selectedImageUrl: selectedImageUrl || undefined,
@@ -418,7 +425,10 @@ export default function LaunchFlowPage() {
       : d.id === 'campaign' ? (campaignMode === 'existing'
           ? (campaigns.find(c => c.id === (wf?.config?.existingCampaignId || existingCampaignId))?.name || 'existing campaign')
           : (profile?.profile_name || 'FB campaign (paused)'))
-      : d.id === 'adset' ? `$${wf?.config ? (wf.config.dailyBudgetCents / 100).toFixed(0) : dailyBudget}/day CBO · until stopped`
+      : d.id === 'adset' ? (
+          (wf ? !!wf.config.existingCampaignId : campaignMode === 'existing')
+            ? `min $${wf?.config ? ((wf.config.minSpendTargetCents ?? wf.config.dailyBudgetCents) / 100).toFixed(0) : (minSpendTarget || '—')}/day · joins campaign`
+            : `$${wf?.config ? (wf.config.dailyBudgetCents / 100).toFixed(0) : dailyBudget}/day CBO · until stopped`)
       : d.id === 'ads' ? 'upload + attach copy (paused)'
       : d.id === 'gate_launch' ? 'final approval before spend'
       : 'flips everything ACTIVE';
@@ -649,21 +659,33 @@ export default function LaunchFlowPage() {
         <div className="space-y-3">
           {errBox}
           {!wf ? (
-            <>
-              <div className="grid grid-cols-2 gap-2">
-                <div><label className={labelCls}>Daily budget $ (campaign)</label>
-                  <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>
-                <div><label className={labelCls}>Min spend $ (ad set)</label>
+            campaignMode === 'existing' ? (
+              <>
+                <div><label className={labelCls}>Ad set spend $/day</label>
                   <input type="number" min={0} step="1" value={minSpendTarget} onChange={e => setMinSpendTarget(e.target.value)}
-                    placeholder="optional" className={inputCls} />
-                  <p className="text-[9px] text-slate-500 mt-0.5">daily_min_spend_target</p></div>
-              </div>
-              <div><label className={labelCls}>Countries (comma-separated)</label>
-                <input value={countries} onChange={e => setCountries(e.target.value)} placeholder="US, CA, GB" className={inputCls} /></div>
-              <p className="text-[11px] text-slate-400">
-                Starts right away when live · stays in the campaign and runs until you turn it off (${parseFloat(dailyBudget || '10').toFixed(2)}/day).
-              </p>
-            </>
+                    placeholder="e.g. 10" className={inputCls} />
+                  <p className="text-[9px] text-slate-500 mt-0.5">The campaign keeps its own budget untouched. CBO campaign → this is the ad set&apos;s minimum spend target; older ABO campaign → its daily budget.</p></div>
+                <p className="text-[11px] text-slate-400">
+                  Countries, pixel and optimization are copied from the ad sets already in the chosen campaign. Starts right away when live · runs until you turn it off.
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <div><label className={labelCls}>Daily budget $ (campaign)</label>
+                    <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>
+                  <div><label className={labelCls}>Min spend $ (ad set)</label>
+                    <input type="number" min={0} step="1" value={minSpendTarget} onChange={e => setMinSpendTarget(e.target.value)}
+                      placeholder="optional" className={inputCls} />
+                    <p className="text-[9px] text-slate-500 mt-0.5">daily_min_spend_target</p></div>
+                </div>
+                <div><label className={labelCls}>Countries (comma-separated)</label>
+                  <input value={countries} onChange={e => setCountries(e.target.value)} placeholder="US, CA, GB" className={inputCls} /></div>
+                <p className="text-[11px] text-slate-400">
+                  Starts right away when live · stays in the campaign and runs until you turn it off (${parseFloat(dailyBudget || '10').toFixed(2)}/day CBO).
+                </p>
+              </>
+            )
           ) : (
             <p className="text-xs text-slate-300">
               {(wf.config.targeting?.countries || ['US']).join(', ')} · ${(wf.config.dailyBudgetCents / 100).toFixed(2)}/day
@@ -671,10 +693,8 @@ export default function LaunchFlowPage() {
             </p>
           )}
           <p className="text-xs text-slate-400">
-            CBO — the daily budget sits on the campaign; Meta distributes it. Broad targeting — 18–65, all genders, Advantage+ audience OFF.{' '}
-            {campaignMode === 'existing'
-              ? 'Pixel + optimization are copied from the ad sets already in the chosen campaign.'
-              : profile?.pixel_id ? `Optimizes for purchases via pixel ${profile.pixel_id}.` : 'No pixel on this profile — optimizes for link clicks.'}
+            Broad targeting — 18–65, all genders, Advantage+ audience OFF.{' '}
+            {campaignMode !== 'existing' && (profile?.pixel_id ? `Optimizes for purchases via pixel ${profile.pixel_id}.` : 'No pixel on this profile — optimizes for link clicks.')}
           </p>
           {r.adSetId && (
             <p className="text-xs text-emerald-400">Ad set: {r.adSetId} — <a href={adsManagerUrl} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Ads Manager ↗</a></p>
@@ -697,9 +717,16 @@ export default function LaunchFlowPage() {
           </button>}
           <div className="bg-slate-800/60 rounded-lg p-2.5 space-y-1">
             <p className="text-[10px] text-slate-500 uppercase">What approval starts</p>
-            <p className="text-xs text-white">{n} ads · <span className="text-amber-300 font-semibold">${b}/day CBO</span> (budget on the campaign)</p>
+            {(wf ? !!wf.config.existingCampaignId : campaignMode === 'existing') ? (
+              <p className="text-xs text-white">
+                {n} ads join <span className="text-slate-300">{campaigns.find(c => c.id === (wf?.config?.existingCampaignId || existingCampaignId))?.name || 'the chosen campaign'}</span>
+                {' '}· its budget is untouched{(wf?.config?.minSpendTargetCents || minSpendTarget) ? <> · <span className="text-amber-300 font-semibold">min ${wf?.config?.minSpendTargetCents ? (wf.config.minSpendTargetCents / 100).toFixed(2) : parseFloat(minSpendTarget).toFixed(2)}/day</span> guaranteed to this ad set</> : ''}
+              </p>
+            ) : (
+              <p className="text-xs text-white">{n} ads · <span className="text-amber-300 font-semibold">${b}/day CBO</span> (budget on the campaign)</p>
+            )}
             <p className="text-xs text-white">
-              starts immediately · <span className="text-amber-400 font-semibold">runs until you turn it off</span> (~${(parseFloat(b) * 30).toFixed(0)}/mo)
+              starts immediately · <span className="text-amber-400 font-semibold">runs until you turn it off</span>
             </p>
             <p className="text-[11px] text-slate-400">{profile?.profile_name || profile?.ad_account_id} → {pages.find(p => p.id === (wf?.config?.pageId || pageId))?.name || 'page'}</p>
           </div>
