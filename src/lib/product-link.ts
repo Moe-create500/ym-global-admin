@@ -43,6 +43,8 @@ function normalizeTitle(t: string): string {
   return String(t || '')
     .toLowerCase()
     .replace(/[™®©]/g, '')
+    // "PureBiteTM" — mangled ™ glued to the brand word — and standalone "TM"
+    .replace(/([a-z])tm\b/g, '$1')
     .replace(/\btm\b/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();

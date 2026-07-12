@@ -18,6 +18,17 @@ export const maxDuration = 300;
 
 interface Step { key: string; label: string; status: 'pending' | 'done' | 'error'; detail?: string }
 
+function ensureLanderTable(db: any) {
+  db.exec(`CREATE TABLE IF NOT EXISTS product_landing_pages (
+    store_id TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual',
+    updated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (store_id, product_id)
+  )`);
+}
+
 function ensureTable(db: any) {
   db.exec(`CREATE TABLE IF NOT EXISTS ad_workflows (
     id TEXT PRIMARY KEY,
@@ -62,24 +73,46 @@ export async function GET(req: NextRequest) {
   const storeId = req.nextUrl.searchParams.get('storeId');
   const profileId = req.nextUrl.searchParams.get('profileId');
 
-  // Landing-page URLs via the centralized product-link resolver (lib/product-link)
+  // Landing-page URLs: saved lander (per store+product) first, then the
+  // centralized product-link resolver (lib/product-link)
   if (req.nextUrl.searchParams.get('landing') && storeId) {
     const prodId = req.nextUrl.searchParams.get('productId');
     if (!prodId) return NextResponse.json({ error: 'productId required' }, { status: 400 });
+    ensureLanderTable(db);
+    const saved: any = db.prepare('SELECT url, source FROM product_landing_pages WHERE store_id = ? AND product_id = ?').get(storeId, prodId);
     try {
       const { resolveProductLink } = await import('@/lib/product-link');
       const link = await resolveProductLink(db, storeId, prodId);
 
-      // Recommended destination first; homepage last and clearly labeled a manual choice
+      // Saved lander outranks everything — it's what actually ran before
       const urls: { label: string; url: string }[] = [];
-      if (link.customLandingPageUrl) urls.push({ label: `Custom landing page — ${link.productTitle}`, url: link.customLandingPageUrl });
-      if (link.standardProductUrl) {
+      if (saved?.url) urls.push({ label: `⭐ Saved lander (${saved.source})`, url: saved.url });
+      if (link.customLandingPageUrl && link.customLandingPageUrl !== saved?.url) urls.push({ label: `Custom landing page — ${link.productTitle}`, url: link.customLandingPageUrl });
+      if (link.standardProductUrl && link.standardProductUrl !== saved?.url) {
         urls.push({ label: `${link.validated || link.customLandingPageUrl ? '✓' : '⚠'} Product page — ${link.productTitle}${link.productStatus && link.productStatus !== 'active' ? ` (${link.productStatus})` : ''}`, url: link.standardProductUrl });
       }
       if (link.homepageUrl) urls.push({ label: 'Store homepage (manual choice — not recommended for product ads)', url: link.homepageUrl });
 
+      if (saved?.url) {
+        link.recommendedAdvertisingUrl = saved.url;
+        link.validated = true;
+        link.selectionReason = `Saved lander for this product (${saved.source}) — used on previous runs.`;
+      } else if (link.validated && link.recommendedAdvertisingUrl) {
+        // First successful resolution becomes the saved lander
+        db.prepare(`INSERT INTO product_landing_pages (store_id, product_id, url, source, updated_at) VALUES (?, ?, ?, 'resolved', datetime('now'))
+          ON CONFLICT(store_id, product_id) DO UPDATE SET url = excluded.url, source = 'resolved', updated_at = datetime('now')`)
+          .run(storeId, prodId, link.recommendedAdvertisingUrl);
+      }
+
       return NextResponse.json({ urls, resolved: link });
     } catch (e: any) {
+      // Resolver down (Shopify creds missing etc.) — the saved lander still serves
+      if (saved?.url) {
+        return NextResponse.json({
+          urls: [{ label: `⭐ Saved lander (${saved.source})`, url: saved.url }],
+          resolved: { validated: true, selectionReason: `Saved lander for this product (${saved.source}). Live Shopify lookup unavailable: ${String(e?.message || e).slice(0, 120)}`, warnings: [], recommendedAdvertisingUrl: saved.url },
+        });
+      }
       return NextResponse.json({ error: `Product link resolution failed: ${String(e?.message || e).slice(0, 200)}` }, { status: 502 });
     }
   }
@@ -180,6 +213,13 @@ export async function POST(req: NextRequest) {
         { key: 'activate', label: 'Activate campaign + ad set + ads', status: 'pending' as const },
       ] : []),
     ];
+
+    // The URL this run actually uses becomes the product's saved lander —
+    // next runs prefill it instantly and consistently
+    ensureLanderTable(db);
+    db.prepare(`INSERT INTO product_landing_pages (store_id, product_id, url, source, updated_at) VALUES (?, ?, ?, 'manual', datetime('now'))
+      ON CONFLICT(store_id, product_id) DO UPDATE SET url = excluded.url, source = 'manual', updated_at = datetime('now')`)
+      .run(storeId, productId, String(config.landingUrl));
 
     const id = crypto.randomUUID();
     db.prepare(`INSERT INTO ad_workflows (id, store_id, product_id, name, steps_json, config_json, result_json) VALUES (?, ?, ?, ?, ?, ?, ?)`)
