@@ -135,6 +135,7 @@ export async function POST(req: NextRequest) {
         pageId: config.pageId,
         landingUrl: config.landingUrl,
         audienceId: config.audienceId || null,
+        selectedImageUrl: config.selectedImageUrl || null,
         campaignName: config.campaignName || `${product.title.slice(0, 40)} | Launch ${new Date().toISOString().slice(0, 10)}`,
         targeting: {
           countries: Array.isArray(config.targeting?.countries) && config.targeting.countries.length
@@ -275,6 +276,7 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     if (!templateId) throw new Error('No active image templates available');
     const creative = await generateStaticAd(db, {
       storeId: wf.storeId, productId: wf.productId, audienceId: result.audienceId, templateId,
+      selectedImageUrl: cfg.selectedImageUrl || undefined,
     });
     result.creatives = result.creatives || [];
     result.creatives[idx] = { id: creative.id, imageUrl: creative.imageUrl, template: creative.template };

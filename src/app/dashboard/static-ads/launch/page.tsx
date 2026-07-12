@@ -6,7 +6,7 @@ import { ReactFlow, Background, Controls, Handle, Position, MarkerType, type Nod
 import '@xyflow/react/dist/style.css';
 
 interface Store { id: string; name: string }
-interface Product { id: string; title: string; price_cents: number | null }
+interface Product { id: string; title: string; price_cents: number | null; image_url: string | null; images: string }
 interface FBProfile { id: string; profile_name: string; ad_account_id: string; ad_account_name: string | null; fb_page_id: string | null; fb_page_name: string | null; pixel_id: string | null }
 interface FBPage { id: string; name: string }
 interface Step { key: string; label: string; status: 'pending' | 'done' | 'error'; detail?: string }
@@ -76,6 +76,7 @@ export default function LaunchFlowPage() {
   const [storeId, setStoreId] = useState('');
   const [products, setProducts] = useState<Product[]>([]);
   const [productId, setProductId] = useState('');
+  const [selectedImageUrl, setSelectedImageUrl] = useState('');
   const [profiles, setProfiles] = useState<FBProfile[]>([]);
   const [profileId, setProfileId] = useState('');
   const [pages, setPages] = useState<FBPage[]>([]);
@@ -112,7 +113,13 @@ export default function LaunchFlowPage() {
       setWorkflows(d.workflows || []);
       setProfiles(d.profiles || []);
       setShopifyDomain(d.shopifyDomain || '');
-      if (d.shopifyDomain) setLandingUrl(`https://${d.shopifyDomain}/`);
+      // Only prefill from a domain that actually looks like one — some stores
+      // carry internal identifiers in shopify_domain
+      if (d.shopifyDomain && /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(d.shopifyDomain)) {
+        setLandingUrl(`https://${d.shopifyDomain}/`);
+      } else {
+        setLandingUrl('');
+      }
       if ((d.profiles || []).length === 1) setProfileId(d.profiles[0].id);
     }).catch(() => {});
   }, []);
@@ -168,6 +175,7 @@ export default function LaunchFlowPage() {
           dailyBudgetCents: Math.round(parseFloat(dailyBudget || '10') * 100),
           launchStatus: goLive ? 'ACTIVE' : 'PAUSED',
           targeting: { countries: countries.split(',').map(c => c.trim()).filter(Boolean), ageMin, ageMax, gender },
+          selectedImageUrl: selectedImageUrl || undefined,
         },
       }),
     });
@@ -286,21 +294,55 @@ export default function LaunchFlowPage() {
       </div>
     ) : null;
     switch (selectedNode) {
-      case 'product': return (
+      case 'product': {
+        const prod = products.find(p => p.id === productId);
+        let prodImages: string[] = [];
+        if (prod) {
+          try { prodImages = JSON.parse(prod.images || '[]'); } catch {}
+          if (prod.image_url && !prodImages.includes(prod.image_url)) prodImages.unshift(prod.image_url);
+          prodImages = prodImages.slice(0, 12);
+        }
+        const usedImage = wf?.config?.selectedImageUrl || null;
+        return (
         <div className="space-y-3">
           <div><label className={labelCls}>Store</label>
             <select value={storeId} onChange={e => setStoreId(e.target.value)} className={inputCls} disabled={!!wf}>
               {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select></div>
           <div><label className={labelCls}>Product</label>
-            <select value={productId} onChange={e => setProductId(e.target.value)} className={inputCls} disabled={!!wf}>
+            <select value={productId} onChange={e => { setProductId(e.target.value); setSelectedImageUrl(''); }} className={inputCls} disabled={!!wf}>
               <option value="">— select —</option>
               {products.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
             </select></div>
+          {!wf && prodImages.length > 0 && (
+            <div>
+              <label className={labelCls}>Reference photo — used in every generated ad</label>
+              <div className="grid grid-cols-4 gap-1.5">
+                {prodImages.map(url => (
+                  <button key={url} onClick={() => setSelectedImageUrl(url === selectedImageUrl ? '' : url)}
+                    className={`aspect-square rounded-lg overflow-hidden border-2 transition-colors ${
+                      selectedImageUrl === url ? 'border-blue-500' : 'border-slate-700 hover:border-slate-500'
+                    }`}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={url} alt="" className="w-full h-full object-cover" />
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-slate-500 mt-1">{selectedImageUrl ? 'Selected — all ads use this photo' : 'None selected — defaults to the product’s main image'}</p>
+            </div>
+          )}
+          {wf && usedImage && (
+            <div>
+              <label className={labelCls}>Reference photo (locked for this run)</label>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={usedImage} alt="reference" className="w-20 h-20 rounded-lg object-cover border border-slate-700" />
+            </div>
+          )}
           <div><label className={labelCls}>Landing page URL</label>
             <input value={landingUrl} onChange={e => setLandingUrl(e.target.value)} className={inputCls} disabled={!!wf}
-              placeholder={shopifyDomain ? `https://${shopifyDomain}/products/…` : 'https://…'} /></div>
+              placeholder="https://yourstore.com/products/…" /></div>
         </div>);
+      }
       case 'audience': return r.audience ? (
         <div className="space-y-2 text-sm">
           <p className="text-white font-medium">{r.audience.name}</p>
