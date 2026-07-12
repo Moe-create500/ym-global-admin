@@ -167,7 +167,7 @@ export default function LaunchFlowPage() {
   const [flowTab, setFlowTab] = useState<'ads' | 'newProduct' | 'schedules'>('ads');
 
   // Recurring launch schedules
-  interface Schedule { id: string; name: string; cadence: string; timeOfDay: string; dayOfWeek: number | null; autoLive: boolean; isActive: boolean; lastRunAt: string | null; lastResult: string | null; nextRunAt: string }
+  interface Schedule { id: string; name: string; storeName?: string; cadence: string; timeOfDay: string; dayOfWeek: number | null; autoLive: boolean; isActive: boolean; lastRunAt: string | null; lastResult: string | null; nextRunAt: string }
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [schedModal, setSchedModal] = useState(false);
   const [schedName, setSchedName] = useState('');
@@ -341,12 +341,13 @@ export default function LaunchFlowPage() {
     if (d.workflow.status === 'running') void advanceLoop(wf.id);
   }
 
-  const loadSchedules = useCallback((sid: string) => {
-    fetch(`/api/static-ads/workflow?schedules=1&storeId=${sid}`).then(r => r.json())
+  // Schedules are a GLOBAL view across all stores
+  const loadSchedules = useCallback(() => {
+    fetch('/api/static-ads/workflow?schedules=1').then(r => r.json())
       .then(d => setSchedules(d.schedules || [])).catch(() => {});
   }, []);
 
-  useEffect(() => { if (storeId) loadSchedules(storeId); }, [storeId, loadSchedules]);
+  useEffect(() => { loadSchedules(); }, [loadSchedules]);
 
   function launchConfig() {
     const attaching = campaignMode === 'existing' && !!existingCampaignId;
@@ -384,7 +385,7 @@ export default function LaunchFlowPage() {
     const d = await res.json();
     if (!res.ok) { setSchedMsg(d.error || 'failed'); return; }
     setSchedModal(false); setSchedName('');
-    loadSchedules(storeId);
+    loadSchedules();
     setFlowTab('schedules');
   }
 
@@ -393,7 +394,7 @@ export default function LaunchFlowPage() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, id }),
     });
-    loadSchedules(storeId);
+    loadSchedules();
   }
 
   async function retry() {
@@ -898,7 +899,10 @@ export default function LaunchFlowPage() {
                   <div key={s.id} className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 flex items-center gap-4">
                     <span className={`w-2 h-2 rounded-full flex-shrink-0 ${s.isActive ? 'bg-emerald-400' : 'bg-slate-600'}`} />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-white truncate">{s.name} {s.autoLive && <span className="text-[10px] text-amber-400">⚡ auto-live</span>}</p>
+                      <p className="text-sm text-white truncate">
+                        {s.storeName && <span className="text-[10px] bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 mr-1.5 text-slate-300">{s.storeName}</span>}
+                        {s.name} {s.autoLive && <span className="text-[10px] text-amber-400">⚡ auto-live</span>}
+                      </p>
                       <p className="text-[11px] text-slate-400">
                         {s.cadence === 'daily' ? 'Daily' : `Weekly (${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][s.dayOfWeek ?? 1]})`} at {s.timeOfDay} PST
                         · next: {new Date(s.nextRunAt).toLocaleString()}

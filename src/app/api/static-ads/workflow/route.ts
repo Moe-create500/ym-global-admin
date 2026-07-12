@@ -21,12 +21,15 @@ export async function GET(req: NextRequest) {
   const storeId = req.nextUrl.searchParams.get('storeId');
   const profileId = req.nextUrl.searchParams.get('profileId');
 
-  if (req.nextUrl.searchParams.get('schedules') && storeId) {
+  if (req.nextUrl.searchParams.get('schedules')) {
     ensureScheduleTable(db);
-    const rows: any[] = db.prepare('SELECT * FROM workflow_schedules WHERE store_id = ? ORDER BY created_at DESC').all(storeId);
+    // All stores by default — schedules are a global view, not per selected store
+    const rows: any[] = storeId
+      ? db.prepare('SELECT w.*, s.name AS store_name FROM workflow_schedules w JOIN stores s ON s.id = w.store_id WHERE w.store_id = ? ORDER BY w.created_at DESC').all(storeId)
+      : db.prepare('SELECT w.*, s.name AS store_name FROM workflow_schedules w JOIN stores s ON s.id = w.store_id ORDER BY w.created_at DESC').all();
     return NextResponse.json({
       schedules: rows.map(r => ({
-        id: r.id, storeId: r.store_id, productId: r.product_id, name: r.name,
+        id: r.id, storeId: r.store_id, storeName: r.store_name, productId: r.product_id, name: r.name,
         cadence: r.cadence, timeOfDay: r.time_of_day, dayOfWeek: r.day_of_week,
         autoLive: !!r.auto_live, isActive: !!r.is_active,
         lastRunAt: r.last_run_at, lastResult: r.last_result, nextRunAt: r.next_run_at,
