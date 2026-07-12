@@ -220,8 +220,8 @@ export default function LaunchFlowPage() {
     return true;
   }), [goLive, wf]);
 
-  // Serpentine layout: row 1 flows left→right, row 2 flows right→left directly
-  // beneath, so every edge is short and readable — no diagonal wrap line.
+  // Both rows read left→right (natural reading order); the row transition is a
+  // stepped return edge routed in the gap between rows.
   const PER_ROW = 5;
   const nodes: Node<FlowNodeData>[] = useMemo(() => activeDefs.map((d, i) => {
     const st = d.id === 'product' ? { status: (productId ? 'done' : 'idle') as NodeStatus } : nodeStatus(d.stepKeys);
@@ -239,12 +239,11 @@ export default function LaunchFlowPage() {
 
     const row = Math.floor(i / PER_ROW);
     const col = i % PER_ROW;
-    const x = row % 2 === 0 ? 40 + col * 230 : 40 + (PER_ROW - 1 - col) * 230;
-    const y = 40 + row * 200;
+    const x = 40 + col * 230;
+    const y = 40 + row * 230;
     const rowEnd = col === PER_ROW - 1 && i < activeDefs.length - 1;
-    // handle sides follow the serpentine direction; row transitions go vertical
-    const tpos = col === 0 && row > 0 ? Position.Top : row % 2 === 0 ? Position.Left : Position.Right;
-    const spos = rowEnd ? Position.Bottom : row % 2 === 0 ? Position.Right : Position.Left;
+    const tpos = col === 0 && row > 0 ? Position.Top : Position.Left;
+    const spos = rowEnd ? Position.Bottom : Position.Right;
 
     return {
       id: d.id, type: 'flowNode',
