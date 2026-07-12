@@ -1,0 +1,299 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
+import crypto from 'crypto';
+import path from 'path';
+import fs from 'fs';
+
+export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
+
+/**
+ * Product Launch Workflow — product in, live FB campaign out.
+ *
+ * Steps: audience → copy → image_1..N → campaign → adset → ad_1..N → done.
+ * The client drives execution by calling {action:'advance'} repeatedly; each
+ * call performs exactly ONE step and persists state, so a crash/restart never
+ * loses progress and any error is retryable by advancing again.
+ */
+
+interface Step { key: string; label: string; status: 'pending' | 'done' | 'error'; detail?: string }
+
+function ensureTable(db: any) {
+  db.exec(`CREATE TABLE IF NOT EXISTS ad_workflows (
+    id TEXT PRIMARY KEY,
+    store_id TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    name TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    steps_json TEXT NOT NULL,
+    config_json TEXT NOT NULL,
+    result_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`);
+}
+
+function rowToWorkflow(r: any) {
+  return {
+    id: r.id, storeId: r.store_id, productId: r.product_id, name: r.name,
+    status: r.status, steps: JSON.parse(r.steps_json || '[]'),
+    config: JSON.parse(r.config_json || '{}'), result: JSON.parse(r.result_json || '{}'),
+    error: r.error, createdAt: r.created_at, updatedAt: r.updated_at,
+  };
+}
+
+function save(db: any, id: string, fields: { steps?: Step[]; result?: any; status?: string; error?: string | null }) {
+  const sets: string[] = ["updated_at = datetime('now')"];
+  const params: any[] = [];
+  if (fields.steps) { sets.push('steps_json = ?'); params.push(JSON.stringify(fields.steps)); }
+  if (fields.result) { sets.push('result_json = ?'); params.push(JSON.stringify(fields.result)); }
+  if (fields.status) { sets.push('status = ?'); params.push(fields.status); }
+  if (fields.error !== undefined) { sets.push('error = ?'); params.push(fields.error); }
+  params.push(id);
+  db.prepare(`UPDATE ad_workflows SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+}
+
+// GET ?storeId= → list | ?id= → one | ?profileId=&pages=1 → FB pages for profile
+export async function GET(req: NextRequest) {
+  const db = getDb();
+  ensureTable(db);
+  const id = req.nextUrl.searchParams.get('id');
+  const storeId = req.nextUrl.searchParams.get('storeId');
+  const profileId = req.nextUrl.searchParams.get('profileId');
+
+  if (profileId && req.nextUrl.searchParams.get('pages')) {
+    const profile: any = db.prepare('SELECT access_token, fb_page_id, fb_page_name FROM fb_profiles WHERE id = ? AND is_active = 1').get(profileId);
+    if (!profile?.access_token) return NextResponse.json({ error: 'Profile has no access token' }, { status: 400 });
+    try {
+      const { getPages } = await import('@/lib/facebook');
+      const pages = await getPages(profile.access_token);
+      return NextResponse.json({ pages, savedPageId: profile.fb_page_id || null });
+    } catch (e: any) {
+      return NextResponse.json({ error: `Failed to fetch pages: ${e.message}` }, { status: 502 });
+    }
+  }
+
+  if (id) {
+    const r: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(id);
+    if (!r) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    return NextResponse.json({ workflow: rowToWorkflow(r) });
+  }
+
+  if (storeId) {
+    const rows: any[] = db.prepare('SELECT * FROM ad_workflows WHERE store_id = ? ORDER BY created_at DESC LIMIT 20').all(storeId);
+    // FB profiles for the launch config UI
+    const profiles: any[] = db.prepare(
+      'SELECT id, profile_name, ad_account_id, ad_account_name, fb_page_id, fb_page_name, pixel_id FROM fb_profiles WHERE store_id = ? AND is_active = 1'
+    ).all(storeId);
+    const store: any = db.prepare('SELECT shopify_domain FROM stores WHERE id = ?').get(storeId);
+    return NextResponse.json({ workflows: rows.map(rowToWorkflow), profiles, shopifyDomain: store?.shopify_domain || null });
+  }
+
+  return NextResponse.json({ error: 'id or storeId required' }, { status: 400 });
+}
+
+// POST {action:'create'|'advance'|'cancel', ...}
+export async function POST(req: NextRequest) {
+  const db = getDb();
+  ensureTable(db);
+  const body = await req.json().catch(() => ({}));
+
+  if (body.action === 'create') {
+    const { storeId, productId, config } = body;
+    if (!storeId || !productId || !config?.profileId || !config?.pageId || !config?.landingUrl) {
+      return NextResponse.json({ error: 'storeId, productId, config.profileId, config.pageId, config.landingUrl required' }, { status: 400 });
+    }
+    const product: any = db.prepare('SELECT title FROM products WHERE id = ?').get(productId);
+    if (!product) return NextResponse.json({ error: 'Product not found' }, { status: 404 });
+
+    const adCount = Math.min(Math.max(Number(config.adCount) || 10, 1), 20);
+    const steps: Step[] = [
+      { key: 'audience', label: 'Generate audience (Fable 5)', status: 'pending' },
+      { key: 'copy', label: 'Write ad copy (Fable 5)', status: 'pending' },
+      ...Array.from({ length: adCount }, (_, i) => ({ key: `image_${i + 1}`, label: `Generate picture ad ${i + 1}/${adCount}`, status: 'pending' as const })),
+      { key: 'campaign', label: 'Create FB campaign', status: 'pending' },
+      { key: 'adset', label: `Create ad set ($${((Number(config.dailyBudgetCents) || 1000) / 100).toFixed(2)}/day)`, status: 'pending' },
+      ...Array.from({ length: adCount }, (_, i) => ({ key: `ad_${i + 1}`, label: `Upload + create ad ${i + 1}/${adCount}`, status: 'pending' as const })),
+    ];
+
+    const id = crypto.randomUUID();
+    db.prepare(`INSERT INTO ad_workflows (id, store_id, product_id, name, steps_json, config_json) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(id, storeId, productId, `${product.title.slice(0, 60)} — ${adCount} ads`, JSON.stringify(steps), JSON.stringify({
+        adCount,
+        dailyBudgetCents: Math.max(Number(config.dailyBudgetCents) || 1000, 100),
+        launchStatus: config.launchStatus === 'ACTIVE' ? 'ACTIVE' : 'PAUSED',
+        profileId: config.profileId,
+        pageId: config.pageId,
+        landingUrl: config.landingUrl,
+        audienceId: config.audienceId || null,
+        campaignName: config.campaignName || `${product.title.slice(0, 40)} | Launch ${new Date().toISOString().slice(0, 10)}`,
+      }));
+
+    const r: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(id);
+    return NextResponse.json({ workflow: rowToWorkflow(r) });
+  }
+
+  if (body.action === 'cancel') {
+    save(db, body.id, { status: 'cancelled', error: null });
+    const r: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(body.id);
+    return NextResponse.json({ workflow: rowToWorkflow(r) });
+  }
+
+  if (body.action === 'advance') {
+    const r: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(body.id);
+    if (!r) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    const wf = rowToWorkflow(r);
+    if (wf.status === 'done' || wf.status === 'cancelled') return NextResponse.json({ workflow: wf });
+
+    const steps: Step[] = wf.steps;
+    const step = steps.find(s => s.status !== 'done');
+    if (!step) {
+      save(db, wf.id, { status: 'done', error: null });
+      return NextResponse.json({ workflow: { ...wf, status: 'done' } });
+    }
+
+    try {
+      const result = await runStep(db, wf, step);
+      step.status = 'done';
+      step.detail = result.detail;
+      const allDone = steps.every(s => s.status === 'done');
+      save(db, wf.id, { steps, result: result.result, status: allDone ? 'done' : 'running', error: null });
+    } catch (e: any) {
+      step.status = 'error';
+      step.detail = String(e?.message || e).slice(0, 400);
+      save(db, wf.id, { steps, status: 'error', error: step.detail });
+    }
+
+    const updated: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(wf.id);
+    return NextResponse.json({ workflow: rowToWorkflow(updated) });
+  }
+
+  if (body.action === 'retry') {
+    const r: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(body.id);
+    if (!r) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    const wf = rowToWorkflow(r);
+    const steps: Step[] = wf.steps.map((s: Step) => s.status === 'error' ? { ...s, status: 'pending' as const, detail: undefined } : s);
+    save(db, wf.id, { steps, status: 'running', error: null });
+    const updated: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(wf.id);
+    return NextResponse.json({ workflow: rowToWorkflow(updated) });
+  }
+
+  return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+}
+
+async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; result: any }> {
+  const result = { ...wf.result };
+  const cfg = wf.config;
+
+  const profile: any = db.prepare('SELECT * FROM fb_profiles WHERE id = ? AND is_active = 1').get(cfg.profileId);
+
+  if (step.key === 'audience') {
+    if (cfg.audienceId) {
+      result.audienceId = cfg.audienceId;
+      const a: any = db.prepare('SELECT name FROM ad_audiences WHERE id = ?').get(cfg.audienceId);
+      return { detail: `Using existing: ${a?.name || cfg.audienceId}`, result };
+    }
+    const { generateAudienceFromProduct } = await import('@/lib/claude-audience');
+    const product: any = db.prepare('SELECT title, description, price_cents FROM products WHERE id = ?').get(wf.productId);
+    const a = await generateAudienceFromProduct(product);
+    const audienceId = crypto.randomUUID();
+    const angles = [...a.usageMoments.map((m: string) => `Moment: ${m}`), ...a.creativeAngles];
+    db.prepare(`INSERT INTO ad_audiences (id, store_id, name, description, pain_points, desires, objections, mindset, failed_solutions, demographics, creative_angles, bof_reasoning)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(audienceId, wf.storeId, a.name, a.description, JSON.stringify(a.painPoints), JSON.stringify(a.desires),
+        JSON.stringify(a.objections), a.mindset, JSON.stringify(a.failedSolutions), a.demographics, JSON.stringify(angles), a.bofReasoning);
+    result.audienceId = audienceId;
+    return { detail: a.name, result };
+  }
+
+  if (step.key === 'copy') {
+    const { generateAdCopy } = await import('@/lib/ad-copy');
+    const { loadAudience } = await import('@/lib/static-ad-generate');
+    const product: any = db.prepare('SELECT title, description, price_cents FROM products WHERE id = ?').get(wf.productId);
+    const audience = loadAudience(db, result.audienceId);
+    if (!audience) throw new Error('Audience missing — rerun the audience step');
+    result.copy = await generateAdCopy(product, audience);
+    return { detail: result.copy.headline, result };
+  }
+
+  if (step.key.startsWith('image_')) {
+    const idx = Number(step.key.split('_')[1]) - 1;
+    const { generateStaticAd, pickTemplates } = await import('@/lib/static-ad-generate');
+    if (!result.templateIds) result.templateIds = pickTemplates(db, wf.storeId, cfg.adCount);
+    const templateId = result.templateIds[idx % result.templateIds.length];
+    if (!templateId) throw new Error('No active image templates available');
+    const creative = await generateStaticAd(db, {
+      storeId: wf.storeId, productId: wf.productId, audienceId: result.audienceId, templateId,
+    });
+    result.creatives = result.creatives || [];
+    result.creatives[idx] = { id: creative.id, imageUrl: creative.imageUrl, template: creative.template };
+    return { detail: creative.template, result };
+  }
+
+  if (step.key === 'campaign') {
+    if (!profile?.access_token || !profile?.ad_account_id) throw new Error('FB profile missing token or ad account');
+    const { createCampaign } = await import('@/lib/facebook');
+    const campaign = await createCampaign(profile.ad_account_id, profile.access_token, {
+      name: cfg.campaignName, status: cfg.launchStatus,
+    });
+    result.campaignId = campaign.id;
+    return { detail: `Campaign ${campaign.id} (${cfg.launchStatus})`, result };
+  }
+
+  if (step.key === 'adset') {
+    if (!profile?.access_token || !profile?.ad_account_id) throw new Error('FB profile missing token or ad account');
+    if (!result.campaignId) throw new Error('Campaign missing — rerun the campaign step');
+    const { createAdSet } = await import('@/lib/facebook');
+    const hasPixel = !!profile.pixel_id;
+    const adset = await createAdSet(profile.ad_account_id, profile.access_token, {
+      name: `${cfg.campaignName} | AdSet 1`,
+      campaignId: result.campaignId,
+      dailyBudgetCents: cfg.dailyBudgetCents,
+      status: cfg.launchStatus,
+      // No pixel → conversions optimization is invalid; optimize for link clicks
+      optimizationGoal: hasPixel ? 'OFFSITE_CONVERSIONS' : 'LINK_CLICKS',
+      pixelId: hasPixel ? profile.pixel_id : undefined,
+    });
+    result.adSetId = adset.id;
+    return { detail: `Ad set ${adset.id}${hasPixel ? '' : ' (no pixel — optimizing for link clicks)'}`, result };
+  }
+
+  if (step.key.startsWith('ad_')) {
+    if (!profile?.access_token || !profile?.ad_account_id) throw new Error('FB profile missing token or ad account');
+    if (!result.adSetId) throw new Error('Ad set missing — rerun the adset step');
+    const idx = Number(step.key.split('_')[1]) - 1;
+    const creative = result.creatives?.[idx];
+    if (!creative) throw new Error(`Image ${idx + 1} missing — rerun its image step`);
+
+    const { uploadAdImage, createAdCreative, createAd } = await import('@/lib/facebook');
+
+    // Read the PNG from disk (the serving URL is session-gated) → base64 upload
+    const filePath = path.join(process.cwd(), 'static-ads', wf.storeId, `${creative.id}.png`);
+    if (!fs.existsSync(filePath)) throw new Error(`Image file missing for creative ${creative.id}`);
+    const b64 = fs.readFileSync(filePath).toString('base64');
+
+    const img = await uploadAdImage(profile.ad_account_id, profile.access_token, b64);
+    const adCreative = await createAdCreative(profile.ad_account_id, profile.access_token, {
+      name: `${cfg.campaignName} | ${creative.template} | ${idx + 1}`,
+      pageId: cfg.pageId,
+      imageHash: img.hash,
+      headline: result.copy?.headline || '',
+      primaryText: result.copy?.primaryText || '',
+      description: result.copy?.description || '',
+      linkUrl: cfg.landingUrl,
+      callToAction: 'SHOP_NOW',
+    });
+    const ad = await createAd(profile.ad_account_id, profile.access_token, {
+      name: `${creative.template} ${idx + 1}`,
+      adSetId: result.adSetId,
+      creativeId: adCreative.id,
+      status: cfg.launchStatus,
+    });
+    result.adIds = result.adIds || [];
+    result.adIds[idx] = ad.id;
+    return { detail: `Ad ${ad.id}`, result };
+  }
+
+  throw new Error(`Unknown step: ${step.key}`);
+}
