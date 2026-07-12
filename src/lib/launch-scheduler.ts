@@ -89,6 +89,7 @@ export async function runDueSchedules(db: Database.Database): Promise<{ ran: num
       const config = JSON.parse(s.config_json);
       config.launchStatus = s.auto_live ? 'ACTIVE' : 'PAUSED';
       config.campaignName = undefined; // fresh dated name per run
+      config.audienceId = null;        // every run gets a NEW Fable 5 audience
       const wf = createLaunchWorkflow(db, s.store_id, s.product_id, config);
       console.log(`[launch-schedule] "${s.name}" fired → workflow ${wf.id} (${s.auto_live ? 'AUTO-LIVE' : 'paused'})`);
       const done = await runWorkflowToCompletion(db, wf.id, { autoApproveLaunchGate: !!s.auto_live });

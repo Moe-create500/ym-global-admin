@@ -138,6 +138,7 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
       landingUrl: config.landingUrl,
       audienceId: config.audienceId || null,
       selectedImageUrl: config.selectedImageUrl || null,
+      customInstructions: typeof config.customInstructions === 'string' && config.customInstructions.trim() ? config.customInstructions.trim().slice(0, 500) : null,
       campaignName: config.campaignName || `${product.title.slice(0, 40)} | Launch ${new Date().toISOString().slice(0, 10)}`,
       targeting: {
         countries: Array.isArray(config.targeting?.countries) && config.targeting.countries.length
@@ -190,6 +191,53 @@ export async function advanceWorkflow(db: Database.Database, id: string, opts?: 
   const step = steps.find(s => s.status !== 'done');
   if (!step) {
     save(db, wf.id, { status: 'done', error: null });
+    return getWorkflow(db, id)!;
+  }
+
+  // Image steps run as a PARALLEL batch — 10 sequential generations took
+  // ~10 minutes; 5 workers cut that to ~2. Each completion persists
+  // immediately (better-sqlite3 is synchronous, so no write races).
+  if (step.key.startsWith('image_')) {
+    const { generateStaticAd, pickTemplates } = await import('@/lib/static-ad-generate');
+    const result = { ...wf.result };
+    if (!result.templateIds) result.templateIds = pickTemplates(db, wf.storeId, wf.config.adCount);
+    if (!result.templateIds.length) {
+      step.status = 'error'; step.detail = 'No active image templates available';
+      save(db, wf.id, { steps, status: 'error', error: step.detail });
+      return getWorkflow(db, id)!;
+    }
+    result.creatives = result.creatives || [];
+
+    const pending = steps.filter(s => s.key.startsWith('image_') && s.status !== 'done');
+    const CONCURRENCY = 5;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < pending.length) {
+        const mine = pending[cursor++];
+        const idx = Number(mine.key.split('_')[1]) - 1;
+        try {
+          const creative = await generateStaticAd(db, {
+            storeId: wf.storeId, productId: wf.productId, audienceId: result.audienceId,
+            templateId: result.templateIds[idx % result.templateIds.length],
+            selectedImageUrl: wf.config.selectedImageUrl || undefined,
+            customInstructions: wf.config.customInstructions || undefined,
+          });
+          result.creatives[idx] = { id: creative.id, imageUrl: creative.imageUrl, template: creative.template };
+          mine.status = 'done'; mine.detail = creative.template;
+        } catch (e: any) {
+          mine.status = 'error'; mine.detail = String(e?.message || e).slice(0, 300);
+        }
+        save(db, wf.id, { steps, result }); // live progress for pollers
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker));
+
+    const failed = pending.filter(s => s.status === 'error');
+    save(db, wf.id, {
+      steps, result,
+      status: failed.length ? 'error' : 'running',
+      error: failed.length ? `${failed.length}/${pending.length} images failed — retry re-runs only those` : null,
+    });
     return getWorkflow(db, id)!;
   }
 
@@ -260,7 +308,11 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     }
     const { generateAudienceFromProduct } = await import('@/lib/claude-audience');
     const product: any = db.prepare('SELECT title, description, price_cents FROM products WHERE id = ?').get(wf.productId);
-    const a = await generateAudienceFromProduct(product);
+    // Every run gets a DIFFERENT audience — feed recent ones in as anti-repeats
+    const recent: any[] = db.prepare(
+      'SELECT name FROM ad_audiences WHERE store_id = ? ORDER BY rowid DESC LIMIT 10'
+    ).all(wf.storeId);
+    const a = await generateAudienceFromProduct(product, { avoidNames: recent.map(r => r.name) });
     const audienceId = crypto.randomUUID();
     const angles = [...a.usageMoments.map((m: string) => `Moment: ${m}`), ...a.creativeAngles];
     db.prepare(`INSERT INTO ad_audiences (id, store_id, name, description, pain_points, desires, objections, mindset, failed_solutions, demographics, creative_angles, bof_reasoning)
@@ -356,8 +408,10 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     const hasPixel = !!pixelId;
 
     const isCbo = !!result.campaignIsCbo;
+    // Naming convention: 07/12/2026 - M.O - Auto Launch (LA date at execution)
+    const laDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: '2-digit', day: '2-digit', year: 'numeric' });
     const adset = await createAdSet(profile.ad_account_id, profile.access_token, {
-      name: `${cfg.campaignName} | AdSet 1`,
+      name: `${laDate} - M.O - Auto Launch`,
       campaignId: result.campaignId,
       dailyBudgetCents: cfg.dailyBudgetCents,
       cbo: isCbo, // CBO campaign owns the budget — ad set carries none
@@ -426,20 +480,41 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
   if (step.key === 'activate') {
     if (!profile?.access_token) throw new Error('FB profile missing token');
     if (!result.campaignId || !result.adSetId) throw new Error('Campaign/ad set missing');
-    const activate = async (objectId: string) => {
-      const res = await fetch(`https://graph.facebook.com/v24.0/${objectId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'ACTIVE', access_token: profile.access_token }),
-      });
-      const d = await res.json();
-      if (d.error) throw new Error(`Activate ${objectId} failed: ${d.error.message}`);
+    const token = profile.access_token;
+    // Idempotent + tolerant of manual edits in Ads Manager (renames, already-
+    // activated objects): check state first, skip if not paused, surface
+    // Facebook's human-readable error when a flip is genuinely rejected.
+    const activate = async (objectId: string): Promise<string | null> => {
+      try {
+        const cur = await (await fetch(`https://graph.facebook.com/v24.0/${objectId}?fields=status&access_token=${token}`)).json();
+        if (cur.error) return `${objectId}: ${cur.error.error_user_msg || cur.error.message}`;
+        if (cur.status && cur.status !== 'PAUSED') return null; // already active/archived — nothing to flip
+        const res = await fetch(`https://graph.facebook.com/v24.0/${objectId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'ACTIVE', access_token: token }),
+        });
+        const d = await res.json();
+        if (d.error) return `${objectId}: ${d.error.error_user_msg || d.error.message}`;
+        return null;
+      } catch (e: any) { return `${objectId}: ${String(e?.message || e).slice(0, 150)}`; }
     };
     // Ads first, then ad set, then campaign — nothing serves until the campaign flips
-    for (const adId of (result.adIds || []).filter(Boolean)) await activate(adId);
-    await activate(result.adSetId);
-    await activate(result.campaignId);
-    return { detail: `LIVE — ${(result.adIds || []).filter(Boolean).length} ads at $${(cfg.dailyBudgetCents / 100).toFixed(2)}/day`, result };
+    const adFailures: string[] = [];
+    const adIds = (result.adIds || []).filter(Boolean);
+    for (const adId of adIds) {
+      const err = await activate(adId);
+      if (err) adFailures.push(err);
+    }
+    if (adFailures.length === adIds.length && adIds.length > 0) {
+      throw new Error(`No ad could be activated — first error: ${adFailures[0]}`);
+    }
+    const adsetErr = await activate(result.adSetId);
+    if (adsetErr) throw new Error(`Ad set activation failed: ${adsetErr}`);
+    const campErr = await activate(result.campaignId);
+    if (campErr) throw new Error(`Campaign activation failed: ${campErr}`);
+    const liveCount = adIds.length - adFailures.length;
+    return { detail: `LIVE — ${liveCount}/${adIds.length} ads${adFailures.length ? ` (${adFailures.length} failed: ${adFailures[0].slice(0, 120)})` : ''}`, result };
   }
 
   throw new Error(`Unknown step: ${step.key}`);

@@ -153,6 +153,7 @@ export default function LaunchFlowPage() {
   const [goLive, setGoLive] = useState(true);
   const [countries, setCountries] = useState('US');
   const [minSpendTarget, setMinSpendTarget] = useState('');
+  const [customInstructions, setCustomInstructions] = useState('');
   // No end date — ads live in the campaign and run until turned off
   const durationDays = 0;
 
@@ -292,6 +293,12 @@ export default function LaunchFlowPage() {
   // ─── Engine driving ───
   async function advanceLoop(wfId: string) {
     runningRef.current = true; setRunning(true);
+    // The image batch runs minutes-long inside ONE advance call — poll for
+    // live per-image progress while it's in flight
+    const poller = setInterval(() => {
+      fetch(`/api/static-ads/workflow?id=${wfId}`).then(r => r.json())
+        .then(d => { if (d.workflow && runningRef.current) setWf(d.workflow); }).catch(() => {});
+    }, 4000);
     while (runningRef.current) {
       try {
         const res = await fetch('/api/static-ads/workflow', {
@@ -304,6 +311,7 @@ export default function LaunchFlowPage() {
         if (d.workflow.status !== 'running') break; // done / error / awaiting_approval
       } catch (e: any) { setError(e.message); break; }
     }
+    clearInterval(poller);
     runningRef.current = false; setRunning(false);
     loadStoreData(storeId);
   }
@@ -352,6 +360,7 @@ export default function LaunchFlowPage() {
         ? (adSetSpendCents || 1000)
         : Math.round(parseFloat(dailyBudget || '10') * 100),
       minSpendTargetCents: adSetSpendCents,
+      customInstructions: customInstructions.trim() || undefined,
       launchStatus: goLive ? 'ACTIVE' : 'PAUSED',
       targeting: { countries: countries.split(',').map(c => c.trim()).filter(Boolean) },
       selectedImageUrl: selectedImageUrl || undefined,
@@ -621,6 +630,13 @@ export default function LaunchFlowPage() {
           {!wf && <div><label className={labelCls}>Number of picture ads</label>
             <input type="number" min={1} max={20} value={adCount}
               onChange={e => setAdCount(Math.min(Math.max(Number(e.target.value) || 1, 1), 20))} className={inputCls} /></div>}
+          {!wf && <div><label className={labelCls}>Custom details — baked into every image</label>
+            <textarea value={customInstructions} onChange={e => setCustomInstructions(e.target.value)} rows={2}
+              placeholder="e.g. 50% OFF — show the discount prominently" className={inputCls} /></div>}
+          {wf?.config?.customInstructions && (
+            <p className="text-xs text-slate-400">Custom details: <span className="text-slate-200">{wf.config.customInstructions}</span></p>
+          )}
+          {wf && <p className="text-[11px] text-slate-500">Images generate in parallel (5 workers).</p>}
           {(r.creatives || []).filter(Boolean).length > 0 && (
             <div className="grid grid-cols-3 gap-1.5">
               {(r.creatives || []).filter(Boolean).map((c: any) => (

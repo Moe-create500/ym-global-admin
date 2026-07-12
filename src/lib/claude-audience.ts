@@ -27,7 +27,7 @@ export async function generateAudienceFromProduct(product: {
   title: string;
   description?: string | null;
   price_cents?: number | null;
-}): Promise<GeneratedAudience> {
+}, opts?: { avoidNames?: string[] }): Promise<GeneratedAudience> {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY not configured');
   }
@@ -52,6 +52,9 @@ Price: ${price}
 Description: ${(product.description || 'No description available — infer everything from the title.').slice(0, 3000)}
 
 Build the highest-converting bottom-of-funnel audience profile for this product. Be specific and vivid — these fields feed ad-creative generation, so every entry should be concrete enough to write an ad from.
+${opts?.avoidNames?.length ? `
+ALREADY USED — take a DISTINCTLY different buyer angle from all of these (different life situation, motivation, or demographic; not a rewording):
+${opts.avoidNames.slice(0, 10).map(n => `- ${n}`).join('\n')}` : ''}
 
 Return exactly this JSON structure:
 {
