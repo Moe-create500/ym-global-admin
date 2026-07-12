@@ -18,6 +18,7 @@ interface BankAccount {
   balance_available_cents: number;
   balance_ledger_cents: number;
   balance_updated_at: string | null;
+  bank_data_as_of: string | null;
   status: string;
 }
 
@@ -438,6 +439,12 @@ function BankingContent() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
             {accounts.map(account => {
               const isAnchor = account.institution_name === 'Shopify Balance';
+              // Teller returns 200 + last-known data when a bank connection dies —
+              // the newest transaction date is the real freshness signal
+              const dataAgeDays = account.bank_data_as_of
+                ? Math.floor((Date.now() - new Date(account.bank_data_as_of + 'T12:00:00').getTime()) / 86_400_000)
+                : null;
+              const frozen = !isAnchor && dataAgeDays !== null && dataAgeDays >= 3;
               return (
               <div
                 key={account.id}
@@ -466,9 +473,16 @@ function BankingContent() {
                     <p className="text-sm font-semibold text-white">{cents(account.balance_ledger_cents || 0)}</p>
                   </div>
                 </div>
+                {frozen && (
+                  <p className="mt-2 text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 rounded px-2 py-1">
+                    ⚠ Bank data frozen at {account.bank_data_as_of} — Teller connection stale, reconnect this bank via Connect Bank
+                  </p>
+                )}
                 <div className="flex items-center justify-between mt-2">
                   <p className="text-[10px] text-slate-600">
-                    Updated {timeAgo(account.balance_updated_at)}{isAnchor ? ' — manual anchor, no bank feed' : ''}
+                    {isAnchor
+                      ? `Updated ${timeAgo(account.balance_updated_at)} — manual anchor, no bank feed`
+                      : `Checked ${timeAgo(account.balance_updated_at)}${account.bank_data_as_of ? ` · bank data through ${account.bank_data_as_of}` : ''}`}
                   </p>
                   {isAnchor && anchorEditId !== account.id && (
                     <button onClick={e => { e.stopPropagation(); setAnchorEditId(account.id); setAnchorValue(''); setAnchorMsg(''); }}

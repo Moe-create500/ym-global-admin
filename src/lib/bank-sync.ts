@@ -54,6 +54,17 @@ export async function syncBankAccounts(): Promise<{ accounts_synced: number; tra
       // Sync transactions (last 200)
       try {
         const txns = await getAccountTransactions(account.access_token, account.teller_account_id, 200);
+
+        // Track how fresh the BANK's data actually is. Teller keeps returning
+        // 200 + last-known balances when a bank connection silently dies (BofA
+        // froze 2026-07-08 while every sync "succeeded") — the newest
+        // transaction date is the only truthful freshness signal.
+        const newestTxnDate = txns.reduce((m: string, t: any) => (t.date && t.date > m ? t.date : m), '');
+        if (newestTxnDate) {
+          try { db.exec('ALTER TABLE bank_accounts ADD COLUMN bank_data_as_of TEXT'); } catch { /* exists */ }
+          db.prepare('UPDATE bank_accounts SET bank_data_as_of = ? WHERE id = ?').run(newestTxnDate, account.id);
+        }
+
         for (const txn of txns) {
           const existing = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(txn.id);
           if (existing) continue;
