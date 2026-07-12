@@ -145,6 +145,12 @@ export async function POST(req: NextRequest) {
           ageMax: Math.min(Math.max(Number(config.targeting?.ageMax) || 65, 18), 65),
           gender: ['all', 'women', 'men'].includes(config.targeting?.gender) ? config.targeting.gender : 'all',
         },
+        schedule: {
+          // ISO datetime for a future start, or null = deliver as soon as live
+          startAt: config.schedule?.startAt && !isNaN(Date.parse(config.schedule.startAt)) ? config.schedule.startAt : null,
+          // days to run; 0/null = no end (runs until manually stopped)
+          durationDays: Math.min(Math.max(Number(config.schedule?.durationDays) || 0, 0), 90),
+        },
       }));
 
     const r: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(id);
@@ -314,9 +320,23 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
         age_max: t.ageMax,
         ...(t.gender === 'women' ? { genders: [2] } : t.gender === 'men' ? { genders: [1] } : {}),
       },
+      // Schedule: future start if configured; end_time makes Meta stop
+      // delivery automatically — total spend is bounded at daily × days
+      ...(() => {
+        const sched = cfg.schedule || {};
+        const startMs = sched.startAt && Date.parse(sched.startAt) > Date.now() ? Date.parse(sched.startAt) : Date.now();
+        const out: any = {};
+        if (sched.startAt && startMs > Date.now()) out.startTime = new Date(startMs).toISOString();
+        if (sched.durationDays > 0) out.endTime = new Date(startMs + sched.durationDays * 86_400_000).toISOString();
+        return out;
+      })(),
     });
     result.adSetId = adset.id;
-    return { detail: `Ad set ${adset.id}${hasPixel ? '' : ' (no pixel — optimizing for link clicks)'}`, result };
+    const sched = cfg.schedule || {};
+    const schedNote = sched.durationDays > 0
+      ? `, auto-stops after ${sched.durationDays}d (max $${((cfg.dailyBudgetCents * sched.durationDays) / 100).toFixed(2)} total)`
+      : ', no end date';
+    return { detail: `Ad set ${adset.id}${hasPixel ? '' : ' (no pixel — link clicks)'}${schedNote}`, result };
   }
 
   if (step.key.startsWith('ad_')) {

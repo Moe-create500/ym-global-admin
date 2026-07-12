@@ -798,6 +798,12 @@ export async function createAdSet(
     body.start_time = options.startTime;
   }
 
+  // End time — Meta stops delivery automatically at this moment (with a
+  // daily budget this bounds total spend: daily_budget × days)
+  if (options.endTime) {
+    body.end_time = options.endTime;
+  }
+
   return fbPostWithRetry(`${adAccountId}/adsets`, accessToken, body);
 }
 

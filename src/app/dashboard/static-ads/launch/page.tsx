@@ -91,6 +91,9 @@ export default function LaunchFlowPage() {
   const [ageMin, setAgeMin] = useState(25);
   const [ageMax, setAgeMax] = useState(65);
   const [gender, setGender] = useState<'all' | 'women' | 'men'>('all');
+  const [startMode, setStartMode] = useState<'now' | 'scheduled'>('now');
+  const [startAt, setStartAt] = useState('');
+  const [durationDays, setDurationDays] = useState(7);
 
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [wf, setWf] = useState<Workflow | null>(null);
@@ -176,6 +179,10 @@ export default function LaunchFlowPage() {
           launchStatus: goLive ? 'ACTIVE' : 'PAUSED',
           targeting: { countries: countries.split(',').map(c => c.trim()).filter(Boolean), ageMin, ageMax, gender },
           selectedImageUrl: selectedImageUrl || undefined,
+          schedule: {
+            startAt: startMode === 'scheduled' && startAt ? new Date(startAt).toISOString() : null,
+            durationDays,
+          },
         },
       }),
     });
@@ -240,7 +247,8 @@ export default function LaunchFlowPage() {
       : d.id === 'images' ? `${wf?.config?.adCount || adCount} ads from proven templates`
       : d.id === 'gate_review' ? 'your approval required'
       : d.id === 'campaign' ? (profile?.profile_name || 'FB campaign (paused)')
-      : d.id === 'adset' ? `$${wf?.config ? (wf.config.dailyBudgetCents / 100).toFixed(0) : dailyBudget}/day ${profile?.pixel_id ? '· pixel' : '· link clicks'}`
+      : d.id === 'adset' ? `$${wf?.config ? (wf.config.dailyBudgetCents / 100).toFixed(0) : dailyBudget}/day · ${
+          (wf?.config?.schedule?.durationDays ?? durationDays) > 0 ? `${wf?.config?.schedule?.durationDays ?? durationDays}d cap` : 'no end'}`
       : d.id === 'ads' ? 'upload + attach copy (paused)'
       : d.id === 'gate_launch' ? 'final approval before spend'
       : 'flips everything ACTIVE';
@@ -450,10 +458,36 @@ export default function LaunchFlowPage() {
                     <option value="all">All</option><option value="women">Women</option><option value="men">Men</option>
                   </select></div>
               </div>
+              <div className="border-t border-slate-800 pt-3">
+                <label className={labelCls}>Schedule</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <select value={startMode} onChange={e => setStartMode(e.target.value as any)} className={inputCls}>
+                    <option value="now">Start when live</option>
+                    <option value="scheduled">Schedule start</option>
+                  </select>
+                  <div>
+                    <input type="number" min={0} max={90} value={durationDays}
+                      onChange={e => setDurationDays(Math.min(Math.max(Number(e.target.value) || 0, 0), 90))} className={inputCls} />
+                    <p className="text-[9px] text-slate-500 mt-0.5">days to run · 0 = until stopped</p>
+                  </div>
+                </div>
+                {startMode === 'scheduled' && (
+                  <input type="datetime-local" value={startAt} onChange={e => setStartAt(e.target.value)} className={`${inputCls} mt-2`} />
+                )}
+                <p className={`text-[11px] mt-2 ${durationDays > 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {durationDays > 0
+                    ? `Auto-stops after ${durationDays} days — max total spend $${(parseFloat(dailyBudget || '10') * durationDays).toFixed(2)}. Facebook enforces the end date.`
+                    : '⚠ No end date — runs until you stop it manually.'}
+                </p>
+              </div>
             </>
           ) : (
             <p className="text-xs text-slate-300">
               {(wf.config.targeting?.countries || ['US']).join(', ')} · ages {wf.config.targeting?.ageMin ?? 25}–{wf.config.targeting?.ageMax ?? 65} · {wf.config.targeting?.gender || 'all'} · ${(wf.config.dailyBudgetCents / 100).toFixed(2)}/day
+              {wf.config.schedule?.startAt ? ` · starts ${new Date(wf.config.schedule.startAt).toLocaleString()}` : ''}
+              {(wf.config.schedule?.durationDays ?? 0) > 0
+                ? ` · auto-stops after ${wf.config.schedule.durationDays}d (max $${((wf.config.dailyBudgetCents * wf.config.schedule.durationDays) / 100).toFixed(2)})`
+                : ' · no end date'}
             </p>
           )}
           <p className="text-xs text-slate-400">{profile?.pixel_id ? `Optimizes for purchases via pixel ${profile.pixel_id}` : 'No pixel on this profile — optimizes for link clicks'}</p>
@@ -470,6 +504,10 @@ export default function LaunchFlowPage() {
       case 'gate_launch': {
         const n = wf ? (wf.config.adCount || adCount) : adCount;
         const b = wf ? (wf.config.dailyBudgetCents / 100).toFixed(2) : parseFloat(dailyBudget || '10').toFixed(2);
+        const dur = wf ? (wf.config.schedule?.durationDays ?? 0) : durationDays;
+        const startIso = wf ? wf.config.schedule?.startAt : (startMode === 'scheduled' && startAt ? new Date(startAt).toISOString() : null);
+        const startD = startIso ? new Date(startIso) : new Date();
+        const endD = dur > 0 ? new Date(startD.getTime() + dur * 86_400_000) : null;
         return (
         <div className="space-y-3">
           {!wf && <button onClick={() => setGoLive(v => !v)}
@@ -478,7 +516,12 @@ export default function LaunchFlowPage() {
           </button>}
           <div className="bg-slate-800/60 rounded-lg p-2.5 space-y-1">
             <p className="text-[10px] text-slate-500 uppercase">What approval starts</p>
-            <p className="text-xs text-white">{n} ads · <span className="text-amber-300 font-semibold">${b}/day</span> · ~${(parseFloat(b) * 30).toFixed(0)}/month if left running</p>
+            <p className="text-xs text-white">{n} ads · <span className="text-amber-300 font-semibold">${b}/day</span></p>
+            <p className="text-xs text-white">
+              {startIso ? startD.toLocaleDateString() : 'starts immediately'} → {endD
+                ? <>{endD.toLocaleDateString()} · <span className="text-emerald-400 font-semibold">max ${(parseFloat(b) * dur).toFixed(2)} total</span>, FB auto-stops it</>
+                : <span className="text-amber-400 font-semibold">no end date — runs until stopped (~${(parseFloat(b) * 30).toFixed(0)}/mo)</span>}
+            </p>
             <p className="text-[11px] text-slate-400">{profile?.profile_name || profile?.ad_account_id} → {pages.find(p => p.id === (wf?.config?.pageId || pageId))?.name || 'page'}</p>
           </div>
           <p className="text-xs text-slate-400">Everything already exists on Facebook, paused. Review it in <a href={adsManagerUrl} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Ads Manager ↗</a> first if you want.</p>
