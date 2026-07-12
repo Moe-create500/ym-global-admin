@@ -152,11 +152,6 @@ export default function LaunchFlowPage() {
   const [dailyBudget, setDailyBudget] = useState('10');
   const [goLive, setGoLive] = useState(true);
   const [countries, setCountries] = useState('US');
-  const [ageMin, setAgeMin] = useState(25);
-  const [ageMax, setAgeMax] = useState(65);
-  const [gender, setGender] = useState<'all' | 'women' | 'men'>('all');
-  const [startMode, setStartMode] = useState<'now' | 'scheduled'>('now');
-  const [startAt, setStartAt] = useState('');
   const [durationDays, setDurationDays] = useState(7);
 
   // Batch mode: launched from the Picture Ads gallery with pre-selected ads
@@ -296,14 +291,11 @@ export default function LaunchFlowPage() {
           profileId, pageId, landingUrl, adCount,
           dailyBudgetCents: Math.round(parseFloat(dailyBudget || '10') * 100),
           launchStatus: goLive ? 'ACTIVE' : 'PAUSED',
-          targeting: { countries: countries.split(',').map(c => c.trim()).filter(Boolean), ageMin, ageMax, gender },
+          targeting: { countries: countries.split(',').map(c => c.trim()).filter(Boolean) },
           selectedImageUrl: selectedImageUrl || undefined,
           creativeIds: batchMode ? batchCreatives!.map(c => c.id) : undefined,
           existingCampaignId: campaignMode === 'existing' && existingCampaignId ? existingCampaignId : undefined,
-          schedule: {
-            startAt: startMode === 'scheduled' && startAt ? new Date(startAt).toISOString() : null,
-            durationDays,
-          },
+          schedule: { startAt: null, durationDays },
         },
       }),
     });
@@ -611,53 +603,36 @@ export default function LaunchFlowPage() {
           {errBox}
           {!wf ? (
             <>
-              <div><label className={labelCls}>Daily budget $</label>
-                <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>
+              <div className="grid grid-cols-2 gap-2">
+                <div><label className={labelCls}>Daily budget $</label>
+                  <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>
+                <div><label className={labelCls}>Days to run</label>
+                  <input type="number" min={0} max={90} value={durationDays}
+                    onChange={e => setDurationDays(Math.min(Math.max(Number(e.target.value) || 0, 0), 90))} className={inputCls} />
+                  <p className="text-[9px] text-slate-500 mt-0.5">0 = until stopped</p></div>
+              </div>
               <div><label className={labelCls}>Countries (comma-separated)</label>
                 <input value={countries} onChange={e => setCountries(e.target.value)} placeholder="US, CA, GB" className={inputCls} /></div>
-              <div className="grid grid-cols-3 gap-2">
-                <div><label className={labelCls}>Age min</label>
-                  <input type="number" min={18} max={65} value={ageMin} onChange={e => setAgeMin(Number(e.target.value) || 18)} className={inputCls} /></div>
-                <div><label className={labelCls}>Age max</label>
-                  <input type="number" min={18} max={65} value={ageMax} onChange={e => setAgeMax(Number(e.target.value) || 65)} className={inputCls} /></div>
-                <div><label className={labelCls}>Gender</label>
-                  <select value={gender} onChange={e => setGender(e.target.value as any)} className={inputCls}>
-                    <option value="all">All</option><option value="women">Women</option><option value="men">Men</option>
-                  </select></div>
-              </div>
-              <div className="border-t border-slate-800 pt-3">
-                <label className={labelCls}>Schedule</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <select value={startMode} onChange={e => setStartMode(e.target.value as any)} className={inputCls}>
-                    <option value="now">Start when live</option>
-                    <option value="scheduled">Schedule start</option>
-                  </select>
-                  <div>
-                    <input type="number" min={0} max={90} value={durationDays}
-                      onChange={e => setDurationDays(Math.min(Math.max(Number(e.target.value) || 0, 0), 90))} className={inputCls} />
-                    <p className="text-[9px] text-slate-500 mt-0.5">days to run · 0 = until stopped</p>
-                  </div>
-                </div>
-                {startMode === 'scheduled' && (
-                  <input type="datetime-local" value={startAt} onChange={e => setStartAt(e.target.value)} className={`${inputCls} mt-2`} />
-                )}
-                <p className={`text-[11px] mt-2 ${durationDays > 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                  {durationDays > 0
-                    ? `Auto-stops after ${durationDays} days — max total spend $${(parseFloat(dailyBudget || '10') * durationDays).toFixed(2)}. Facebook enforces the end date.`
-                    : '⚠ No end date — runs until you stop it manually.'}
-                </p>
-              </div>
+              <p className={`text-[11px] ${durationDays > 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {durationDays > 0
+                  ? `Starts right away when live · auto-stops after ${durationDays} days — max total spend $${(parseFloat(dailyBudget || '10') * durationDays).toFixed(2)}. Facebook enforces the end date.`
+                  : '⚠ No end date — runs until you stop it manually.'}
+              </p>
             </>
           ) : (
             <p className="text-xs text-slate-300">
-              {(wf.config.targeting?.countries || ['US']).join(', ')} · ages {wf.config.targeting?.ageMin ?? 25}–{wf.config.targeting?.ageMax ?? 65} · {wf.config.targeting?.gender || 'all'} · ${(wf.config.dailyBudgetCents / 100).toFixed(2)}/day
-              {wf.config.schedule?.startAt ? ` · starts ${new Date(wf.config.schedule.startAt).toLocaleString()}` : ''}
+              {(wf.config.targeting?.countries || ['US']).join(', ')} · ${(wf.config.dailyBudgetCents / 100).toFixed(2)}/day
               {(wf.config.schedule?.durationDays ?? 0) > 0
                 ? ` · auto-stops after ${wf.config.schedule.durationDays}d (max $${((wf.config.dailyBudgetCents * wf.config.schedule.durationDays) / 100).toFixed(2)})`
                 : ' · no end date'}
             </p>
           )}
-          <p className="text-xs text-slate-400">{profile?.pixel_id ? `Optimizes for purchases via pixel ${profile.pixel_id}` : 'No pixel on this profile — optimizes for link clicks'}</p>
+          <p className="text-xs text-slate-400">
+            Broad targeting — 18–65, all genders, Advantage+ audience OFF.{' '}
+            {campaignMode === 'existing'
+              ? 'Pixel + optimization are copied from the ad sets already in the chosen campaign.'
+              : profile?.pixel_id ? `Optimizes for purchases via pixel ${profile.pixel_id}.` : 'No pixel on this profile — optimizes for link clicks.'}
+          </p>
           {r.adSetId && (
             <p className="text-xs text-emerald-400">Ad set: {r.adSetId} — <a href={adsManagerUrl} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Ads Manager ↗</a></p>
           )}
@@ -672,9 +647,7 @@ export default function LaunchFlowPage() {
         const n = wf ? (wf.config.adCount || adCount) : adCount;
         const b = wf ? (wf.config.dailyBudgetCents / 100).toFixed(2) : parseFloat(dailyBudget || '10').toFixed(2);
         const dur = wf ? (wf.config.schedule?.durationDays ?? 0) : durationDays;
-        const startIso = wf ? wf.config.schedule?.startAt : (startMode === 'scheduled' && startAt ? new Date(startAt).toISOString() : null);
-        const startD = startIso ? new Date(startIso) : new Date();
-        const endD = dur > 0 ? new Date(startD.getTime() + dur * 86_400_000) : null;
+        const endD = dur > 0 ? new Date(Date.now() + dur * 86_400_000) : null;
         return (
         <div className="space-y-3">
           {!wf && <button onClick={() => setGoLive(v => !v)}
@@ -685,7 +658,7 @@ export default function LaunchFlowPage() {
             <p className="text-[10px] text-slate-500 uppercase">What approval starts</p>
             <p className="text-xs text-white">{n} ads · <span className="text-amber-300 font-semibold">${b}/day</span></p>
             <p className="text-xs text-white">
-              {startIso ? startD.toLocaleDateString() : 'starts immediately'} → {endD
+              starts immediately → {endD
                 ? <>{endD.toLocaleDateString()} · <span className="text-emerald-400 font-semibold">max ${(parseFloat(b) * dur).toFixed(2)} total</span>, FB auto-stops it</>
                 : <span className="text-amber-400 font-semibold">no end date — runs until stopped (~${(parseFloat(b) * 30).toFixed(0)}/mo)</span>}
             </p>

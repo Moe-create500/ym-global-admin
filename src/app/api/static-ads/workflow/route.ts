@@ -416,31 +416,54 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     if (!profile?.access_token || !profile?.ad_account_id) throw new Error('FB profile missing token or ad account');
     if (!result.campaignId) throw new Error('Campaign missing — rerun the campaign step');
     const { createAdSet } = await import('@/lib/facebook');
-    const hasPixel = !!profile.pixel_id;
-    const t = cfg.targeting || { countries: ['US'], ageMin: 25, ageMax: 65, gender: 'all' };
+
+    // When attaching to an existing campaign, the new ad set is BASED ON the
+    // campaign's existing ad sets: same pixel, same optimization/billing.
+    let pixelId: string | undefined = profile.pixel_id || undefined;
+    let optimizationGoal: string | undefined;
+    let billingEvent: string | undefined;
+    let countries: string[] = cfg.targeting?.countries?.length ? cfg.targeting.countries : ['US'];
+    let basedOn = '';
+    if (cfg.existingCampaignId) {
+      try {
+        const res = await fetch(
+          `https://graph.facebook.com/v24.0/${cfg.existingCampaignId}/adsets?fields=name,status,promoted_object,optimization_goal,billing_event,targeting&limit=25&access_token=${profile.access_token}`
+        );
+        const d = await res.json();
+        const tpl = (d.data || []).find((a: any) => a.status !== 'DELETED' && a.status !== 'ARCHIVED');
+        if (tpl) {
+          if (tpl.promoted_object?.pixel_id) pixelId = tpl.promoted_object.pixel_id;
+          if (tpl.optimization_goal) optimizationGoal = tpl.optimization_goal;
+          if (tpl.billing_event) billingEvent = tpl.billing_event;
+          if (tpl.targeting?.geo_locations?.countries?.length) countries = tpl.targeting.geo_locations.countries;
+          basedOn = ` — settings based on "${tpl.name}"`;
+        }
+      } catch { /* fall back to profile defaults */ }
+    }
+    const hasPixel = !!pixelId;
+
     const adset = await createAdSet(profile.ad_account_id, profile.access_token, {
       name: `${cfg.campaignName} | AdSet 1`,
       campaignId: result.campaignId,
       dailyBudgetCents: cfg.dailyBudgetCents,
       status: 'PAUSED',
       // No pixel → conversions optimization is invalid; optimize for link clicks
-      optimizationGoal: hasPixel ? 'OFFSITE_CONVERSIONS' : 'LINK_CLICKS',
-      pixelId: hasPixel ? profile.pixel_id : undefined,
+      optimizationGoal: optimizationGoal || (hasPixel ? 'OFFSITE_CONVERSIONS' : 'LINK_CLICKS'),
+      ...(billingEvent ? { billingEvent } : {}),
+      pixelId,
+      // BROAD: countries only, full 18-65, all genders, and Facebook's
+      // Advantage+ audience expansion explicitly OFF
       targeting: {
-        geo_locations: { countries: t.countries },
-        age_min: t.ageMin,
-        age_max: t.ageMax,
-        ...(t.gender === 'women' ? { genders: [2] } : t.gender === 'men' ? { genders: [1] } : {}),
+        geo_locations: { countries },
+        age_min: 18,
+        age_max: 65,
+        targeting_automation: { advantage_audience: 0 },
       },
-      // Schedule: future start if configured; end_time makes Meta stop
-      // delivery automatically — total spend is bounded at daily × days
+      // Starts immediately when activated; end_time makes Meta stop delivery
+      // automatically — total spend is bounded at daily × days
       ...(() => {
         const sched = cfg.schedule || {};
-        const startMs = sched.startAt && Date.parse(sched.startAt) > Date.now() ? Date.parse(sched.startAt) : Date.now();
-        const out: any = {};
-        if (sched.startAt && startMs > Date.now()) out.startTime = new Date(startMs).toISOString();
-        if (sched.durationDays > 0) out.endTime = new Date(startMs + sched.durationDays * 86_400_000).toISOString();
-        return out;
+        return sched.durationDays > 0 ? { endTime: new Date(Date.now() + sched.durationDays * 86_400_000).toISOString() } : {};
       })(),
     });
     result.adSetId = adset.id;
@@ -448,7 +471,7 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     const schedNote = sched.durationDays > 0
       ? `, auto-stops after ${sched.durationDays}d (max $${((cfg.dailyBudgetCents * sched.durationDays) / 100).toFixed(2)} total)`
       : ', no end date';
-    return { detail: `Ad set ${adset.id}${hasPixel ? '' : ' (no pixel — link clicks)'}${schedNote}`, result };
+    return { detail: `Ad set ${adset.id}${basedOn}${hasPixel ? '' : ' (no pixel — link clicks)'}, broad targeting, Advantage+ off${schedNote}`, result };
   }
 
   if (step.key.startsWith('ad_')) {
