@@ -83,6 +83,8 @@ export default function LaunchFlowPage() {
   const [pageId, setPageId] = useState('');
   const [pagesLoading, setPagesLoading] = useState(false);
   const [landingUrl, setLandingUrl] = useState('');
+  const [landingOptions, setLandingOptions] = useState<{ label: string; url: string }[]>([]);
+  const [landingLoading, setLandingLoading] = useState(false);
   const [shopifyDomain, setShopifyDomain] = useState('');
   const [adCount, setAdCount] = useState(10);
   const [dailyBudget, setDailyBudget] = useState('10');
@@ -161,6 +163,25 @@ export default function LaunchFlowPage() {
       if (pid) setProductId(pid);
     }
   }, [batchCreatives, storeId]);
+
+  // Landing URLs straight from Shopify (per-store credentials are centralized)
+  useEffect(() => {
+    setLandingOptions([]);
+    if (!storeId || !productId || wf) return;
+    setLandingLoading(true);
+    fetch(`/api/static-ads/workflow?landing=1&storeId=${storeId}&productId=${productId}`)
+      .then(r => r.json())
+      .then(d => {
+        const opts = d.urls || [];
+        setLandingOptions(opts);
+        // Auto-fill with the product's real page when we have one
+        const productUrl = opts.find((o: any) => o.url.includes('/products/'));
+        if (productUrl) setLandingUrl(productUrl.url);
+        setLandingLoading(false);
+      })
+      .catch(() => setLandingLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeId, productId]);
 
   // Existing campaigns for "attach to campaign" mode
   useEffect(() => {
@@ -367,7 +388,14 @@ export default function LaunchFlowPage() {
               ))}
             </div>
             <p className="text-xs text-slate-300">{products.find(p => p.id === productId)?.title || ''}</p>
-            <div><label className={labelCls}>Landing page URL</label>
+            <div><label className={labelCls}>Landing page URL {landingLoading ? '· fetching from Shopify…' : ''}</label>
+              {!wf && landingOptions.length > 0 && (
+                <select value={landingOptions.some(o => o.url === landingUrl) ? landingUrl : ''}
+                  onChange={e => e.target.value && setLandingUrl(e.target.value)} className={`${inputCls} mb-2`}>
+                  <option value="">— pick from Shopify, or edit below —</option>
+                  {landingOptions.map(o => <option key={o.url} value={o.url}>{o.label}</option>)}
+                </select>
+              )}
               <input value={landingUrl} onChange={e => setLandingUrl(e.target.value)} className={inputCls} disabled={!!wf}
                 placeholder="https://yourstore.com/products/…" /></div>
           </div>);
@@ -415,7 +443,14 @@ export default function LaunchFlowPage() {
               <img src={usedImage} alt="reference" className="w-20 h-20 rounded-lg object-cover border border-slate-700" />
             </div>
           )}
-          <div><label className={labelCls}>Landing page URL</label>
+          <div><label className={labelCls}>Landing page URL {landingLoading ? '· fetching from Shopify…' : ''}</label>
+            {!wf && landingOptions.length > 0 && (
+              <select value={landingOptions.some(o => o.url === landingUrl) ? landingUrl : ''}
+                onChange={e => e.target.value && setLandingUrl(e.target.value)} className={`${inputCls} mb-2`}>
+                <option value="">— pick from Shopify, or edit below —</option>
+                {landingOptions.map(o => <option key={o.url} value={o.url}>{o.label}</option>)}
+              </select>
+            )}
             <input value={landingUrl} onChange={e => setLandingUrl(e.target.value)} className={inputCls} disabled={!!wf}
               placeholder="https://yourstore.com/products/…" /></div>
         </div>);

@@ -62,6 +62,43 @@ export async function GET(req: NextRequest) {
   const storeId = req.nextUrl.searchParams.get('storeId');
   const profileId = req.nextUrl.searchParams.get('profileId');
 
+  // Landing-page URLs straight from Shopify (centralized per-store credentials)
+  if (req.nextUrl.searchParams.get('landing') && storeId) {
+    const prodId = req.nextUrl.searchParams.get('productId');
+    try {
+      const { shopifyGet } = await import('@/lib/shopify-sync');
+      const now = Date.now();
+      const shop = (await shopifyGet(db, storeId, 'shop.json', now))?.shop;
+      const domain = shop?.domain || shop?.myshopify_domain;
+      if (!domain) return NextResponse.json({ error: 'Shop domain unavailable' }, { status: 502 });
+
+      const urls: { label: string; url: string }[] = [];
+      const product: any = prodId ? db.prepare('SELECT title, shopify_product_id FROM products WHERE id = ?').get(prodId) : null;
+
+      // Exact product by id when the sync captured it
+      if (product?.shopify_product_id) {
+        try {
+          const p = (await shopifyGet(db, storeId, `products/${product.shopify_product_id}.json?fields=title,handle,status`, now))?.product;
+          if (p?.handle) urls.push({ label: `${p.title}${p.status !== 'active' ? ` (${p.status})` : ''}`, url: `https://${domain}/products/${p.handle}` });
+        } catch { /* fall through to title search */ }
+      }
+      // Title search fallback / extra options
+      if (product?.title && urls.length === 0) {
+        try {
+          const found = (await shopifyGet(db, storeId, `products.json?title=${encodeURIComponent(product.title)}&fields=title,handle,status&limit=5`, now))?.products || [];
+          for (const p of found) {
+            if (p.handle) urls.push({ label: `${p.title}${p.status !== 'active' ? ` (${p.status})` : ''}`, url: `https://${domain}/products/${p.handle}` });
+          }
+        } catch { /* homepage still returned */ }
+      }
+      urls.push({ label: 'Store homepage', url: `https://${domain}/` });
+
+      return NextResponse.json({ urls, domain });
+    } catch (e: any) {
+      return NextResponse.json({ error: `Shopify lookup failed: ${String(e?.message || e).slice(0, 200)}` }, { status: 502 });
+    }
+  }
+
   if (profileId && req.nextUrl.searchParams.get('campaigns')) {
     const profile: any = db.prepare('SELECT access_token, ad_account_id FROM fb_profiles WHERE id = ? AND is_active = 1').get(profileId);
     if (!profile?.access_token || !profile?.ad_account_id) return NextResponse.json({ error: 'Profile missing token or ad account' }, { status: 400 });
