@@ -84,6 +84,7 @@ export default function LaunchFlowPage() {
   const [pagesLoading, setPagesLoading] = useState(false);
   const [landingUrl, setLandingUrl] = useState('');
   const [landingOptions, setLandingOptions] = useState<{ label: string; url: string }[]>([]);
+  const [landingResolved, setLandingResolved] = useState<{ validated: boolean; selectionReason: string; warnings: string[] } | null>(null);
   const [landingLoading, setLandingLoading] = useState(false);
   const [shopifyDomain, setShopifyDomain] = useState('');
   const [adCount, setAdCount] = useState(10);
@@ -139,13 +140,9 @@ export default function LaunchFlowPage() {
       setWorkflows(d.workflows || []);
       setProfiles(d.profiles || []);
       setShopifyDomain(d.shopifyDomain || '');
-      // Only prefill from a domain that actually looks like one — some stores
-      // carry internal identifiers in shopify_domain
-      if (d.shopifyDomain && /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(d.shopifyDomain)) {
-        setLandingUrl(`https://${d.shopifyDomain}/`);
-      } else {
-        setLandingUrl('');
-      }
+      // Never prefill the homepage — the product-link resolver fills the real
+      // product page once a product is chosen; ads go to product pages.
+      setLandingUrl('');
       if ((d.profiles || []).length === 1) setProfileId(d.profiles[0].id);
     }).catch(() => {});
   }, []);
@@ -166,17 +163,18 @@ export default function LaunchFlowPage() {
 
   // Landing URLs straight from Shopify (per-store credentials are centralized)
   useEffect(() => {
-    setLandingOptions([]);
+    setLandingOptions([]); setLandingResolved(null);
     if (!storeId || !productId || wf) return;
     setLandingLoading(true);
     fetch(`/api/static-ads/workflow?landing=1&storeId=${storeId}&productId=${productId}`)
       .then(r => r.json())
       .then(d => {
-        const opts = d.urls || [];
-        setLandingOptions(opts);
-        // Auto-fill with the product's real page when we have one
-        const productUrl = opts.find((o: any) => o.url.includes('/products/'));
-        if (productUrl) setLandingUrl(productUrl.url);
+        setLandingOptions(d.urls || []);
+        if (d.resolved) {
+          setLandingResolved({ validated: d.resolved.validated, selectionReason: d.resolved.selectionReason, warnings: d.resolved.warnings || [] });
+          // Auto-fill the resolver's recommendation (custom lander > product page; never homepage)
+          if (d.resolved.recommendedAdvertisingUrl) setLandingUrl(d.resolved.recommendedAdvertisingUrl);
+        }
         setLandingLoading(false);
       })
       .catch(() => setLandingLoading(false));
@@ -397,7 +395,13 @@ export default function LaunchFlowPage() {
                 </select>
               )}
               <input value={landingUrl} onChange={e => setLandingUrl(e.target.value)} className={inputCls} disabled={!!wf}
-                placeholder="https://yourstore.com/products/…" /></div>
+                placeholder="https://yourstore.com/products/…" />
+              {!wf && landingResolved && (
+                <p className={`text-[10px] mt-1 ${landingResolved.validated ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {landingResolved.validated ? '✓ ' : '⚠ '}{landingResolved.selectionReason}
+                  {landingResolved.warnings.map((w, i) => <span key={i} className="block text-amber-400">⚠ {w}</span>)}
+                </p>
+              )}</div>
           </div>);
         }
         const prod = products.find(p => p.id === productId);
@@ -452,7 +456,13 @@ export default function LaunchFlowPage() {
               </select>
             )}
             <input value={landingUrl} onChange={e => setLandingUrl(e.target.value)} className={inputCls} disabled={!!wf}
-              placeholder="https://yourstore.com/products/…" /></div>
+              placeholder="https://yourstore.com/products/…" />
+            {!wf && landingResolved && (
+              <p className={`text-[10px] mt-1 ${landingResolved.validated ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {landingResolved.validated ? '✓ ' : '⚠ '}{landingResolved.selectionReason}
+                {landingResolved.warnings.map((w, i) => <span key={i} className="block text-amber-400">⚠ {w}</span>)}
+              </p>
+            )}</div>
         </div>);
       }
       case 'audience': return r.audience ? (

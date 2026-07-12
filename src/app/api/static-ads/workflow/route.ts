@@ -62,40 +62,25 @@ export async function GET(req: NextRequest) {
   const storeId = req.nextUrl.searchParams.get('storeId');
   const profileId = req.nextUrl.searchParams.get('profileId');
 
-  // Landing-page URLs straight from Shopify (centralized per-store credentials)
+  // Landing-page URLs via the centralized product-link resolver (lib/product-link)
   if (req.nextUrl.searchParams.get('landing') && storeId) {
     const prodId = req.nextUrl.searchParams.get('productId');
+    if (!prodId) return NextResponse.json({ error: 'productId required' }, { status: 400 });
     try {
-      const { shopifyGet } = await import('@/lib/shopify-sync');
-      const now = Date.now();
-      const shop = (await shopifyGet(db, storeId, 'shop.json', now))?.shop;
-      const domain = shop?.domain || shop?.myshopify_domain;
-      if (!domain) return NextResponse.json({ error: 'Shop domain unavailable' }, { status: 502 });
+      const { resolveProductLink } = await import('@/lib/product-link');
+      const link = await resolveProductLink(db, storeId, prodId);
 
+      // Recommended destination first; homepage last and clearly labeled a manual choice
       const urls: { label: string; url: string }[] = [];
-      const product: any = prodId ? db.prepare('SELECT title, shopify_product_id FROM products WHERE id = ?').get(prodId) : null;
-
-      // Exact product by id when the sync captured it
-      if (product?.shopify_product_id) {
-        try {
-          const p = (await shopifyGet(db, storeId, `products/${product.shopify_product_id}.json?fields=title,handle,status`, now))?.product;
-          if (p?.handle) urls.push({ label: `${p.title}${p.status !== 'active' ? ` (${p.status})` : ''}`, url: `https://${domain}/products/${p.handle}` });
-        } catch { /* fall through to title search */ }
+      if (link.customLandingPageUrl) urls.push({ label: `Custom landing page — ${link.productTitle}`, url: link.customLandingPageUrl });
+      if (link.standardProductUrl) {
+        urls.push({ label: `${link.validated || link.customLandingPageUrl ? '✓' : '⚠'} Product page — ${link.productTitle}${link.productStatus && link.productStatus !== 'active' ? ` (${link.productStatus})` : ''}`, url: link.standardProductUrl });
       }
-      // Title search fallback / extra options
-      if (product?.title && urls.length === 0) {
-        try {
-          const found = (await shopifyGet(db, storeId, `products.json?title=${encodeURIComponent(product.title)}&fields=title,handle,status&limit=5`, now))?.products || [];
-          for (const p of found) {
-            if (p.handle) urls.push({ label: `${p.title}${p.status !== 'active' ? ` (${p.status})` : ''}`, url: `https://${domain}/products/${p.handle}` });
-          }
-        } catch { /* homepage still returned */ }
-      }
-      urls.push({ label: 'Store homepage', url: `https://${domain}/` });
+      if (link.homepageUrl) urls.push({ label: 'Store homepage (manual choice — not recommended for product ads)', url: link.homepageUrl });
 
-      return NextResponse.json({ urls, domain });
+      return NextResponse.json({ urls, resolved: link });
     } catch (e: any) {
-      return NextResponse.json({ error: `Shopify lookup failed: ${String(e?.message || e).slice(0, 200)}` }, { status: 502 });
+      return NextResponse.json({ error: `Product link resolution failed: ${String(e?.message || e).slice(0, 200)}` }, { status: 502 });
     }
   }
 
