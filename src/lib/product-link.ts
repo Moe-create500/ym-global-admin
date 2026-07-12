@@ -16,7 +16,7 @@
 // only, and runs exclusively in API routes.
 
 import type Database from 'better-sqlite3';
-import { shopifyGet } from '@/lib/shopify-sync';
+import { shopifyGet, shopifyGetRaw } from '@/lib/shopify-sync';
 
 export interface ProductLink {
   storeId: string;
@@ -35,6 +35,56 @@ export interface ProductLink {
   validated: boolean;
   warnings: string[];
   selectionReason: string;
+}
+
+/** Normalize a product title for matching: strip ™/®/© and their "TM" text
+ *  forms (sync data often mangles the symbols), lowercase, collapse to tokens. */
+function normalizeTitle(t: string): string {
+  return String(t || '')
+    .toLowerCase()
+    .replace(/[™®©]/g, '')
+    .replace(/\btm\b/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/** Fuzzy-pick the Shopify product matching a local title. Exact normalized
+ *  match wins; then containment; then token overlap. Active+published break ties. */
+function fuzzyPickProduct(localTitle: string, candidates: any[]): { product: any | null; ambiguous: boolean } {
+  const target = normalizeTitle(localTitle);
+  const targetTokens = new Set(target.split(' ').filter(Boolean));
+  let best: any = null, bestScore = 0, secondScore = 0;
+  for (const p of candidates) {
+    const n = normalizeTitle(p.title);
+    let score = 0;
+    if (n === target) score = 100;
+    else if (n.includes(target) || target.includes(n)) score = 80;
+    else {
+      const tokens = n.split(' ').filter(Boolean);
+      const overlap = tokens.filter(t => targetTokens.has(t)).length;
+      score = targetTokens.size ? Math.round((overlap / Math.max(targetTokens.size, tokens.length)) * 70) : 0;
+    }
+    if (p.status === 'active') score += 5;
+    if (p.published_at) score += 3;
+    if (score > bestScore) { secondScore = bestScore; bestScore = score; best = p; }
+    else if (score > secondScore) { secondScore = score; }
+  }
+  if (!best || bestScore < 45) return { product: null, ambiguous: false };
+  return { product: best, ambiguous: bestScore - secondScore < 10 && secondScore > 0 };
+}
+
+/** All products in the store (paged, capped) — needed because Shopify REST
+ *  title filtering is exact-match only and synced titles drift. */
+async function fetchStoreProducts(db: Database.Database, storeId: string, now: number, maxPages = 4): Promise<any[]> {
+  const out: any[] = [];
+  let next: string | null = 'products.json?fields=id,title,handle,status,published_at&limit=250';
+  for (let i = 0; i < maxPages && next; i++) {
+    const { json, link }: { json: any; link: string | null } = await shopifyGetRaw(db, storeId, next, now);
+    out.push(...(json.products || []));
+    const m = link && link.match(/<([^>]+)>;\s*rel="next"/);
+    next = m ? m[1] : null;
+  }
+  return out;
 }
 
 // Metafield namespaces/keys that mean "this product has a dedicated lander"
@@ -80,20 +130,24 @@ export async function resolveProductLink(db: Database.Database, storeId: string,
   }
   out.homepageUrl = `https://${out.storefrontDomain}/`;
 
-  // 2. The product on Shopify: exact id from the sync, else title search
+  // 2. The product on Shopify. The synced shopify_product_id is only usable
+  // when it's an actual numeric Shopify id — some syncs stored slugs there.
   let p: any = null;
-  if (local.shopify_product_id) {
+  if (local.shopify_product_id && /^\d+$/.test(String(local.shopify_product_id))) {
     try {
       p = (await shopifyGet(db, storeId, `products/${local.shopify_product_id}.json?fields=id,title,handle,status,published_at`, now))?.product;
-    } catch { out.warnings.push(`Synced Shopify product id ${local.shopify_product_id} no longer resolves — fell back to title search.`); }
+    } catch { out.warnings.push(`Synced Shopify product id ${local.shopify_product_id} no longer resolves — fell back to title matching.`); }
   }
   if (!p) {
-    const found = (await shopifyGet(db, storeId, `products.json?title=${encodeURIComponent(local.title)}&fields=id,title,handle,status,published_at&limit=10`, now))?.products || [];
-    // exact title match first, then an active product, then anything
-    p = found.find((x: any) => x.title === local.title && x.status === 'active')
-      || found.find((x: any) => x.status === 'active')
-      || found[0] || null;
-    if (found.length > 1) out.warnings.push(`${found.length} products matched the title — picked "${p?.title}" (${p?.status}).`);
+    // Shopify's title filter is exact-match only and synced titles drift
+    // (™ → "TM", prefixes) — fetch the catalog and fuzzy-match locally.
+    const candidates = await fetchStoreProducts(db, storeId, now);
+    const { product, ambiguous } = fuzzyPickProduct(local.title, candidates);
+    p = product;
+    if (p && normalizeTitle(p.title) !== normalizeTitle(local.title)) {
+      out.warnings.push(`Matched by fuzzy title: local "${local.title}" → Shopify "${p.title}" (${p.status}). Confirm this is the right product.`);
+    }
+    if (ambiguous) out.warnings.push('Multiple similar products matched — the closest active one was picked. Verify before spending.');
   }
 
   if (!p?.handle) {
