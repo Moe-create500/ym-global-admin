@@ -93,5 +93,25 @@ export async function register() {
       // Then sync everything every 30 minutes (guarded against overlap)
       setInterval(() => { void runFullSync('Scheduled sync', true); }, SYNC_INTERVAL_MS);
     }, 10_000);
+
+    // Launch schedules ("daily at 12:00 PST" etc.) — checked every 5 minutes,
+    // separate from the heavy sync so a slow sync never delays a launch
+    let schedRunning = false;
+    setInterval(async () => {
+      if (schedRunning) return;
+      schedRunning = true;
+      try {
+        const { runDueSchedules } = await import('@/lib/launch-scheduler');
+        const { getDb } = await import('@/lib/db');
+        const r = await runDueSchedules(getDb());
+        if (r.ran > 0 || r.errors.length > 0) {
+          console.log(`[launch-schedule] tick: ${r.ran} ran${r.errors.length ? `, errors: ${r.errors.join(' | ').slice(0, 300)}` : ''}`);
+        }
+      } catch (e) {
+        console.error('[launch-schedule] tick error:', e);
+      } finally {
+        schedRunning = false;
+      }
+    }, 5 * 60_000);
   }
 }

@@ -161,7 +161,18 @@ export default function LaunchFlowPage() {
   const [existingCampaignId, setExistingCampaignId] = useState('');
   const batchMode = !!batchCreatives?.length;
 
-  const [flowTab, setFlowTab] = useState<'ads' | 'newProduct'>('ads');
+  const [flowTab, setFlowTab] = useState<'ads' | 'newProduct' | 'schedules'>('ads');
+
+  // Recurring launch schedules
+  interface Schedule { id: string; name: string; cadence: string; timeOfDay: string; dayOfWeek: number | null; autoLive: boolean; isActive: boolean; lastRunAt: string | null; lastResult: string | null; nextRunAt: string }
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [schedModal, setSchedModal] = useState(false);
+  const [schedName, setSchedName] = useState('');
+  const [schedCadence, setSchedCadence] = useState<'daily' | 'weekly'>('daily');
+  const [schedTime, setSchedTime] = useState('12:00');
+  const [schedDay, setSchedDay] = useState(1);
+  const [schedAutoLive, setSchedAutoLive] = useState(true);
+  const [schedMsg, setSchedMsg] = useState('');
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [wf, setWf] = useState<Workflow | null>(null);
   const [running, setRunning] = useState(false);
@@ -285,19 +296,7 @@ export default function LaunchFlowPage() {
     setError('');
     const res = await fetch('/api/static-ads/workflow', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'create', storeId, productId,
-        config: {
-          profileId, pageId, landingUrl, adCount,
-          dailyBudgetCents: Math.round(parseFloat(dailyBudget || '10') * 100),
-          launchStatus: goLive ? 'ACTIVE' : 'PAUSED',
-          targeting: { countries: countries.split(',').map(c => c.trim()).filter(Boolean) },
-          selectedImageUrl: selectedImageUrl || undefined,
-          creativeIds: batchMode ? batchCreatives!.map(c => c.id) : undefined,
-          existingCampaignId: campaignMode === 'existing' && existingCampaignId ? existingCampaignId : undefined,
-          schedule: { startAt: null, durationDays },
-        },
-      }),
+      body: JSON.stringify({ action: 'create', storeId, productId, config: launchConfig() }),
     });
     const d = await res.json();
     if (!res.ok) { setError(d.error || 'create failed'); return; }
@@ -315,6 +314,52 @@ export default function LaunchFlowPage() {
     if (!res.ok) { setError(d.error || 'approve failed'); return; }
     setWf(d.workflow);
     if (d.workflow.status === 'running') void advanceLoop(wf.id);
+  }
+
+  const loadSchedules = useCallback((sid: string) => {
+    fetch(`/api/static-ads/workflow?schedules=1&storeId=${sid}`).then(r => r.json())
+      .then(d => setSchedules(d.schedules || [])).catch(() => {});
+  }, []);
+
+  useEffect(() => { if (storeId) loadSchedules(storeId); }, [storeId, loadSchedules]);
+
+  function launchConfig() {
+    return {
+      profileId, pageId, landingUrl, adCount,
+      dailyBudgetCents: Math.round(parseFloat(dailyBudget || '10') * 100),
+      launchStatus: goLive ? 'ACTIVE' : 'PAUSED',
+      targeting: { countries: countries.split(',').map(c => c.trim()).filter(Boolean) },
+      selectedImageUrl: selectedImageUrl || undefined,
+      creativeIds: batchMode ? batchCreatives!.map(c => c.id) : undefined,
+      existingCampaignId: campaignMode === 'existing' && existingCampaignId ? existingCampaignId : undefined,
+      schedule: { startAt: null, durationDays },
+    };
+  }
+
+  async function saveSchedule() {
+    setSchedMsg('');
+    const res = await fetch('/api/static-ads/workflow', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'schedule_create', storeId, productId,
+        name: schedName || `${products.find(p => p.id === productId)?.title || 'Launch'} — ${schedCadence} ${schedTime} PST`,
+        config: launchConfig(), cadence: schedCadence, timeOfDay: schedTime,
+        dayOfWeek: schedDay, autoLive: schedAutoLive,
+      }),
+    });
+    const d = await res.json();
+    if (!res.ok) { setSchedMsg(d.error || 'failed'); return; }
+    setSchedModal(false); setSchedName('');
+    loadSchedules(storeId);
+    setFlowTab('schedules');
+  }
+
+  async function scheduleAction(action: string, id: string) {
+    await fetch('/api/static-ads/workflow', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, id }),
+    });
+    loadSchedules(storeId);
   }
 
   async function retry() {
@@ -703,6 +748,10 @@ export default function LaunchFlowPage() {
               className={`text-xs rounded-md px-3 py-1.5 font-medium transition-colors ${flowTab === 'newProduct' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}>
               🧪 New Product Launch
             </button>
+            <button onClick={() => setFlowTab('schedules')}
+              className={`text-xs rounded-md px-3 py-1.5 font-medium transition-colors ${flowTab === 'schedules' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}>
+              ⏰ Schedules{schedules.filter(s => s.isActive).length ? ` (${schedules.filter(s => s.isActive).length})` : ''}
+            </button>
           </div>
         </div>
         <div className={`flex items-center gap-3 ${flowTab !== 'ads' ? 'invisible' : ''}`}>
@@ -714,6 +763,11 @@ export default function LaunchFlowPage() {
             className="bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 disabled:opacity-40 text-white text-sm font-semibold rounded-lg px-5 py-2">
             ▶ Run workflow
           </button>}
+          {!wf && <button onClick={() => { setSchedModal(true); setSchedMsg(''); }} disabled={!ready || running}
+            title="Run this exact configuration on a recurring schedule"
+            className="bg-slate-800 border border-slate-700 hover:border-blue-500 disabled:opacity-40 text-slate-200 text-sm font-medium rounded-lg px-4 py-2">
+            ⏰ Schedule
+          </button>}
           {wf?.status === 'error' && !running && <button onClick={retry} className="bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg px-4 py-2">Retry + continue</button>}
           {wf && (wf.status === 'done' || wf.status === 'cancelled') && (
             <button onClick={() => { setWf(null); setError(''); }} className="bg-slate-800 border border-slate-700 text-slate-300 text-sm rounded-lg px-4 py-2">New run</button>
@@ -724,7 +778,80 @@ export default function LaunchFlowPage() {
 
       {error && flowTab === 'ads' && <div className="mx-6 mt-3 bg-red-900/30 border border-red-800 text-red-300 text-sm rounded-lg px-4 py-2">{error}</div>}
 
-      {flowTab === 'newProduct' ? <NewProductScaffold /> : (
+      {schedModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => setSchedModal(false)}>
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-5 w-96" onClick={e => e.stopPropagation()}>
+            <p className="text-sm font-semibold text-white mb-3">⏰ Schedule this launch</p>
+            <p className="text-[11px] text-slate-400 mb-3">Runs the exact configuration on the canvas — {batchMode ? `${batchCreatives!.length} selected ads` : `${adCount} fresh ads`}, ${dailyBudget}/day{durationDays > 0 ? `, ${durationDays}d cap` : ''} — on a recurring schedule, fully server-side.</p>
+            <div className="space-y-3">
+              <div><label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Name</label>
+                <input value={schedName} onChange={e => setSchedName(e.target.value)}
+                  placeholder={`${products.find(p => p.id === productId)?.title || 'Launch'} — ${schedCadence}`}
+                  className={inputCls} /></div>
+              <div className="grid grid-cols-2 gap-2">
+                <div><label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Repeat</label>
+                  <select value={schedCadence} onChange={e => setSchedCadence(e.target.value as any)} className={inputCls}>
+                    <option value="daily">Every day</option>
+                    <option value="weekly">Every week</option>
+                  </select></div>
+                <div><label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Time (PST)</label>
+                  <input type="time" value={schedTime} onChange={e => setSchedTime(e.target.value)} className={inputCls} /></div>
+              </div>
+              {schedCadence === 'weekly' && (
+                <div><label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Day</label>
+                  <select value={schedDay} onChange={e => setSchedDay(Number(e.target.value))} className={inputCls}>
+                    {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => <option key={i} value={i}>{d}</option>)}
+                  </select></div>
+              )}
+              <button onClick={() => setSchedAutoLive(v => !v)}
+                className={`w-full rounded-lg px-3 py-2 text-sm font-medium border ${schedAutoLive ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                {schedAutoLive ? '⚡ Goes LIVE automatically each run' : 'Each run ends PAUSED (manual go-live)'}
+              </button>
+              {schedAutoLive && (
+                <p className="text-[11px] text-amber-400">Every run spends real money without asking: ${dailyBudget}/day{durationDays > 0 ? ` × ${durationDays}d = max $${(parseFloat(dailyBudget || '10') * durationDays).toFixed(0)} per run` : ' with no end date'}.</p>
+              )}
+              {schedMsg && <p className="text-xs text-red-400">{schedMsg}</p>}
+              <div className="flex gap-2">
+                <button onClick={saveSchedule} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg py-2">Save schedule</button>
+                <button onClick={() => setSchedModal(false)} className="text-sm text-slate-400 hover:text-white px-3">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {flowTab === 'schedules' ? (
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="max-w-3xl">
+            <p className="text-sm text-slate-400 mb-4">Recurring launches run fully server-side — configure a launch on the Ad Launch tab and hit ⏰ Schedule. The runner checks every 5 minutes.</p>
+            {schedules.length === 0 ? (
+              <p className="text-sm text-slate-500 py-10 text-center">No schedules for this store yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {schedules.map(s => (
+                  <div key={s.id} className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 flex items-center gap-4">
+                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${s.isActive ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-white truncate">{s.name} {s.autoLive && <span className="text-[10px] text-amber-400">⚡ auto-live</span>}</p>
+                      <p className="text-[11px] text-slate-400">
+                        {s.cadence === 'daily' ? 'Daily' : `Weekly (${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][s.dayOfWeek ?? 1]})`} at {s.timeOfDay} PST
+                        · next: {new Date(s.nextRunAt).toLocaleString()}
+                      </p>
+                      {s.lastResult && <p className="text-[11px] text-slate-500 truncate">last: {s.lastResult}</p>}
+                    </div>
+                    <button onClick={() => scheduleAction('schedule_run_now', s.id)}
+                      className="text-[11px] text-blue-400 hover:text-blue-300 whitespace-nowrap">run now</button>
+                    <button onClick={() => scheduleAction('schedule_toggle', s.id)}
+                      className="text-[11px] text-slate-400 hover:text-white whitespace-nowrap">{s.isActive ? 'pause' : 'resume'}</button>
+                    <button onClick={() => scheduleAction('schedule_delete', s.id)}
+                      className="text-[11px] text-red-400 hover:text-red-300 whitespace-nowrap">delete</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : flowTab === 'newProduct' ? <NewProductScaffold /> : (
       <div className="flex-1 flex min-h-0">
         <div className="flex-1 bg-slate-950">
           <ReactFlow
