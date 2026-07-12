@@ -58,7 +58,9 @@ function fuzzyPickProduct(localTitle: string, candidates: any[]): { product: any
     const n = normalizeTitle(p.title);
     let score = 0;
     if (n === target) score = 100;
-    else if (n.includes(target) || target.includes(n)) score = 80;
+    // containment: prefer the CLOSEST-length match — "beauty bundle" must pick
+    // "The Beauty Bundle" over "Beauty Bundle — For a Friend"
+    else if (n.includes(target) || target.includes(n)) score = 80 + Math.max(0, 12 - Math.abs(n.length - target.length) * 0.5);
     else {
       const tokens = n.split(' ').filter(Boolean);
       const overlap = tokens.filter(t => targetTokens.has(t)).length;
@@ -98,9 +100,11 @@ async function verifyUrl(url: string, handle: string): Promise<boolean> {
     clearTimeout(t);
     if (!res.ok) return false;
     // A product URL that redirects to the homepage still returns 200 —
-    // require the final URL to still be a product path with our handle
-    const finalPath = new URL(res.url).pathname;
-    return finalPath.includes('/products/') && (handle ? finalPath.includes(handle) : true);
+    // require the final URL to still be a product path with our handle.
+    // Decode: unicode handles (™ etc.) arrive percent-encoded in res.url.
+    let finalPath = new URL(res.url).pathname;
+    try { finalPath = decodeURIComponent(finalPath); } catch { /* keep raw */ }
+    return finalPath.includes('/products/') && (handle ? finalPath.toLowerCase().includes(handle.toLowerCase()) : true);
   } catch { return false; }
 }
 
