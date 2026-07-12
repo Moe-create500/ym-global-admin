@@ -230,16 +230,10 @@ export default function StaticAdsPage() {
           <h1 className="text-2xl font-bold text-white">Picture Ads</h1>
           <p className="text-sm text-slate-400 mt-1">Template-based static ad generator — product + audience + template → finished ad image</p>
         </div>
-        <div className="flex gap-2">
-          <Link href="/dashboard/static-ads/launch"
-            className="text-xs bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 text-white font-medium rounded-lg px-4 py-2 transition-colors">
-            🚀 Launch Workflow — product → ads → live campaign
-          </Link>
-          <Link href="/dashboard/creatives"
-            className="text-xs bg-slate-800 border border-slate-700 hover:border-blue-500 text-slate-300 rounded-lg px-3 py-2 transition-colors">
-            <span className="text-blue-400 font-medium">Image mode in Creatives</span> →
-          </Link>
-        </div>
+        <Link href="/dashboard/static-ads/launch"
+          className="text-xs bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 text-white font-medium rounded-lg px-4 py-2 transition-colors">
+          🚀 Launch Workflow — product → ads → live campaign
+        </Link>
       </div>
 
       {error && (

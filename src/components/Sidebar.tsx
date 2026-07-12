@@ -24,8 +24,8 @@ const ADMIN_NAV: NavGroup[] = [
   { section: 'Advertising', items: [
     { href: '/dashboard/ads', label: 'Ad Spend', icon: 'M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z' },
     { href: '/dashboard/ads/connect', label: 'Facebook Accounts', icon: 'M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1' },
-    { href: '/dashboard/creatives', label: 'Creatives', icon: 'M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z' },
     { href: '/dashboard/static-ads', label: 'Picture Ads', icon: 'M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z' },
+    { href: '/dashboard/static-ads/launch', label: 'Launch Flow', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
   ]},
   { section: 'Finance', items: [
     { href: '/dashboard/payments', label: 'Payment Cards', icon: 'M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z' },
