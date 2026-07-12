@@ -108,13 +108,21 @@ export async function POST(req: NextRequest) {
     if (!product) return NextResponse.json({ error: 'Product not found' }, { status: 404 });
 
     const adCount = Math.min(Math.max(Number(config.adCount) || 10, 1), 20);
+    const goLive = config.launchStatus === 'ACTIVE';
+    // Everything on Facebook is created PAUSED regardless of config — the
+    // launch gate + activate step are the ONLY way anything starts spending.
     const steps: Step[] = [
       { key: 'audience', label: 'Generate audience (Fable 5)', status: 'pending' },
       { key: 'copy', label: 'Write ad copy (Fable 5)', status: 'pending' },
       ...Array.from({ length: adCount }, (_, i) => ({ key: `image_${i + 1}`, label: `Generate picture ad ${i + 1}/${adCount}`, status: 'pending' as const })),
-      { key: 'campaign', label: 'Create FB campaign', status: 'pending' },
-      { key: 'adset', label: `Create ad set ($${((Number(config.dailyBudgetCents) || 1000) / 100).toFixed(2)}/day)`, status: 'pending' },
-      ...Array.from({ length: adCount }, (_, i) => ({ key: `ad_${i + 1}`, label: `Upload + create ad ${i + 1}/${adCount}`, status: 'pending' as const })),
+      { key: 'gate_review', label: 'REVIEW GATE — approve audience, copy & ads before anything touches Facebook', status: 'pending' },
+      { key: 'campaign', label: 'Create FB campaign (paused)', status: 'pending' },
+      { key: 'adset', label: `Create ad set (paused, $${((Number(config.dailyBudgetCents) || 1000) / 100).toFixed(2)}/day)`, status: 'pending' },
+      ...Array.from({ length: adCount }, (_, i) => ({ key: `ad_${i + 1}`, label: `Upload + create ad ${i + 1}/${adCount} (paused)`, status: 'pending' as const })),
+      ...(goLive ? [
+        { key: 'gate_launch', label: 'LAUNCH GATE — final approval before ads go LIVE and spend begins', status: 'pending' as const },
+        { key: 'activate', label: 'Activate campaign + ad set + ads', status: 'pending' as const },
+      ] : []),
     ];
 
     const id = crypto.randomUUID();
@@ -140,6 +148,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ workflow: rowToWorkflow(r) });
   }
 
+  if (body.action === 'approve') {
+    const r: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(body.id);
+    if (!r) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    const wf = rowToWorkflow(r);
+    const steps: Step[] = wf.steps;
+    const gate = steps.find(s => s.key === body.stepKey && s.key.startsWith('gate_'));
+    if (!gate) return NextResponse.json({ error: 'Gate not found' }, { status: 400 });
+    gate.status = 'done';
+    gate.detail = `Approved ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
+    const allDone = steps.every(s => s.status === 'done');
+    save(db, wf.id, { steps, status: allDone ? 'done' : 'running', error: null });
+    const updated: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(wf.id);
+    return NextResponse.json({ workflow: rowToWorkflow(updated) });
+  }
+
   if (body.action === 'advance') {
     const r: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(body.id);
     if (!r) return NextResponse.json({ error: 'Not found' }, { status: 404 });
@@ -151,6 +174,13 @@ export async function POST(req: NextRequest) {
     if (!step) {
       save(db, wf.id, { status: 'done', error: null });
       return NextResponse.json({ workflow: { ...wf, status: 'done' } });
+    }
+
+    // Gates never execute — they hold the workflow until explicitly approved
+    if (step.key.startsWith('gate_')) {
+      if (wf.status !== 'awaiting_approval') save(db, wf.id, { status: 'awaiting_approval', error: null });
+      const held: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(wf.id);
+      return NextResponse.json({ workflow: rowToWorkflow(held) });
     }
 
     try {
@@ -191,7 +221,14 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
   if (step.key === 'audience') {
     if (cfg.audienceId) {
       result.audienceId = cfg.audienceId;
-      const a: any = db.prepare('SELECT name FROM ad_audiences WHERE id = ?').get(cfg.audienceId);
+      const a: any = db.prepare('SELECT * FROM ad_audiences WHERE id = ?').get(cfg.audienceId);
+      if (a) {
+        result.audience = {
+          name: a.name, description: a.description, mindset: a.mindset, demographics: a.demographics,
+          painPoints: JSON.parse(a.pain_points || '[]'), desires: JSON.parse(a.desires || '[]'),
+          objections: JSON.parse(a.objections || '[]'), creativeAngles: JSON.parse(a.creative_angles || '[]'),
+        };
+      }
       return { detail: `Using existing: ${a?.name || cfg.audienceId}`, result };
     }
     const { generateAudienceFromProduct } = await import('@/lib/claude-audience');
@@ -204,6 +241,11 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
       .run(audienceId, wf.storeId, a.name, a.description, JSON.stringify(a.painPoints), JSON.stringify(a.desires),
         JSON.stringify(a.objections), a.mindset, JSON.stringify(a.failedSolutions), a.demographics, JSON.stringify(angles), a.bofReasoning);
     result.audienceId = audienceId;
+    result.audience = {
+      name: a.name, description: a.description, mindset: a.mindset, demographics: a.demographics,
+      painPoints: a.painPoints, desires: a.desires, objections: a.objections,
+      creativeAngles: [...a.usageMoments.map((m: string) => `Moment: ${m}`), ...a.creativeAngles],
+    };
     return { detail: a.name, result };
   }
 
@@ -234,11 +276,12 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
   if (step.key === 'campaign') {
     if (!profile?.access_token || !profile?.ad_account_id) throw new Error('FB profile missing token or ad account');
     const { createCampaign } = await import('@/lib/facebook');
+    // Always PAUSED — the launch gate + activate step control going live
     const campaign = await createCampaign(profile.ad_account_id, profile.access_token, {
-      name: cfg.campaignName, status: cfg.launchStatus,
+      name: cfg.campaignName, status: 'PAUSED',
     });
     result.campaignId = campaign.id;
-    return { detail: `Campaign ${campaign.id} (${cfg.launchStatus})`, result };
+    return { detail: `Campaign ${campaign.id} (paused)`, result };
   }
 
   if (step.key === 'adset') {
@@ -250,7 +293,7 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
       name: `${cfg.campaignName} | AdSet 1`,
       campaignId: result.campaignId,
       dailyBudgetCents: cfg.dailyBudgetCents,
-      status: cfg.launchStatus,
+      status: 'PAUSED',
       // No pixel → conversions optimization is invalid; optimize for link clicks
       optimizationGoal: hasPixel ? 'OFFSITE_CONVERSIONS' : 'LINK_CLICKS',
       pixelId: hasPixel ? profile.pixel_id : undefined,
@@ -288,11 +331,30 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
       name: `${creative.template} ${idx + 1}`,
       adSetId: result.adSetId,
       creativeId: adCreative.id,
-      status: cfg.launchStatus,
+      status: 'PAUSED',
     });
     result.adIds = result.adIds || [];
     result.adIds[idx] = ad.id;
     return { detail: `Ad ${ad.id}`, result };
+  }
+
+  if (step.key === 'activate') {
+    if (!profile?.access_token) throw new Error('FB profile missing token');
+    if (!result.campaignId || !result.adSetId) throw new Error('Campaign/ad set missing');
+    const activate = async (objectId: string) => {
+      const res = await fetch(`https://graph.facebook.com/v24.0/${objectId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'ACTIVE', access_token: profile.access_token }),
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(`Activate ${objectId} failed: ${d.error.message}`);
+    };
+    // Ads first, then ad set, then campaign — nothing serves until the campaign flips
+    for (const adId of (result.adIds || []).filter(Boolean)) await activate(adId);
+    await activate(result.adSetId);
+    await activate(result.campaignId);
+    return { detail: `LIVE — ${(result.adIds || []).filter(Boolean).length} ads at $${(cfg.dailyBudgetCents / 100).toFixed(2)}/day`, result };
   }
 
   throw new Error(`Unknown step: ${step.key}`);

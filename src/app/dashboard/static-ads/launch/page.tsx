@@ -1,7 +1,9 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
+import { ReactFlow, Background, Controls, Handle, Position, type Node, type Edge, type NodeProps } from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
 
 interface Store { id: string; name: string }
 interface Product { id: string; title: string; price_cents: number | null }
@@ -15,28 +17,80 @@ interface Workflow {
 
 const HIDDEN_STORES = ['apex loom', 'neeyahpure', 'vitaedge', 'ymo - amazon', 'zen essential', 'zenchoice'];
 
-export default function LaunchWorkflowPage() {
+// ─── Node definitions: each canvas node maps to one or many engine steps ───
+type NodeStatus = 'idle' | 'pending' | 'running' | 'done' | 'error' | 'gate';
+interface FlowNodeData extends Record<string, unknown> {
+  icon: string; title: string; subtitle: string; status: NodeStatus; progress?: string; isGate?: boolean;
+}
+
+const NODE_DEFS = [
+  { id: 'product', icon: '📦', title: 'Product', stepKeys: [] as string[] },
+  { id: 'audience', icon: '🧠', title: 'Audience', stepKeys: ['audience'] },
+  { id: 'copy', icon: '✍️', title: 'Ad Copy', stepKeys: ['copy'] },
+  { id: 'images', icon: '🖼️', title: 'Picture Ads', stepKeys: ['image_'] },
+  { id: 'gate_review', icon: '🛑', title: 'Review Gate', stepKeys: ['gate_review'] },
+  { id: 'campaign', icon: '📣', title: 'Campaign', stepKeys: ['campaign'] },
+  { id: 'adset', icon: '🎯', title: 'Ad Set', stepKeys: ['adset'] },
+  { id: 'ads', icon: '🧩', title: 'Create Ads', stepKeys: ['ad_'] },
+  { id: 'gate_launch', icon: '🚦', title: 'Launch Gate', stepKeys: ['gate_launch'] },
+  { id: 'activate', icon: '⚡', title: 'Go Live', stepKeys: ['activate'] },
+];
+
+function FlowNode({ data, selected }: NodeProps<Node<FlowNodeData>>) {
+  const ring =
+    data.status === 'done' ? 'border-emerald-500'
+    : data.status === 'running' ? 'border-blue-400 shadow-[0_0_18px_rgba(96,165,250,0.45)]'
+    : data.status === 'error' ? 'border-red-500'
+    : data.status === 'gate' ? 'border-amber-400 shadow-[0_0_18px_rgba(251,191,36,0.4)] animate-pulse'
+    : 'border-slate-700';
+  return (
+    <div className={`w-44 rounded-xl border-2 bg-slate-900 px-3 py-2.5 ${ring} ${selected ? 'outline outline-2 outline-blue-500/60' : ''}`}>
+      <Handle type="target" position={Position.Left} className="!bg-slate-500 !w-2 !h-2" />
+      <div className="flex items-center gap-2">
+        <span className="text-lg">{data.icon}</span>
+        <div className="min-w-0">
+          <p className="text-[12px] font-semibold text-white truncate">{data.title}</p>
+          <p className="text-[10px] text-slate-400 truncate">{data.subtitle}</p>
+        </div>
+      </div>
+      {data.progress && <p className="text-[10px] text-blue-300 mt-1">{data.progress}</p>}
+      <div className="mt-1.5 flex items-center gap-1">
+        <span className={`w-1.5 h-1.5 rounded-full ${
+          data.status === 'done' ? 'bg-emerald-400' : data.status === 'running' ? 'bg-blue-400 animate-pulse'
+          : data.status === 'error' ? 'bg-red-400' : data.status === 'gate' ? 'bg-amber-400' : 'bg-slate-600'
+        }`} />
+        <span className="text-[9px] uppercase tracking-wider text-slate-500">
+          {data.status === 'gate' ? 'needs approval' : data.status}
+        </span>
+      </div>
+      <Handle type="source" position={Position.Right} className="!bg-slate-500 !w-2 !h-2" />
+    </div>
+  );
+}
+
+const nodeTypes = { flowNode: FlowNode };
+
+export default function LaunchFlowPage() {
   const [stores, setStores] = useState<Store[]>([]);
   const [storeId, setStoreId] = useState('');
   const [products, setProducts] = useState<Product[]>([]);
   const [productId, setProductId] = useState('');
-
   const [profiles, setProfiles] = useState<FBProfile[]>([]);
   const [profileId, setProfileId] = useState('');
   const [pages, setPages] = useState<FBPage[]>([]);
   const [pageId, setPageId] = useState('');
   const [pagesLoading, setPagesLoading] = useState(false);
-
   const [landingUrl, setLandingUrl] = useState('');
   const [shopifyDomain, setShopifyDomain] = useState('');
   const [adCount, setAdCount] = useState(10);
   const [dailyBudget, setDailyBudget] = useState('10');
-  const [launchActive, setLaunchActive] = useState(false);
+  const [goLive, setGoLive] = useState(true);
 
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
-  const [active, setActive] = useState<Workflow | null>(null);
+  const [wf, setWf] = useState<Workflow | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
+  const [selectedNode, setSelectedNode] = useState<string>('product');
   const runningRef = useRef(false);
 
   useEffect(() => {
@@ -60,7 +114,7 @@ export default function LaunchWorkflowPage() {
 
   useEffect(() => {
     if (!storeId) return;
-    setProductId(''); setProfileId(''); setPages([]); setPageId(''); setActive(null);
+    setProductId(''); setProfileId(''); setPages([]); setPageId(''); setWf(null);
     loadStoreData(storeId);
   }, [storeId, loadStoreData]);
 
@@ -69,19 +123,18 @@ export default function LaunchWorkflowPage() {
     setPagesLoading(true);
     fetch(`/api/static-ads/workflow?profileId=${profileId}&pages=1`).then(r => r.json()).then(d => {
       setPages(d.pages || []);
-      const saved = d.savedPageId;
-      if (saved && (d.pages || []).some((p: FBPage) => p.id === saved)) setPageId(saved);
+      if (d.savedPageId && (d.pages || []).some((p: FBPage) => p.id === d.savedPageId)) setPageId(d.savedPageId);
       else if ((d.pages || []).length === 1) setPageId(d.pages[0].id);
       setPagesLoading(false);
     }).catch(() => setPagesLoading(false));
   }, [profileId]);
 
-  const ready = storeId && productId && profileId && pageId && landingUrl.startsWith('http');
   const profile = profiles.find(p => p.id === profileId);
+  const ready = storeId && productId && profileId && pageId && landingUrl.startsWith('http');
 
+  // ─── Engine driving ───
   async function advanceLoop(wfId: string) {
-    runningRef.current = true;
-    setRunning(true);
+    runningRef.current = true; setRunning(true);
     while (runningRef.current) {
       try {
         const res = await fetch('/api/static-ads/workflow', {
@@ -90,214 +143,279 @@ export default function LaunchWorkflowPage() {
         });
         const d = await res.json();
         if (!res.ok) throw new Error(d.error || 'advance failed');
-        setActive(d.workflow);
-        if (d.workflow.status !== 'running') break;
-      } catch (e: any) {
-        setError(e.message);
-        break;
-      }
+        setWf(d.workflow);
+        if (d.workflow.status !== 'running') break; // done / error / awaiting_approval
+      } catch (e: any) { setError(e.message); break; }
     }
-    runningRef.current = false;
-    setRunning(false);
+    runningRef.current = false; setRunning(false);
     loadStoreData(storeId);
   }
 
-  async function startWorkflow() {
+  async function start() {
     if (!ready) return;
     setError('');
-    try {
-      const res = await fetch('/api/static-ads/workflow', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'create', storeId, productId,
-          config: {
-            profileId, pageId, landingUrl, adCount,
-            dailyBudgetCents: Math.round(parseFloat(dailyBudget || '10') * 100),
-            launchStatus: launchActive ? 'ACTIVE' : 'PAUSED',
-          },
-        }),
-      });
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.error || 'create failed');
-      setActive(d.workflow);
-      void advanceLoop(d.workflow.id);
-    } catch (e: any) { setError(e.message); }
+    const res = await fetch('/api/static-ads/workflow', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'create', storeId, productId,
+        config: {
+          profileId, pageId, landingUrl, adCount,
+          dailyBudgetCents: Math.round(parseFloat(dailyBudget || '10') * 100),
+          launchStatus: goLive ? 'ACTIVE' : 'PAUSED',
+        },
+      }),
+    });
+    const d = await res.json();
+    if (!res.ok) { setError(d.error || 'create failed'); return; }
+    setWf(d.workflow);
+    void advanceLoop(d.workflow.id);
   }
 
-  async function retryWorkflow(wf: Workflow) {
-    setError('');
+  async function approve(stepKey: string) {
+    if (!wf) return;
+    const res = await fetch('/api/static-ads/workflow', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'approve', id: wf.id, stepKey }),
+    });
+    const d = await res.json();
+    if (!res.ok) { setError(d.error || 'approve failed'); return; }
+    setWf(d.workflow);
+    if (d.workflow.status === 'running') void advanceLoop(wf.id);
+  }
+
+  async function retry() {
+    if (!wf) return;
     const res = await fetch('/api/static-ads/workflow', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'retry', id: wf.id }),
     });
     const d = await res.json();
-    if (res.ok) { setActive(d.workflow); void advanceLoop(wf.id); }
-    else setError(d.error || 'retry failed');
+    if (res.ok) { setWf(d.workflow); void advanceLoop(wf.id); }
   }
 
+  // ─── Steps → canvas nodes ───
+  function nodeStatus(stepKeys: string[]): { status: NodeStatus; progress?: string; detail?: string } {
+    if (!wf) return { status: 'idle' };
+    const steps = wf.steps.filter(s => stepKeys.some(k => k.endsWith('_') ? s.key.startsWith(k) : s.key === k));
+    if (steps.length === 0) return { status: 'idle' };
+    const done = steps.filter(s => s.status === 'done').length;
+    const err = steps.find(s => s.status === 'error');
+    const current = wf.steps.find(s => s.status !== 'done');
+    const isCurrent = current && steps.some(s => s.key === current.key);
+    if (err) return { status: 'error', detail: err.detail, progress: steps.length > 1 ? `${done}/${steps.length}` : undefined };
+    if (done === steps.length) return { status: 'done', progress: steps.length > 1 ? `${done}/${steps.length}` : undefined };
+    if (isCurrent && current!.key.startsWith('gate_') && wf.status === 'awaiting_approval') return { status: 'gate' };
+    if (isCurrent && running) return { status: 'running', progress: steps.length > 1 ? `${done}/${steps.length}` : undefined };
+    return { status: 'pending', progress: steps.length > 1 && done > 0 ? `${done}/${steps.length}` : undefined };
+  }
+
+  const activeDefs = useMemo(() => NODE_DEFS.filter(d => {
+    if (!goLive && (d.id === 'gate_launch' || d.id === 'activate')) return !!wf && wf.steps.some(s => s.key === d.id);
+    return true;
+  }), [goLive, wf]);
+
+  const nodes: Node<FlowNodeData>[] = useMemo(() => activeDefs.map((d, i) => {
+    const st = d.id === 'product' ? { status: (productId ? 'done' : 'idle') as NodeStatus } : nodeStatus(d.stepKeys);
+    const subtitle =
+      d.id === 'product' ? (products.find(p => p.id === productId)?.title || 'pick a product')
+      : d.id === 'audience' ? (wf?.result?.audience?.name || 'Fable 5 auto-generates')
+      : d.id === 'copy' ? (wf?.result?.copy?.headline || 'Fable 5 writes it')
+      : d.id === 'images' ? `${wf?.config?.adCount || adCount} ads from proven templates`
+      : d.id === 'gate_review' ? 'your approval required'
+      : d.id === 'campaign' ? (profile?.profile_name || 'FB campaign (paused)')
+      : d.id === 'adset' ? `$${wf?.config ? (wf.config.dailyBudgetCents / 100).toFixed(0) : dailyBudget}/day ${profile?.pixel_id ? '· pixel' : '· link clicks'}`
+      : d.id === 'ads' ? 'upload + attach copy (paused)'
+      : d.id === 'gate_launch' ? 'final approval before spend'
+      : 'flips everything ACTIVE';
+    return {
+      id: d.id, type: 'flowNode',
+      position: { x: 40 + (i % 5) * 210, y: 60 + Math.floor(i / 5) * 190 },
+      data: { icon: d.icon, title: d.title, subtitle, status: st.status, progress: (st as any).progress, isGate: d.id.startsWith('gate') },
+    };
+  }), [activeDefs, wf, productId, products, profile, adCount, dailyBudget, running]);
+
+  const edges: Edge[] = useMemo(() => activeDefs.slice(0, -1).map((d, i) => {
+    const next = activeDefs[i + 1];
+    const targetStatus = nodes.find(n => n.id === next.id)?.data.status;
+    return {
+      id: `${d.id}-${next.id}`, source: d.id, target: next.id,
+      animated: targetStatus === 'running' || targetStatus === 'gate',
+      style: { stroke: targetStatus === 'done' || nodes.find(n => n.id === d.id)?.data.status === 'done' ? '#34d399' : '#475569', strokeWidth: 2 },
+    };
+  }), [activeDefs, nodes]);
+
+  const currentGate = wf?.status === 'awaiting_approval' ? wf.steps.find(s => s.status !== 'done' && s.key.startsWith('gate_')) : null;
   const inputCls = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500';
   const labelCls = 'block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5';
 
-  const doneCount = active ? active.steps.filter(s => s.status === 'done').length : 0;
+  // ─── Inspector for the selected node ───
+  function Inspector() {
+    const r = wf?.result || {};
+    switch (selectedNode) {
+      case 'product': return (
+        <div className="space-y-3">
+          <div><label className={labelCls}>Store</label>
+            <select value={storeId} onChange={e => setStoreId(e.target.value)} className={inputCls} disabled={!!wf}>
+              {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select></div>
+          <div><label className={labelCls}>Product</label>
+            <select value={productId} onChange={e => setProductId(e.target.value)} className={inputCls} disabled={!!wf}>
+              <option value="">— select —</option>
+              {products.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+            </select></div>
+          <div><label className={labelCls}>Landing page URL</label>
+            <input value={landingUrl} onChange={e => setLandingUrl(e.target.value)} className={inputCls} disabled={!!wf}
+              placeholder={shopifyDomain ? `https://${shopifyDomain}/products/…` : 'https://…'} /></div>
+        </div>);
+      case 'audience': return r.audience ? (
+        <div className="space-y-2 text-sm">
+          <p className="text-white font-medium">{r.audience.name}</p>
+          <p className="text-slate-400 text-xs">{r.audience.description}</p>
+          <p className="text-[10px] text-slate-500 uppercase mt-2">Pain points</p>
+          {r.audience.painPoints?.slice(0, 5).map((p: string, i: number) => <p key={i} className="text-xs text-slate-300">• {p}</p>)}
+          <p className="text-[10px] text-slate-500 uppercase mt-2">Angles / moments</p>
+          {r.audience.creativeAngles?.slice(0, 5).map((p: string, i: number) => <p key={i} className="text-xs text-slate-300">• {p}</p>)}
+          <p className="text-[10px] text-slate-500 mt-2">{r.audience.demographics}</p>
+        </div>
+      ) : <p className="text-xs text-slate-500">Fable 5 reads the product and builds the full buyer profile: psychographics, usage moments, objections, and the claims they need to hear. Output appears here.</p>;
+      case 'copy': return r.copy ? (
+        <div className="space-y-3 text-sm">
+          <div><p className={labelCls}>Primary text</p><p className="text-slate-200 whitespace-pre-wrap text-xs">{r.copy.primaryText}</p></div>
+          <div><p className={labelCls}>Headline</p><p className="text-white">{r.copy.headline}</p></div>
+          <div><p className={labelCls}>Description</p><p className="text-slate-300 text-xs">{r.copy.description}</p></div>
+        </div>
+      ) : <p className="text-xs text-slate-500">Fable 5 writes the FB primary text, headline and description from the product + audience. Output appears here for review.</p>;
+      case 'images': return (
+        <div className="space-y-3">
+          {!wf && <div><label className={labelCls}>Number of picture ads</label>
+            <input type="number" min={1} max={20} value={adCount}
+              onChange={e => setAdCount(Math.min(Math.max(Number(e.target.value) || 1, 1), 20))} className={inputCls} /></div>}
+          {(r.creatives || []).filter(Boolean).length > 0 && (
+            <div className="grid grid-cols-3 gap-1.5">
+              {(r.creatives || []).filter(Boolean).map((c: any) => (
+                <a key={c.id} href={c.imageUrl} target="_blank" rel="noreferrer">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={`${c.imageUrl}?w=150`} alt={c.template} className="rounded aspect-square object-cover w-full" />
+                </a>
+              ))}
+            </div>
+          )}
+          {!(r.creatives || []).filter(Boolean).length && wf && <p className="text-xs text-slate-500">Generating… thumbnails appear as each finishes.</p>}
+        </div>);
+      case 'gate_review': return (
+        <div className="space-y-3">
+          <p className="text-xs text-slate-400">The workflow STOPS here. Inspect the audience, copy and every image on this canvas — nothing touches Facebook until you approve.</p>
+          {currentGate?.key === 'gate_review' && (
+            <button onClick={() => approve('gate_review')} className="w-full bg-amber-500 hover:bg-amber-400 text-black font-semibold rounded-lg py-2.5 text-sm">
+              ✓ Approve — create paused FB objects
+            </button>)}
+        </div>);
+      case 'campaign': return (
+        <div className="space-y-3">
+          <div><label className={labelCls}>FB Ad Account</label>
+            <select value={profileId} onChange={e => setProfileId(e.target.value)} className={inputCls} disabled={!!wf}>
+              <option value="">— select —</option>
+              {profiles.map(p => <option key={p.id} value={p.id}>{p.profile_name || p.ad_account_name || p.ad_account_id}</option>)}
+            </select></div>
+          <div><label className={labelCls}>FB Page</label>
+            <select value={pageId} onChange={e => setPageId(e.target.value)} className={inputCls} disabled={!!wf || pagesLoading}>
+              <option value="">{pagesLoading ? 'loading…' : '— select —'}</option>
+              {pages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select></div>
+          {r.campaignId && <p className="text-xs text-emerald-400">Campaign: {r.campaignId}</p>}
+        </div>);
+      case 'adset': return (
+        <div className="space-y-3">
+          {!wf && <div><label className={labelCls}>Daily budget $</label>
+            <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>}
+          <p className="text-xs text-slate-400">{profile?.pixel_id ? `Optimizes for purchases via pixel ${profile.pixel_id}` : 'No pixel on this profile — optimizes for link clicks'}</p>
+          {r.adSetId && <p className="text-xs text-emerald-400">Ad set: {r.adSetId}</p>}
+        </div>);
+      case 'ads': return (
+        <div className="space-y-2">
+          <p className="text-xs text-slate-400">Each image is uploaded to Meta and becomes a paused ad carrying the copy + Shop Now → your landing URL.</p>
+          {(r.adIds || []).filter(Boolean).map((id: string, i: number) => <p key={id} className="text-xs text-emerald-400">Ad {i + 1}: {id}</p>)}
+        </div>);
+      case 'gate_launch': return (
+        <div className="space-y-3">
+          {!wf && <button onClick={() => setGoLive(v => !v)}
+            className={`w-full rounded-lg px-3 py-2 text-sm font-medium border ${goLive ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+            {goLive ? 'Will go LIVE after this gate' : 'Staying PAUSED (no gate needed)'}
+          </button>}
+          <p className="text-xs text-slate-400">Everything exists on Facebook, paused. Approving here starts real spend at ${wf?.config ? (wf.config.dailyBudgetCents / 100).toFixed(2) : dailyBudget}/day.</p>
+          {currentGate?.key === 'gate_launch' && (
+            <button onClick={() => approve('gate_launch')} className="w-full bg-red-600 hover:bg-red-500 text-white font-semibold rounded-lg py-2.5 text-sm">
+              🚦 Approve — GO LIVE, start spending
+            </button>)}
+        </div>);
+      case 'activate': return <p className="text-xs text-slate-400">Flips ads → ad set → campaign to ACTIVE, in that order. {wf?.steps.find(s => s.key === 'activate')?.detail || ''}</p>;
+      default: return null;
+    }
+  }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex items-start justify-between mb-6">
+    <div className="h-[calc(100vh-0px)] flex flex-col">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
         <div>
-          <h1 className="text-2xl font-bold text-white">🚀 Launch Workflow</h1>
-          <p className="text-sm text-slate-400 mt-1">Product in → audience + copy + picture ads + live FB campaign out. Every step resumable.</p>
+          <h1 className="text-xl font-bold text-white">🚀 Launch Flow</h1>
+          <p className="text-xs text-slate-400">Product → live campaign. Click any node to configure or inspect. Gates hold the run for your approval.</p>
         </div>
-        <Link href="/dashboard/static-ads" className="text-xs text-blue-400 hover:text-blue-300">← Picture Ads</Link>
+        <div className="flex items-center gap-3">
+          {wf && <span className={`text-[11px] px-2 py-1 rounded-full ${
+            wf.status === 'done' ? 'bg-emerald-900/50 text-emerald-400' : wf.status === 'error' ? 'bg-red-900/50 text-red-400'
+            : wf.status === 'awaiting_approval' ? 'bg-amber-900/50 text-amber-400' : 'bg-blue-900/50 text-blue-400'
+          }`}>{wf.status === 'awaiting_approval' ? '⏸ awaiting your approval' : wf.status}</span>}
+          {!wf && <button onClick={start} disabled={!ready || running}
+            className="bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 disabled:opacity-40 text-white text-sm font-semibold rounded-lg px-5 py-2">
+            ▶ Run workflow
+          </button>}
+          {wf?.status === 'error' && !running && <button onClick={retry} className="bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg px-4 py-2">Retry + continue</button>}
+          {wf && (wf.status === 'done' || wf.status === 'cancelled') && (
+            <button onClick={() => { setWf(null); setError(''); }} className="bg-slate-800 border border-slate-700 text-slate-300 text-sm rounded-lg px-4 py-2">New run</button>
+          )}
+          <Link href="/dashboard/static-ads" className="text-xs text-blue-400 hover:text-blue-300">← Picture Ads</Link>
+        </div>
       </div>
 
-      {error && <div className="mb-4 bg-red-900/30 border border-red-800 text-red-300 text-sm rounded-lg px-4 py-3">{error}</div>}
+      {error && <div className="mx-6 mt-3 bg-red-900/30 border border-red-800 text-red-300 text-sm rounded-lg px-4 py-2">{error}</div>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Config */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4 h-fit">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={labelCls}>Store</label>
-              <select value={storeId} onChange={e => setStoreId(e.target.value)} className={inputCls}>
-                {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className={labelCls}>Product</label>
-              <select value={productId} onChange={e => setProductId(e.target.value)} className={inputCls}>
-                <option value="">— select —</option>
-                {products.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={labelCls}>FB Ad Account</label>
-              <select value={profileId} onChange={e => setProfileId(e.target.value)} className={inputCls}>
-                <option value="">— select —</option>
-                {profiles.map(p => <option key={p.id} value={p.id}>{p.profile_name || p.ad_account_name || p.ad_account_id}</option>)}
-              </select>
-              {profile && !profile.pixel_id && (
-                <p className="text-[10px] text-amber-400 mt-1">No pixel on this profile — ad set will optimize for link clicks</p>
-              )}
-            </div>
-            <div>
-              <label className={labelCls}>FB Page</label>
-              <select value={pageId} onChange={e => setPageId(e.target.value)} className={inputCls} disabled={pagesLoading}>
-                <option value="">{pagesLoading ? 'loading pages…' : '— select —'}</option>
-                {pages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className={labelCls}>Landing page URL</label>
-            <input value={landingUrl} onChange={e => setLandingUrl(e.target.value)}
-              placeholder={shopifyDomain ? `https://${shopifyDomain}/products/…` : 'https://…'} className={inputCls} />
-          </div>
-
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className={labelCls}>Picture ads</label>
-              <input type="number" min={1} max={20} value={adCount}
-                onChange={e => setAdCount(Math.min(Math.max(Number(e.target.value) || 1, 1), 20))} className={inputCls} />
-            </div>
-            <div>
-              <label className={labelCls}>Daily budget $</label>
-              <input type="number" min={1} step="1" value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} />
-            </div>
-            <div>
-              <label className={labelCls}>Go live?</label>
-              <button onClick={() => setLaunchActive(v => !v)}
-                className={`w-full rounded-lg px-3 py-2 text-sm font-medium border transition-colors ${
-                  launchActive ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'
-                }`}>
-                {launchActive ? 'ACTIVE on launch' : 'Launch PAUSED'}
-              </button>
-            </div>
-          </div>
-
-          <button onClick={startWorkflow} disabled={!ready || running}
-            className="w-full bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 disabled:opacity-40 text-white font-semibold rounded-lg py-3 transition-colors">
-            {running ? 'Workflow running…' : `Launch: audience + copy + ${adCount} ads + campaign`}
-          </button>
-          {launchActive && (
-            <p className="text-[11px] text-amber-400">Ads go LIVE immediately at ${dailyBudget}/day. Launch paused instead to review in Ads Manager first.</p>
-          )}
+      <div className="flex-1 flex min-h-0">
+        <div className="flex-1 bg-slate-950">
+          <ReactFlow
+            nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+            onNodeClick={(_, n) => setSelectedNode(n.id)}
+            fitView proOptions={{ hideAttribution: true }}
+            nodesDraggable={false} nodesConnectable={false} zoomOnDoubleClick={false}
+          >
+            <Background color="#1e293b" gap={24} />
+            <Controls showInteractive={false} />
+          </ReactFlow>
         </div>
 
-        {/* Progress */}
-        <div className="space-y-4">
-          {active && (
-            <div className="bg-slate-900 border border-blue-800 rounded-xl p-5">
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-sm text-white font-medium">{active.name}</p>
-                <span className={`text-[11px] px-2 py-0.5 rounded-full ${
-                  active.status === 'done' ? 'bg-emerald-900/50 text-emerald-400'
-                  : active.status === 'error' ? 'bg-red-900/50 text-red-400'
-                  : 'bg-blue-900/50 text-blue-400'
-                }`}>{active.status === 'running' && running ? `running ${doneCount}/${active.steps.length}` : active.status}</span>
-              </div>
-              <div className="space-y-1 max-h-96 overflow-y-auto pr-1">
-                {active.steps.map(s => (
-                  <div key={s.key} className="flex items-start gap-2 text-sm py-0.5">
-                    <span className="w-4 flex-shrink-0 mt-0.5">
-                      {s.status === 'done' ? <span className="text-emerald-400">✓</span>
-                        : s.status === 'error' ? <span className="text-red-400">✗</span>
-                        : running && active.steps.find(x => x.status !== 'done')?.key === s.key
-                          ? <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                          : <span className="text-slate-600">○</span>}
-                    </span>
-                    <span className={s.status === 'done' ? 'text-slate-300' : s.status === 'error' ? 'text-red-300' : 'text-slate-500'}>
-                      {s.label}
-                      {s.detail && <span className="text-slate-500"> — {s.detail}</span>}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              {active.status === 'error' && !running && (
-                <button onClick={() => retryWorkflow(active)}
-                  className="mt-3 w-full bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg py-2">
-                  Retry failed step + continue
-                </button>
-              )}
-              {active.status === 'done' && active.result?.campaignId && (
-                <a href={`https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=${(profiles.find(p => p.id === active.config?.profileId)?.ad_account_id || '').replace('act_', '')}`}
-                  target="_blank" rel="noreferrer"
-                  className="mt-3 block text-center bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium rounded-lg py-2">
-                  ✓ Done — open Ads Manager
-                </a>
-              )}
-            </div>
-          )}
+        {/* Inspector panel */}
+        <div className="w-80 border-l border-slate-800 bg-slate-900 p-4 overflow-y-auto">
+          <p className="text-sm font-semibold text-white mb-1">
+            {NODE_DEFS.find(d => d.id === selectedNode)?.icon} {NODE_DEFS.find(d => d.id === selectedNode)?.title}
+          </p>
+          <div className="border-t border-slate-800 pt-3 mt-2">
+            <Inspector />
+          </div>
 
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-            <p className={labelCls}>Past workflows</p>
-            {workflows.length === 0 ? (
-              <p className="text-sm text-slate-500 py-4 text-center">None yet for this store.</p>
-            ) : (
-              <div className="space-y-2">
-                {workflows.map(w => (
-                  <div key={w.id} className="flex items-center gap-3 bg-slate-800/50 rounded-lg px-3 py-2">
-                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                      w.status === 'done' ? 'bg-emerald-400' : w.status === 'error' ? 'bg-red-400' : w.status === 'cancelled' ? 'bg-slate-500' : 'bg-blue-400'
-                    }`} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-slate-200 truncate">{w.name}</p>
-                      <p className="text-[10px] text-slate-500">{w.createdAt} · {w.steps.filter(s => s.status === 'done').length}/{w.steps.length} steps · {w.status}</p>
-                    </div>
-                    {(w.status === 'error' || w.status === 'running') && !running && (
-                      <button onClick={() => { setActive(w); w.status === 'error' ? void retryWorkflow(w) : void advanceLoop(w.id); }}
-                        className="text-[11px] text-blue-400 hover:text-blue-300 whitespace-nowrap">resume</button>
-                    )}
-                    {w.status !== 'error' && w.status !== 'running' && (
-                      <button onClick={() => setActive(w)} className="text-[11px] text-slate-400 hover:text-white whitespace-nowrap">view</button>
-                    )}
-                  </div>
-                ))}
+          {/* Past runs */}
+          <div className="mt-6 border-t border-slate-800 pt-3">
+            <p className={labelCls}>Past runs</p>
+            {workflows.slice(0, 8).map(w => (
+              <div key={w.id} className="flex items-center gap-2 py-1.5">
+                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                  w.status === 'done' ? 'bg-emerald-400' : w.status === 'error' ? 'bg-red-400'
+                  : w.status === 'awaiting_approval' ? 'bg-amber-400' : w.status === 'cancelled' ? 'bg-slate-500' : 'bg-blue-400'
+                }`} />
+                <button onClick={() => { setWf(w); setError(''); if (w.status === 'running') void advanceLoop(w.id); }}
+                  className="text-xs text-slate-300 hover:text-white truncate text-left flex-1">{w.name}</button>
+                <span className="text-[9px] text-slate-500">{w.steps.filter(s => s.status === 'done').length}/{w.steps.length}</span>
               </div>
-            )}
+            ))}
+            {workflows.length === 0 && <p className="text-xs text-slate-600">none yet</p>}
           </div>
         </div>
       </div>
