@@ -152,6 +152,7 @@ export default function LaunchFlowPage() {
   const [dailyBudget, setDailyBudget] = useState('10');
   const [goLive, setGoLive] = useState(true);
   const [countries, setCountries] = useState('US');
+  const [minSpendTarget, setMinSpendTarget] = useState('');
   // No end date — ads live in the campaign and run until turned off
   const durationDays = 0;
 
@@ -328,6 +329,7 @@ export default function LaunchFlowPage() {
     return {
       profileId, pageId, landingUrl, adCount,
       dailyBudgetCents: Math.round(parseFloat(dailyBudget || '10') * 100),
+      minSpendTargetCents: minSpendTarget ? Math.round(parseFloat(minSpendTarget) * 100) : undefined,
       launchStatus: goLive ? 'ACTIVE' : 'PAUSED',
       targeting: { countries: countries.split(',').map(c => c.trim()).filter(Boolean) },
       selectedImageUrl: selectedImageUrl || undefined,
@@ -648,8 +650,14 @@ export default function LaunchFlowPage() {
           {errBox}
           {!wf ? (
             <>
-              <div><label className={labelCls}>Daily budget $</label>
-                <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>
+              <div className="grid grid-cols-2 gap-2">
+                <div><label className={labelCls}>Daily budget $ (campaign)</label>
+                  <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>
+                <div><label className={labelCls}>Min spend $ (ad set)</label>
+                  <input type="number" min={0} step="1" value={minSpendTarget} onChange={e => setMinSpendTarget(e.target.value)}
+                    placeholder="optional" className={inputCls} />
+                  <p className="text-[9px] text-slate-500 mt-0.5">daily_min_spend_target</p></div>
+              </div>
               <div><label className={labelCls}>Countries (comma-separated)</label>
                 <input value={countries} onChange={e => setCountries(e.target.value)} placeholder="US, CA, GB" className={inputCls} /></div>
               <p className="text-[11px] text-slate-400">

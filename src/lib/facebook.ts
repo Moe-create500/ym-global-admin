@@ -785,8 +785,10 @@ export async function createAdSet(
   const body: Record<string, any> = {
     name: options.name,
     campaign_id: options.campaignId,
-    // CBO campaigns own the budget — the ad set must not carry one
+    // CBO campaigns own the budget — the ad set must not carry one. It CAN
+    // carry a minimum spend target so Meta doesn't starve it in distribution.
     ...(options.cbo ? {} : { daily_budget: budget }),
+    ...(options.cbo && options.minSpendTargetCents ? { daily_min_spend_target: options.minSpendTargetCents } : {}),
     optimization_goal: options.optimizationGoal || 'OFFSITE_CONVERSIONS',
     billing_event: options.billingEvent || 'IMPRESSIONS',
     status: options.status || 'PAUSED',

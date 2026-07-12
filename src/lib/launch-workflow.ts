@@ -129,6 +129,7 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
       creativeIds: batchMode ? creativeIds : undefined,
       existingCampaignId: useExistingCampaign ? config.existingCampaignId : null,
       dailyBudgetCents: Math.max(Number(config.dailyBudgetCents) || 1000, 100),
+      minSpendTargetCents: Number(config.minSpendTargetCents) > 0 ? Math.round(Number(config.minSpendTargetCents)) : null,
       launchStatus: config.launchStatus === 'ACTIVE' ? 'ACTIVE' : 'PAUSED',
       profileId: config.profileId,
       pageId: config.pageId,
@@ -358,6 +359,9 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
       campaignId: result.campaignId,
       dailyBudgetCents: cfg.dailyBudgetCents,
       cbo: isCbo, // CBO campaign owns the budget — ad set carries none
+      // Min spend target keeps this ad set from being starved inside a CBO
+      // campaign that already has established ad sets
+      minSpendTargetCents: cfg.minSpendTargetCents || undefined,
       status: 'PAUSED',
       // No pixel → conversions optimization is invalid; optimize for link clicks
       optimizationGoal: optimizationGoal || (hasPixel ? 'OFFSITE_CONVERSIONS' : 'LINK_CLICKS'),
