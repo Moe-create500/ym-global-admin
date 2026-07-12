@@ -9,6 +9,36 @@ import fs from 'fs';
 const BASE_URL = 'https://api.openai.com/v1';
 const API_KEY = () => process.env.OPENAI_API_KEY || '';
 
+// Gateway blips (502/503) and rate limits are routine on the image API — one
+// of them must not kill a 10-image workflow run. Retry with backoff; only
+// real request errors (4xx) fail immediately.
+const TRANSIENT_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+/** Strip HTML error pages (Cloudflare 502s etc.) down to something readable. */
+function cleanErrorText(text: string): string {
+  return text.replace(/<[^>]*>/g, ' ').replace(/<!--.*?-->/gs, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
+async function fetchWithRetry(url: string, init: RequestInit, label: string, attempts = 3): Promise<Response> {
+  let lastError = '';
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, i * 5000));
+    try {
+      const res = await fetch(url, init);
+      if (res.ok) return res;
+      const text = cleanErrorText(await res.text().catch(() => ''));
+      lastError = `${res.status}: ${text}`;
+      if (!TRANSIENT_STATUSES.has(res.status)) throw new Error(`${label} error ${lastError}`);
+      console.warn(`[openai-image] transient ${lastError} — attempt ${i + 1}/${attempts}`);
+    } catch (e: any) {
+      if (String(e?.message || '').startsWith(label)) throw e; // non-transient — fail now
+      lastError = String(e?.message || e).slice(0, 200);       // network error — retry
+      console.warn(`[openai-image] network error: ${lastError} — attempt ${i + 1}/${attempts}`);
+    }
+  }
+  throw new Error(`${label} failed after ${attempts} attempts (${lastError})`);
+}
+
 /**
  * Resolve an image URL to a Buffer.
  * - Local paths (/api/products/uploads, /api/static-ads/templates/preview) → read from disk
@@ -88,19 +118,14 @@ export async function generateImage(
     body.response_format = 'b64_json';
   }
 
-  const res = await fetch(`${BASE_URL}/images/generations`, {
+  const res = await fetchWithRetry(`${BASE_URL}/images/generations`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${key}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => 'Unknown error');
-    throw new Error(`OpenAI Image API error ${res.status}: ${text}`);
-  }
+  }, 'OpenAI Image API');
 
   return parseImageResponse(await res.json(), model);
 }
@@ -143,16 +168,11 @@ async function generateWithReference(
     formData.append('image[]', blob, `ref_${i}.png`);
   }
 
-  const res = await fetch(`${BASE_URL}/images/edits`, {
+  const res = await fetchWithRetry(`${BASE_URL}/images/edits`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${key}` },
     body: formData,
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => 'Unknown error');
-    throw new Error(`OpenAI Image Edit API error ${res.status}: ${text}`);
-  }
+  }, 'OpenAI Image Edit API');
 
   return parseImageResponse(await res.json(), model);
 }
