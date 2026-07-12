@@ -95,6 +95,13 @@ export default function LaunchFlowPage() {
   const [startAt, setStartAt] = useState('');
   const [durationDays, setDurationDays] = useState(7);
 
+  // Batch mode: launched from the Picture Ads gallery with pre-selected ads
+  const [batchCreatives, setBatchCreatives] = useState<{ id: string; imageUrl: string; templateName: string; productId: string | null }[] | null>(null);
+  const [campaignMode, setCampaignMode] = useState<'new' | 'existing'>('new');
+  const [campaigns, setCampaigns] = useState<{ id: string; name: string; status: string }[]>([]);
+  const [existingCampaignId, setExistingCampaignId] = useState('');
+  const batchMode = !!batchCreatives?.length;
+
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [wf, setWf] = useState<Workflow | null>(null);
   const [running, setRunning] = useState(false);
@@ -103,10 +110,24 @@ export default function LaunchFlowPage() {
   const runningRef = useRef(false);
 
   useEffect(() => {
+    // Batch launch from the gallery: ?store=...&creatives=id1,id2
+    const params = new URLSearchParams(window.location.search);
+    const batchStore = params.get('store');
+    const batchIds = params.get('creatives');
+    if (batchStore && batchIds) {
+      fetch(`/api/static-ads/creatives?ids=${batchIds}`).then(r => r.json()).then(d => {
+        if ((d.creatives || []).length) {
+          setBatchCreatives(d.creatives);
+          const pid = d.creatives.find((c: any) => c.productId)?.productId;
+          if (pid) setProductId(pid);
+        }
+      }).catch(() => {});
+    }
     fetch('/api/stores').then(r => r.json()).then(d => {
       const s = (d.stores || []).filter((st: Store) => !HIDDEN_STORES.includes(st.name.trim().toLowerCase()));
       setStores(s);
-      if (s.length) setStoreId(s[0].id);
+      if (batchStore && s.some((st: Store) => st.id === batchStore)) setStoreId(batchStore);
+      else if (s.length) setStoreId(s[0].id);
     }).catch(() => {});
   }, []);
 
@@ -133,6 +154,22 @@ export default function LaunchFlowPage() {
     loadStoreData(storeId);
   }, [storeId, loadStoreData]);
 
+  // Batch product id survives the store-change reset
+  useEffect(() => {
+    if (batchCreatives?.length) {
+      const pid = batchCreatives.find(c => c.productId)?.productId;
+      if (pid) setProductId(pid);
+    }
+  }, [batchCreatives, storeId]);
+
+  // Existing campaigns for "attach to campaign" mode
+  useEffect(() => {
+    if (!profileId || campaignMode !== 'existing') { setCampaigns([]); return; }
+    fetch(`/api/static-ads/workflow?profileId=${profileId}&campaigns=1`).then(r => r.json()).then(d => {
+      setCampaigns(d.campaigns || []);
+    }).catch(() => {});
+  }, [profileId, campaignMode]);
+
   useEffect(() => {
     if (!profileId) { setPages([]); setPageId(''); return; }
     setPagesLoading(true);
@@ -145,7 +182,8 @@ export default function LaunchFlowPage() {
   }, [profileId]);
 
   const profile = profiles.find(p => p.id === profileId);
-  const ready = storeId && productId && profileId && pageId && landingUrl.startsWith('http');
+  const ready = storeId && productId && profileId && pageId && landingUrl.startsWith('http')
+    && (campaignMode === 'new' || !!existingCampaignId);
 
   // ─── Engine driving ───
   async function advanceLoop(wfId: string) {
@@ -179,6 +217,8 @@ export default function LaunchFlowPage() {
           launchStatus: goLive ? 'ACTIVE' : 'PAUSED',
           targeting: { countries: countries.split(',').map(c => c.trim()).filter(Boolean), ageMin, ageMax, gender },
           selectedImageUrl: selectedImageUrl || undefined,
+          creativeIds: batchMode ? batchCreatives!.map(c => c.id) : undefined,
+          existingCampaignId: campaignMode === 'existing' && existingCampaignId ? existingCampaignId : undefined,
           schedule: {
             startAt: startMode === 'scheduled' && startAt ? new Date(startAt).toISOString() : null,
             durationDays,
@@ -230,10 +270,19 @@ export default function LaunchFlowPage() {
     return { status: 'pending', progress: steps.length > 1 && done > 0 ? `${done}/${steps.length}` : undefined };
   }
 
-  const activeDefs = useMemo(() => NODE_DEFS.filter(d => {
-    if (!goLive && (d.id === 'gate_launch' || d.id === 'activate')) return !!wf && wf.steps.some(s => s.key === d.id);
-    return true;
-  }), [goLive, wf]);
+  const activeDefs = useMemo(() => {
+    let defs = NODE_DEFS;
+    if (batchMode) {
+      // Batch: ads already exist — no generation nodes; a fallback audience
+      // step (creatives without one) maps into the Copy node
+      defs = defs.filter(d => d.id !== 'audience' && d.id !== 'images')
+        .map(d => d.id === 'copy' ? { ...d, stepKeys: ['audience', 'copy'] } : d);
+    }
+    return defs.filter(d => {
+      if (!goLive && (d.id === 'gate_launch' || d.id === 'activate')) return !!wf && wf.steps.some(s => s.key === d.id);
+      return true;
+    });
+  }, [goLive, wf, batchMode]);
 
   // Both rows read left→right (natural reading order); the row transition is a
   // stepped return edge routed in the gap between rows.
@@ -241,12 +290,14 @@ export default function LaunchFlowPage() {
   const nodes: Node<FlowNodeData>[] = useMemo(() => activeDefs.map((d, i) => {
     const st = d.id === 'product' ? { status: (productId ? 'done' : 'idle') as NodeStatus } : nodeStatus(d.stepKeys);
     const subtitle =
-      d.id === 'product' ? (products.find(p => p.id === productId)?.title || 'pick a product')
+      d.id === 'product' ? (batchMode ? `${batchCreatives!.length} selected ads` : (products.find(p => p.id === productId)?.title || 'pick a product'))
       : d.id === 'audience' ? (wf?.result?.audience?.name || 'Fable 5 auto-generates')
       : d.id === 'copy' ? (wf?.result?.copy?.headline || 'Fable 5 writes it')
       : d.id === 'images' ? `${wf?.config?.adCount || adCount} ads from proven templates`
       : d.id === 'gate_review' ? 'your approval required'
-      : d.id === 'campaign' ? (profile?.profile_name || 'FB campaign (paused)')
+      : d.id === 'campaign' ? (campaignMode === 'existing'
+          ? (campaigns.find(c => c.id === (wf?.config?.existingCampaignId || existingCampaignId))?.name || 'existing campaign')
+          : (profile?.profile_name || 'FB campaign (paused)'))
       : d.id === 'adset' ? `$${wf?.config ? (wf.config.dailyBudgetCents / 100).toFixed(0) : dailyBudget}/day · ${
           (wf?.config?.schedule?.durationDays ?? durationDays) > 0 ? `${wf?.config?.schedule?.durationDays ?? durationDays}d cap` : 'no end'}`
       : d.id === 'ads' ? 'upload + attach copy (paused)'
@@ -266,7 +317,7 @@ export default function LaunchFlowPage() {
       position: { x, y },
       data: { icon: d.icon, title: d.title, subtitle, status: st.status, progress: (st as any).progress, isGate: d.id.startsWith('gate'), tpos, spos },
     };
-  }), [activeDefs, wf, productId, products, profile, adCount, dailyBudget, running]);
+  }), [activeDefs, wf, productId, products, profile, adCount, dailyBudget, running, batchMode, batchCreatives, campaignMode, campaigns, existingCampaignId, durationDays]);
 
   const edges: Edge[] = useMemo(() => activeDefs.slice(0, -1).map((d, i) => {
     const next = activeDefs[i + 1];
@@ -303,6 +354,24 @@ export default function LaunchFlowPage() {
     ) : null;
     switch (selectedNode) {
       case 'product': {
+        if (batchMode) {
+          return (
+          <div className="space-y-3">
+            <p className="text-xs text-slate-400">Launching {batchCreatives!.length} already-generated ads from the gallery.</p>
+            <div className="grid grid-cols-4 gap-1">
+              {batchCreatives!.map(c => (
+                <a key={c.id} href={c.imageUrl} target="_blank" rel="noreferrer">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={`${c.imageUrl}?w=150`} alt={c.templateName} className="rounded aspect-square object-cover w-full" />
+                </a>
+              ))}
+            </div>
+            <p className="text-xs text-slate-300">{products.find(p => p.id === productId)?.title || ''}</p>
+            <div><label className={labelCls}>Landing page URL</label>
+              <input value={landingUrl} onChange={e => setLandingUrl(e.target.value)} className={inputCls} disabled={!!wf}
+                placeholder="https://yourstore.com/products/…" /></div>
+          </div>);
+        }
         const prod = products.find(p => p.id === productId);
         let prodImages: string[] = [];
         if (prod) {
@@ -434,6 +503,33 @@ export default function LaunchFlowPage() {
               <option value="">{pagesLoading ? 'loading…' : '— select —'}</option>
               {pages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select></div>
+          {!wf && (
+            <div>
+              <label className={labelCls}>Campaign</label>
+              <div className="grid grid-cols-2 gap-1.5 mb-2">
+                <button onClick={() => setCampaignMode('new')}
+                  className={`text-xs rounded-lg py-1.5 border ${campaignMode === 'new' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                  Create new
+                </button>
+                <button onClick={() => setCampaignMode('existing')} disabled={!profileId}
+                  className={`text-xs rounded-lg py-1.5 border disabled:opacity-40 ${campaignMode === 'existing' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                  Use existing
+                </button>
+              </div>
+              {campaignMode === 'existing' && (
+                <select value={existingCampaignId} onChange={e => setExistingCampaignId(e.target.value)} className={inputCls}>
+                  <option value="">{campaigns.length ? '— pick campaign —' : 'loading campaigns…'}</option>
+                  {campaigns.map(c => <option key={c.id} value={c.id}>{c.name} ({c.status})</option>)}
+                </select>
+              )}
+              {campaignMode === 'existing' && (
+                <p className="text-[10px] text-slate-500 mt-1">A new ad set with your budget/schedule is added inside the chosen campaign.</p>
+              )}
+            </div>
+          )}
+          {wf?.config?.existingCampaignId && (
+            <p className="text-xs text-slate-300">Attached to existing campaign {wf.config.existingCampaignId}</p>
+          )}
           {errBox}
           {r.campaignId && (
             <p className="text-xs text-emerald-400">Campaign: {r.campaignId} — <a href={adsManagerUrl} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Ads Manager ↗</a></p>

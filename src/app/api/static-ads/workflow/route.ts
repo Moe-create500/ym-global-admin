@@ -62,6 +62,19 @@ export async function GET(req: NextRequest) {
   const storeId = req.nextUrl.searchParams.get('storeId');
   const profileId = req.nextUrl.searchParams.get('profileId');
 
+  if (profileId && req.nextUrl.searchParams.get('campaigns')) {
+    const profile: any = db.prepare('SELECT access_token, ad_account_id FROM fb_profiles WHERE id = ? AND is_active = 1').get(profileId);
+    if (!profile?.access_token || !profile?.ad_account_id) return NextResponse.json({ error: 'Profile missing token or ad account' }, { status: 400 });
+    try {
+      const { getCampaigns } = await import('@/lib/facebook');
+      const campaigns = (await getCampaigns(profile.ad_account_id, profile.access_token))
+        .filter(c => c.status !== 'DELETED' && c.status !== 'ARCHIVED');
+      return NextResponse.json({ campaigns });
+    } catch (e: any) {
+      return NextResponse.json({ error: `Failed to fetch campaigns: ${e.message}` }, { status: 502 });
+    }
+  }
+
   if (profileId && req.nextUrl.searchParams.get('pages')) {
     const profile: any = db.prepare('SELECT access_token, fb_page_id, fb_page_name FROM fb_profiles WHERE id = ? AND is_active = 1').get(profileId);
     if (!profile?.access_token) return NextResponse.json({ error: 'Profile has no access token' }, { status: 400 });
@@ -100,23 +113,45 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
 
   if (body.action === 'create') {
-    const { storeId, productId, config } = body;
-    if (!storeId || !productId || !config?.profileId || !config?.pageId || !config?.landingUrl) {
-      return NextResponse.json({ error: 'storeId, productId, config.profileId, config.pageId, config.landingUrl required' }, { status: 400 });
+    const { storeId, config } = body;
+    let { productId } = body;
+    if (!storeId || !config?.profileId || !config?.pageId || !config?.landingUrl) {
+      return NextResponse.json({ error: 'storeId, config.profileId, config.pageId, config.landingUrl required' }, { status: 400 });
     }
+
+    // ── Batch mode: launch EXISTING generated ads instead of generating new ones ──
+    const creativeIds: string[] = Array.isArray(config.creativeIds) ? config.creativeIds.slice(0, 50) : [];
+    const batchMode = creativeIds.length > 0;
+    const prefill: any = {};
+    if (batchMode) {
+      const rows = creativeIds.map(cid =>
+        db.prepare("SELECT id, file_url, template_data, product_id, audience_id FROM creatives WHERE id = ? AND store_id = ?").get(cid, storeId)
+      ).filter(Boolean) as any[];
+      if (rows.length === 0) return NextResponse.json({ error: 'No valid creatives found for this store' }, { status: 400 });
+      prefill.creatives = rows.map(r => {
+        let templateName = '';
+        try { templateName = JSON.parse(r.template_data || '{}').templateName || ''; } catch {}
+        return { id: r.id, imageUrl: r.file_url, template: templateName || 'ad' };
+      });
+      prefill.audienceId = rows.find(r => r.audience_id)?.audience_id || null;
+      if (!productId) productId = rows.find(r => r.product_id)?.product_id;
+    }
+
+    if (!productId) return NextResponse.json({ error: 'productId required' }, { status: 400 });
     const product: any = db.prepare('SELECT title FROM products WHERE id = ?').get(productId);
     if (!product) return NextResponse.json({ error: 'Product not found' }, { status: 404 });
 
-    const adCount = Math.min(Math.max(Number(config.adCount) || 10, 1), 20);
+    const adCount = batchMode ? prefill.creatives.length : Math.min(Math.max(Number(config.adCount) || 10, 1), 20);
     const goLive = config.launchStatus === 'ACTIVE';
+    const useExistingCampaign = !!config.existingCampaignId;
     // Everything on Facebook is created PAUSED regardless of config — the
     // launch gate + activate step are the ONLY way anything starts spending.
     const steps: Step[] = [
-      { key: 'audience', label: 'Generate audience (Fable 5)', status: 'pending' },
+      ...(batchMode && prefill.audienceId ? [] : [{ key: 'audience', label: 'Generate audience (Fable 5)', status: 'pending' as const }]),
       { key: 'copy', label: 'Write ad copy (Fable 5)', status: 'pending' },
-      ...Array.from({ length: adCount }, (_, i) => ({ key: `image_${i + 1}`, label: `Generate picture ad ${i + 1}/${adCount}`, status: 'pending' as const })),
-      { key: 'gate_review', label: 'REVIEW GATE — approve audience, copy & ads before anything touches Facebook', status: 'pending' },
-      { key: 'campaign', label: 'Create FB campaign (paused)', status: 'pending' },
+      ...(batchMode ? [] : Array.from({ length: adCount }, (_, i) => ({ key: `image_${i + 1}`, label: `Generate picture ad ${i + 1}/${adCount}`, status: 'pending' as const }))),
+      { key: 'gate_review', label: `REVIEW GATE — approve ${batchMode ? `the ${adCount} selected ads` : 'audience, copy & ads'} before anything touches Facebook`, status: 'pending' },
+      { key: 'campaign', label: useExistingCampaign ? 'Attach to existing FB campaign' : 'Create FB campaign (paused)', status: 'pending' },
       { key: 'adset', label: `Create ad set (paused, $${((Number(config.dailyBudgetCents) || 1000) / 100).toFixed(2)}/day)`, status: 'pending' },
       ...Array.from({ length: adCount }, (_, i) => ({ key: `ad_${i + 1}`, label: `Upload + create ad ${i + 1}/${adCount} (paused)`, status: 'pending' as const })),
       ...(goLive ? [
@@ -126,9 +161,12 @@ export async function POST(req: NextRequest) {
     ];
 
     const id = crypto.randomUUID();
-    db.prepare(`INSERT INTO ad_workflows (id, store_id, product_id, name, steps_json, config_json) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(id, storeId, productId, `${product.title.slice(0, 60)} — ${adCount} ads`, JSON.stringify(steps), JSON.stringify({
+    db.prepare(`INSERT INTO ad_workflows (id, store_id, product_id, name, steps_json, config_json, result_json) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, storeId, productId, `${product.title.slice(0, 60)} — ${adCount} ads${batchMode ? ' (batch)' : ''}`, JSON.stringify(steps), JSON.stringify({
         adCount,
+        mode: batchMode ? 'batch' : 'generate',
+        creativeIds: batchMode ? creativeIds : undefined,
+        existingCampaignId: useExistingCampaign ? config.existingCampaignId : null,
         dailyBudgetCents: Math.max(Number(config.dailyBudgetCents) || 1000, 100),
         launchStatus: config.launchStatus === 'ACTIVE' ? 'ACTIVE' : 'PAUSED',
         profileId: config.profileId,
@@ -151,7 +189,7 @@ export async function POST(req: NextRequest) {
           // days to run; 0/null = no end (runs until manually stopped)
           durationDays: Math.min(Math.max(Number(config.schedule?.durationDays) || 0, 0), 90),
         },
-      }));
+      }), JSON.stringify(prefill));
 
     const r: any = db.prepare('SELECT * FROM ad_workflows WHERE id = ?').get(id);
     return NextResponse.json({ workflow: rowToWorkflow(r) });
@@ -291,6 +329,10 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
 
   if (step.key === 'campaign') {
     if (!profile?.access_token || !profile?.ad_account_id) throw new Error('FB profile missing token or ad account');
+    if (cfg.existingCampaignId) {
+      result.campaignId = cfg.existingCampaignId;
+      return { detail: `Using existing campaign ${cfg.existingCampaignId}`, result };
+    }
     const { createCampaign } = await import('@/lib/facebook');
     // Always PAUSED — the launch gate + activate step control going live
     const campaign = await createCampaign(profile.ad_account_id, profile.access_token, {

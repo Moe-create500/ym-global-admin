@@ -420,12 +420,23 @@ export default function StaticAdsPage() {
           )}
 
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between mb-3 gap-2">
               <p className={`${labelCls} mb-0`}>Generated ads ({totalAds} in {batches.length} batches)</p>
-              <button onClick={downloadZip} disabled={!selectedIds.size || zipping}
-                className="text-xs bg-slate-800 border border-slate-700 hover:border-blue-500 disabled:opacity-40 text-slate-300 rounded-lg px-3 py-1.5 transition-colors">
-                {zipping ? 'Zipping…' : `Download ZIP (${selectedIds.size})`}
-              </button>
+              <div className="flex gap-2">
+                <Link
+                  href={selectedIds.size ? `/dashboard/static-ads/launch?store=${storeId}&creatives=${Array.from(selectedIds).slice(0, 50).join(',')}` : '#'}
+                  className={`text-xs rounded-lg px-3 py-1.5 transition-colors font-medium ${
+                    selectedIds.size
+                      ? 'bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 text-white'
+                      : 'bg-slate-800 border border-slate-700 text-slate-600 pointer-events-none'
+                  }`}>
+                  🚀 Launch selected ({selectedIds.size})
+                </Link>
+                <button onClick={downloadZip} disabled={!selectedIds.size || zipping}
+                  className="text-xs bg-slate-800 border border-slate-700 hover:border-blue-500 disabled:opacity-40 text-slate-300 rounded-lg px-3 py-1.5 transition-colors">
+                  {zipping ? 'Zipping…' : `Download ZIP (${selectedIds.size})`}
+                </button>
+              </div>
             </div>
             {batches.length === 0 ? (
               <p className="text-sm text-slate-500 py-8 text-center">No picture ads generated for this store yet.</p>

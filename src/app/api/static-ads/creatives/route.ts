@@ -8,9 +8,25 @@ export const dynamic = 'force-dynamic';
 // same product + audience generated on the same day belong to one batch.
 export async function GET(req: NextRequest) {
   const storeId = req.nextUrl.searchParams.get('storeId');
-  if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
-
+  const ids = req.nextUrl.searchParams.get('ids');
   const db = getDb();
+
+  // Flat lookup by ids — used by the batch launch flow
+  if (ids) {
+    const list = ids.split(',').map(s => s.trim()).filter(Boolean).slice(0, 50);
+    const creatives = list.map(id => {
+      const r: any = db.prepare(
+        'SELECT id, title, file_url, store_id, product_id, template_data FROM creatives WHERE id = ?'
+      ).get(id);
+      if (!r) return null;
+      let templateName = '';
+      try { templateName = JSON.parse(r.template_data || '{}').templateName || ''; } catch {}
+      return { id: r.id, title: r.title, imageUrl: r.file_url, storeId: r.store_id, productId: r.product_id, templateName };
+    }).filter(Boolean);
+    return NextResponse.json({ creatives });
+  }
+
+  if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
   const rows: any[] = db.prepare(`
     SELECT c.id, c.title, c.file_url, c.created_at, c.template_data,
            c.product_id, c.audience_id,
