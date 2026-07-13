@@ -134,6 +134,7 @@ export default function LaunchFlowPage() {
   interface Schedule { id: string; name: string; storeName?: string; cadence: string; timeOfDay: string; dayOfWeek: number | null; autoLive: boolean; isActive: boolean; lastRunAt: string | null; lastResult: string | null; nextRunAt: string; config?: any }
   const [editSched, setEditSched] = useState<Schedule | null>(null);
   const [editForm, setEditForm] = useState<any>({});
+  const [editPages, setEditPages] = useState<FBPage[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [schedModal, setSchedModal] = useState(false);
   const [schedName, setSchedName] = useState('');
@@ -442,7 +443,14 @@ export default function LaunchFlowPage() {
       countries: (s.config?.targeting?.countries || ['US']).join(', '),
       customInstructions: s.config?.customInstructions || '',
       landingUrl: s.config?.landingUrl || '',
+      pageId: s.config?.pageId || '',
     });
+    // Pages available on this schedule's ad account
+    setEditPages([]);
+    if (s.config?.profileId) {
+      fetch(`/api/static-ads/workflow?profileId=${s.config.profileId}&pages=1`).then(r => r.json())
+        .then(d => setEditPages(d.pages || [])).catch(() => {});
+    }
   }
 
   async function saveScheduleEdit() {
@@ -460,6 +468,7 @@ export default function LaunchFlowPage() {
           targeting: { countries: String(f.countries).split(',').map((c: string) => c.trim()).filter(Boolean) },
           customInstructions: f.customInstructions?.trim() || null,
           landingUrl: f.landingUrl,
+          ...(f.pageId ? { pageId: f.pageId } : {}),
         },
       }),
     });
@@ -1063,6 +1072,13 @@ export default function LaunchFlowPage() {
                 <textarea rows={2} value={editForm.customInstructions} onChange={e => setEditForm({ ...editForm, customInstructions: e.target.value })} className={inputCls} /></div>
               <div><label className={labelCls}>Landing page URL</label>
                 <input value={editForm.landingUrl} onChange={e => setEditForm({ ...editForm, landingUrl: e.target.value })} className={inputCls} /></div>
+              <div><label className={labelCls}>Facebook Page</label>
+                <select value={editForm.pageId} onChange={e => setEditForm({ ...editForm, pageId: e.target.value })} className={inputCls}>
+                  {!editPages.some(p => p.id === editForm.pageId) && (
+                    <option value={editForm.pageId}>{editPages.length ? '— pick page —' : 'loading pages…'}</option>
+                  )}
+                  {editPages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select></div>
               <button onClick={() => setEditForm({ ...editForm, autoLive: !editForm.autoLive })}
                 className={`w-full rounded-lg px-3 py-2 text-sm font-medium border ${editForm.autoLive ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
                 {editForm.autoLive ? '⚡ Goes LIVE automatically each run' : 'Each run ends PAUSED (manual go-live)'}

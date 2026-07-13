@@ -622,21 +622,31 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
       throw new Error(`No ad could be activated — first error: ${adFailures[0]}`);
     }
     let adsetErr = await activate(result.adSetId);
-    // Known CBO trap: combined ad-set minimum spends exceed the campaign
-    // budget — drop OUR min spend target and retry rather than dying
+    // Known CBO trap: FB validates combined ad-set minimum spends STRICTLY on
+    // the paused→active transition — drop OUR min spend to get live, then
+    // re-apply it afterwards (FB accepts the same value on an ACTIVE ad set).
+    let minSpendNote = '';
     if (adsetErr && /minimum spend/i.test(adsetErr)) {
       await fetch(`https://graph.facebook.com/v24.0/${result.adSetId}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ daily_min_spend_target: 0, access_token: token }),
       }).catch(() => {});
       adsetErr = await activate(result.adSetId);
-      if (!adsetErr) result.minSpendDropped = true;
+      if (!adsetErr && Number(cfg.minSpendTargetCents) > 0) {
+        const re = await (await fetch(`https://graph.facebook.com/v24.0/${result.adSetId}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ daily_min_spend_target: cfg.minSpendTargetCents, access_token: token }),
+        })).json().catch(() => ({ error: { message: 'reapply failed' } }));
+        minSpendNote = re?.error
+          ? ` (min spend could NOT be re-applied: ${(re.error.error_user_msg || re.error.message || '').slice(0, 100)})`
+          : ` (min $${(cfg.minSpendTargetCents / 100).toFixed(2)}/day re-applied after activation)`;
+      }
     }
     if (adsetErr) throw new Error(`Ad set activation failed: ${adsetErr}`);
     const campErr = await activate(result.campaignId);
     if (campErr) throw new Error(`Campaign activation failed: ${campErr}`);
     const liveCount = adIds.length - adFailures.length;
-    return { detail: `LIVE — ${liveCount}/${adIds.length} ads${adFailures.length ? ` (${adFailures.length} failed: ${adFailures[0].slice(0, 120)})` : ''}`, result };
+    return { detail: `LIVE — ${liveCount}/${adIds.length} ads${minSpendNote}${adFailures.length ? ` (${adFailures.length} failed: ${adFailures[0].slice(0, 120)})` : ''}`, result };
   }
 
   if (step.key === 'np_product') {
