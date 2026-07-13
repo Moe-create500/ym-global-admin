@@ -70,68 +70,6 @@ function FlowNode({ data, selected }: NodeProps<Node<FlowNodeData>>) {
 
 const nodeTypes = { flowNode: FlowNode };
 
-// ─── New Product Launch (scaffold tab): planned end-to-end flow for launching
-// a brand-new product — Shopify product + lander creation before the ad stages ───
-const NEW_PRODUCT_DEFS = [
-  { id: 'np_brief', icon: '🧬', title: 'Product Brief', subtitle: 'name, angle, price, photos' },
-  { id: 'np_shopify', icon: '🛍️', title: 'Create Product', subtitle: 'on Shopify via central creds' },
-  { id: 'np_lander', icon: '📄', title: 'Landing Page', subtitle: 'template-clone product lander' },
-  { id: 'np_audience', icon: '🧠', title: 'Audience', subtitle: 'Fable 5 builds the buyer' },
-  { id: 'np_content', icon: '✍️', title: 'Content & Copy', subtitle: 'page + ad copy' },
-  { id: 'np_images', icon: '🖼️', title: 'Picture Ads', subtitle: 'from proven templates' },
-  { id: 'np_gate', icon: '🛑', title: 'Review Gate', subtitle: 'approve everything' },
-  { id: 'np_campaign', icon: '📣', title: 'Campaign + Ad Set', subtitle: 'budget, schedule, expiry' },
-  { id: 'np_launch', icon: '🚦', title: 'Launch Gate', subtitle: 'final approval' },
-  { id: 'np_live', icon: '⚡', title: 'Go Live', subtitle: 'bounded spend' },
-];
-
-function NewProductScaffold() {
-  const PER_ROW = 5;
-  const nodes: Node<FlowNodeData>[] = NEW_PRODUCT_DEFS.map((d, i) => {
-    const row = Math.floor(i / PER_ROW);
-    const col = i % PER_ROW;
-    const rowEnd = col === PER_ROW - 1 && i < NEW_PRODUCT_DEFS.length - 1;
-    return {
-      id: d.id, type: 'flowNode',
-      position: { x: 40 + col * 230, y: 40 + row * 230 },
-      data: {
-        icon: d.icon, title: d.title, subtitle: d.subtitle, status: 'idle' as NodeStatus,
-        tpos: col === 0 && row > 0 ? Position.Top : Position.Left,
-        spos: rowEnd ? Position.Bottom : Position.Right,
-      },
-    };
-  });
-  const edges: Edge[] = NEW_PRODUCT_DEFS.slice(0, -1).map((d, i) => ({
-    id: `${d.id}-${NEW_PRODUCT_DEFS[i + 1].id}`, source: d.id, target: NEW_PRODUCT_DEFS[i + 1].id,
-    type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed, color: '#475569', width: 16, height: 16 },
-    style: { stroke: '#475569', strokeWidth: 2 },
-  }));
-  return (
-    <div className="flex-1 flex min-h-0">
-      <div className="flex-1 bg-slate-950">
-        <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView
-          proOptions={{ hideAttribution: true }} nodesDraggable={false} nodesConnectable={false} zoomOnDoubleClick={false}>
-          <Background color="#1e293b" gap={24} />
-          <Controls showInteractive={false} />
-        </ReactFlow>
-      </div>
-      <div className="w-80 border-l border-slate-800 bg-slate-900 p-4 overflow-y-auto">
-        <p className="text-sm font-semibold text-white mb-2">🧪 New Product Launch</p>
-        <div className="bg-amber-900/20 border border-amber-800/40 rounded-lg px-3 py-2 mb-3">
-          <p className="text-xs text-amber-300">Scaffold — this workflow is being built. The Ad Launch tab is fully operational today.</p>
-        </div>
-        <p className="text-xs text-slate-400 leading-relaxed">
-          Goes one level upstream of Ad Launch: start from a product <span className="text-slate-200">brief</span> instead of an
-          existing product. The workflow will create the product on Shopify through the centralized credentials, clone a proven
-          landing-page template with Fable 5-written content, then flow into the same audience → picture ads → gated campaign
-          pipeline — one run from idea to bounded live spend.
-        </p>
-        <p className="text-xs text-slate-500 mt-3">Same guarantees as Ad Launch: everything created paused, two approval gates, resumable steps, FB-enforced expiry.</p>
-      </div>
-    </div>
-  );
-}
-
 export default function LaunchFlowPage() {
   const [stores, setStores] = useState<Store[]>([]);
   const [storeId, setStoreId] = useState('');
@@ -172,6 +110,18 @@ export default function LaunchFlowPage() {
   const [npPrice, setNpPrice] = useState('29.99');
   const [npBrief, setNpBrief] = useState('');
   const [npRefUrls, setNpRefUrls] = useState('');
+  const [npRefUploads, setNpRefUploads] = useState<string[]>([]);
+  const [npUploading, setNpUploading] = useState(false);
+
+  async function uploadRefPhoto(file: File) {
+    setNpUploading(true);
+    const fd = new FormData(); fd.append('file', file);
+    const res = await fetch('/api/products/upload', { method: 'POST', body: fd });
+    const d = await res.json();
+    if (res.ok && d.url) setNpRefUploads(prev => [...prev, d.url].slice(0, 3));
+    else setError(d.error || 'upload failed');
+    setNpUploading(false);
+  }
 
   // Video ads (Kalodata pool)
   const [vidStats, setVidStats] = useState<{ pending: number; used: number; failed: number } | null>(null);
@@ -424,7 +374,10 @@ export default function LaunchFlowPage() {
 
   async function startNewProduct() {
     setError('');
-    const refUrls = npRefUrls.split('\n').map(s => s.trim()).filter(s => s.startsWith('http'));
+    const refUrls = [
+      ...npRefUploads,
+      ...npRefUrls.split('\n').map(s => s.trim()).filter(s => s.startsWith('http')),
+    ].slice(0, 3);
     const res = await fetch('/api/static-ads/workflow', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1181,8 +1134,27 @@ export default function LaunchFlowPage() {
               </div>
               <div><label className={labelCls}>Product brief — what it is, who it&apos;s for, key benefits</label>
                 <textarea rows={3} value={npBrief} onChange={e => setNpBrief(e.target.value)} className={inputCls} /></div>
-              <div><label className={labelCls}>Reference photo URLs (one per line, up to 3)</label>
-                <textarea rows={2} value={npRefUrls} onChange={e => setNpRefUrls(e.target.value)} placeholder="https://…" className={inputCls} /></div>
+              <div>
+                <label className={labelCls}>Product reference photos (up to 3)</label>
+                <input type="file" accept="image/*" disabled={npUploading || npRefUploads.length >= 3}
+                  onChange={e => { const f = e.target.files?.[0]; if (f) void uploadRefPhoto(f); e.target.value = ''; }}
+                  className="w-full text-xs text-slate-400 file:bg-slate-800 file:border-0 file:text-slate-200 file:rounded-lg file:px-3 file:py-2 file:mr-3" />
+                {npUploading && <p className="text-xs text-blue-400 mt-1">Uploading…</p>}
+                {npRefUploads.length > 0 && (
+                  <div className="flex gap-2 mt-2">
+                    {npRefUploads.map(u => (
+                      <div key={u} className="relative">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={u} alt="ref" className="w-16 h-16 rounded-lg object-cover border border-slate-700" />
+                        <button onClick={() => setNpRefUploads(prev => prev.filter(x => x !== u))}
+                          className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-600 text-white rounded-full text-[9px] leading-4">✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <input value={npRefUrls} onChange={e => setNpRefUrls(e.target.value)}
+                  placeholder="…or paste an image URL" className={`${inputCls} mt-2`} />
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div><label className={labelCls}>FB Ad Account</label>
                   <select value={profileId} onChange={e => setProfileId(e.target.value)} className={inputCls}>
@@ -1207,7 +1179,7 @@ export default function LaunchFlowPage() {
                   </button></div>
               </div>
               <button onClick={startNewProduct}
-                disabled={running || !storeId || !npBrand.trim() || !npName.trim() || !(parseFloat(npPrice) > 0) || !npRefUrls.includes('http') || !profileId || !pageId}
+                disabled={running || !storeId || !npBrand.trim() || !npName.trim() || !(parseFloat(npPrice) > 0) || (npRefUploads.length === 0 && !npRefUrls.includes('http')) || !profileId || !pageId}
                 className="w-full bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 disabled:opacity-40 text-white font-semibold rounded-lg py-3">
                 {running ? 'Running…' : '🧪 Launch new product end-to-end'}
               </button>
