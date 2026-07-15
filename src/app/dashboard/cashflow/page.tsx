@@ -60,12 +60,18 @@ export default function CashflowPage() {
   useEffect(() => { load(storeId); }, [storeId]);
 
   const saveConnection = async () => {
-    if (!connForm.storeId || !connForm.domain || !connForm.clientId || !connForm.secret) { setConnMsg('All four fields required'); return; }
+    const isPermanent = connForm.secret.trim().startsWith('shpat_');
+    if (!connForm.storeId || !connForm.domain || !connForm.secret || (!isPermanent && !connForm.clientId)) {
+      setConnMsg(isPermanent ? 'Store, domain and token required' : 'All four fields required (or paste a shpat_ permanent token as the secret)');
+      return;
+    }
     setConnBusy('saving'); setConnMsg('');
     try {
       const r = await fetch('/api/shopify/credentials', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeId: connForm.storeId, shopDomain: connForm.domain, clientId: connForm.clientId, clientSecret: connForm.secret }),
+        body: JSON.stringify(isPermanent
+          ? { storeId: connForm.storeId, shopDomain: connForm.domain, permanentToken: connForm.secret.trim() }
+          : { storeId: connForm.storeId, shopDomain: connForm.domain, clientId: connForm.clientId, clientSecret: connForm.secret }),
       });
       const d = await r.json();
       if (d.error) setConnMsg(`✗ ${d.error}`);
@@ -121,6 +127,9 @@ export default function CashflowPage() {
 
   const t = projection?.totals;
   const stores = projection?.stores || [];
+  // Unfiltered Shopify store list — the connections panel must show stores
+  // with no data yet (that's what connecting is FOR); falls back for old API
+  const allStores: { store_id: string; store_name: string }[] = projection?.all_stores || stores;
 
   return (
     <div>
@@ -143,7 +152,7 @@ export default function CashflowPage() {
           <select value={storeId} onChange={e => setStoreId(e.target.value)}
             className="bg-slate-900 border border-slate-700 text-white text-xs rounded-lg px-3 py-2">
             <option value="">All stores</option>
-            {stores.map((s: any) => <option key={s.store_id} value={s.store_id}>{s.store_name}</option>)}
+            {allStores.map((s: any) => <option key={s.store_id} value={s.store_id}>{s.store_name}</option>)}
           </select>
         </div>
       </div>
@@ -156,7 +165,7 @@ export default function CashflowPage() {
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
-              {stores.map((s: any) => {
+              {allStores.map((s: any) => {
                 const c = connByStore.get(s.store_id);
                 return (
                   <div key={s.store_id} className="flex items-center justify-between bg-slate-800/50 rounded-lg px-3 py-2 text-xs">
@@ -189,17 +198,21 @@ export default function CashflowPage() {
               <select value={connForm.storeId} onChange={e => setConnForm(f => ({ ...f, storeId: e.target.value }))}
                 className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2">
                 <option value="">Select store…</option>
-                {stores.map((s: any) => <option key={s.store_id} value={s.store_id}>{s.store_name}</option>)}
+                {allStores.map((s: any) => <option key={s.store_id} value={s.store_id}>{s.store_name}</option>)}
               </select>
               <input value={connForm.domain} onChange={e => setConnForm(f => ({ ...f, domain: e.target.value }))}
                 placeholder="Store domain — e.g. pc0bqy-zv.myshopify.com"
                 className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2 font-mono" />
               <input value={connForm.clientId} onChange={e => setConnForm(f => ({ ...f, clientId: e.target.value }))}
-                placeholder="Client ID"
-                className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2 font-mono" />
+                placeholder={connForm.secret.trim().startsWith('shpat_') ? 'Client ID — not needed for shpat_ tokens' : 'Client ID'}
+                disabled={connForm.secret.trim().startsWith('shpat_')}
+                className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2 font-mono disabled:opacity-40" />
               <input value={connForm.secret} onChange={e => setConnForm(f => ({ ...f, secret: e.target.value }))}
-                placeholder="Secret (shpss_…)" type="password"
+                placeholder="Secret (shpss_…) or permanent token (shpat_…)" type="password"
                 className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2 font-mono" />
+              {connForm.secret.trim().startsWith('shpat_') && (
+                <p className="text-[10px] text-emerald-400">Permanent token detected — saved as-is, never re-minted. Don&apos;t re-save this store with shpss_ creds later unless the app is installed.</p>
+              )}
               <button onClick={saveConnection} disabled={connBusy === 'saving'}
                 className="w-full px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg">
                 {connBusy === 'saving' ? 'Connecting + verifying…' : 'Save & verify connection'}

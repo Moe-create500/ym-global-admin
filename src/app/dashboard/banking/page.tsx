@@ -8,6 +8,7 @@ import StoreSelector from '@/components/StoreSelector';
 interface BankAccount {
   id: string;
   store_id: string;
+  teller_enrollment_id: string | null;
   teller_account_id: string;
   institution_name: string;
   account_name: string;
@@ -65,13 +66,14 @@ function timeAgo(dateStr: string | null): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-const TELLER_APP_ID = process.env.NEXT_PUBLIC_TELLER_APP_ID || '';
+
 
 function BankingContent() {
   const searchParams = useSearchParams();
   const storeId = searchParams.get('storeId') || '';
 
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
+  const [unassigned, setUnassigned] = useState<BankAccount[]>([]);
   const [summary, setSummary] = useState({ total_available_cents: 0, total_ledger_cents: 0, account_count: 0 });
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -125,6 +127,7 @@ function BankingContent() {
     const res = await fetch(`/api/banking${params}`);
     const data = await res.json();
     setAccounts(data.accounts || []);
+    setUnassigned(data.unassigned || []);
     setSummary(data.summary || { total_available_cents: 0, total_ledger_cents: 0, account_count: 0 });
     setLoading(false);
   }
@@ -233,46 +236,44 @@ function BankingContent() {
     loadAccounts();
   }
 
-  const handleTellerConnect = useCallback(() => {
-    if (!storeId) { alert('Select a store first'); return; }
+  // Plaid Link (Teller went invite-only + its BoA feeds died 2026-07).
+  // Fresh connects re-attach to existing rows by institution + last_four, so
+  // history survives. Reconnect on a plaid row opens Plaid's UPDATE mode.
+  const handlePlaidConnect = useCallback(async (reconnect?: { accountId?: string; storeId?: string }) => {
     const w = window as any;
-    if (!w.TellerConnect) { alert('Teller Connect not loaded yet'); return; }
-
+    if (!w.Plaid) { alert('Plaid not loaded yet — give the page a second and try again'); return; }
+    const targetStore = reconnect?.storeId || storeId;
     setConnecting(true);
-    const teller = w.TellerConnect.setup({
-      applicationId: TELLER_APP_ID,
-      environment: process.env.NEXT_PUBLIC_TELLER_ENV || 'sandbox',
-      selectAccount: 'multiple',
-      onSuccess: async (enrollment: any) => {
-        console.log('[teller-connect] enrollment:', JSON.stringify(enrollment));
-        const token = enrollment.accessToken || enrollment.access_token;
-        const eid = enrollment.enrollment?.id || enrollment.id;
-        if (!token) { alert('No access token received from Teller'); setConnecting(false); return; }
-        try {
-          const res = await fetch('/api/banking', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              storeId,
-              accessToken: token,
-              enrollmentId: eid,
-            }),
-          });
-          const data = await res.json();
-          console.log('[teller-connect] API response:', JSON.stringify(data));
-          if (data.error) { alert('Error: ' + data.error); }
-          loadAccounts();
-          // Auto-sync after connecting
-          await fetch('/api/banking/sync', { method: 'POST' });
-          loadAccounts();
-        } catch (err: any) { alert('Failed: ' + err.message); }
-        setConnecting(false);
-      },
-      onExit: () => { setConnecting(false); },
-      onFailure: () => { setConnecting(false); },
-    });
-    teller.open();
-  }, [storeId]);
+    try {
+      const lt = await fetch('/api/plaid/link-token', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: reconnect?.accountId }),
+      }).then(r => r.json());
+      if (!lt.link_token) { alert(lt.error || 'Could not create Plaid link token'); setConnecting(false); return; }
+      const handler = w.Plaid.create({
+        token: lt.link_token,
+        onSuccess: async (public_token: string) => {
+          try {
+            if (lt.mode !== 'update' && public_token) {
+              const res = await fetch('/api/plaid/exchange', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ publicToken: public_token, storeId: targetStore || undefined }),
+              });
+              const data = await res.json();
+              if (data.error) alert('Error: ' + data.error);
+            } else {
+              // Update mode: token unchanged — just pull fresh data
+              await fetch('/api/banking/sync', { method: 'POST' });
+            }
+            loadAccounts();
+          } catch (err: any) { alert('Failed: ' + err.message); }
+          setConnecting(false);
+        },
+        onExit: () => { setConnecting(false); },
+      });
+      handler.open();
+    } catch (e: any) { alert(String(e?.message || e)); setConnecting(false); }
+  }, [storeId, loadAccounts]);
 
   // Smart transaction filter
   function filterTransactions(txns: Transaction[], query: string): Transaction[] {
@@ -350,7 +351,7 @@ function BankingContent() {
   return (
     <div>
       <Script
-        src="https://cdn.teller.io/connect/connect.js"
+        src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"
         onLoad={() => setTellerReady(true)}
       />
 
@@ -381,7 +382,7 @@ function BankingContent() {
             Sync
           </button>
           <button
-            onClick={handleTellerConnect}
+            onClick={() => handlePlaidConnect()}
             disabled={!tellerReady || !storeId || connecting}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
           >
@@ -435,10 +436,42 @@ function BankingContent() {
             </div>
           </div>
 
+          {/* Unassigned accounts — parked until their store is known (auto-
+              matcher assigns them as payout history arrives, or pick manually) */}
+          {unassigned.length > 0 && (
+            <div className="mb-6 bg-slate-900 border border-amber-800/40 rounded-xl p-4">
+              <p className="text-sm font-semibold text-amber-400 mb-1">🗂 {unassigned.length} accounts waiting for store assignment</p>
+              <p className="text-[11px] text-slate-500 mb-3">These auto-assign as their payout history syncs in (matched against each store&apos;s Shopify payouts). Assign manually to place one now — they count toward no store until assigned.</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {unassigned.map(a => (
+                  <div key={a.id} className="flex items-center justify-between bg-slate-800/50 rounded-lg px-3 py-2">
+                    <div>
+                      <p className="text-xs text-white">{a.institution_name} ****{a.last_four}</p>
+                      <p className="text-[10px] text-slate-500">{cents(a.balance_available_cents || 0)} available</p>
+                    </div>
+                    <select defaultValue=""
+                      onChange={async e => {
+                        if (!e.target.value) return;
+                        await fetch('/api/banking', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: a.id, storeId: e.target.value }) });
+                        loadAccounts();
+                      }}
+                      className="text-[11px] bg-slate-800 border border-slate-700 text-slate-300 rounded px-1.5 py-1">
+                      <option value="">assign…</option>
+                      {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Account Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
             {accounts.map(account => {
-              const isAnchor = account.institution_name === 'Shopify Balance';
+              // Manual anchor = Shopify Balance WITHOUT a live feed. Plaid can
+              // connect Shopify Balance directly now — those rows sync like
+              // any bank and must not be treated as hand-updated anchors.
+              const isAnchor = account.institution_name === 'Shopify Balance' && (account as any).provider !== 'plaid';
               // Teller returns 200 + last-known data when a bank connection dies —
               // the newest transaction date is the real freshness signal
               const dataAgeDays = account.bank_data_as_of
@@ -474,9 +507,15 @@ function BankingContent() {
                   </div>
                 </div>
                 {frozen && (
-                  <p className="mt-2 text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 rounded px-2 py-1">
-                    ⚠ Bank data frozen at {account.bank_data_as_of} — Teller connection stale, reconnect this bank via Connect Bank
-                  </p>
+                  <div className="mt-2 text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 rounded px-2 py-1 flex items-center justify-between gap-2">
+                    <span>⚠ Bank data frozen at {account.bank_data_as_of} — Teller connection stale</span>
+                    <button
+                      onClick={e => { e.stopPropagation(); handlePlaidConnect({ accountId: account.id, storeId: account.store_id }); }}
+                      disabled={connecting}
+                      className="flex-shrink-0 px-2 py-0.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-semibold rounded text-[10px]">
+                      ↻ Reconnect
+                    </button>
+                  </div>
                 )}
                 <div className="flex items-center justify-between mt-2">
                   <p className="text-[10px] text-slate-600">
@@ -488,6 +527,20 @@ function BankingContent() {
                     <button onClick={e => { e.stopPropagation(); setAnchorEditId(account.id); setAnchorValue(''); setAnchorMsg(''); }}
                       className="text-[10px] text-blue-400 hover:text-blue-300">update balance</button>
                   )}
+                  {/* Reassign the account to its correct store */}
+                  <select value={account.store_id || ''}
+                    onClick={e => e.stopPropagation()}
+                    onChange={async e => {
+                      e.stopPropagation();
+                      const sid = e.target.value;
+                      if (!sid) return;
+                      await fetch('/api/banking', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: account.id, storeId: sid }) });
+                      loadAccounts();
+                    }}
+                    className="text-[10px] bg-slate-800 border border-slate-700 text-slate-400 rounded px-1 py-0.5 max-w-[90px]">
+                    <option value="">store…</option>
+                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
                 </div>
                 {isAnchor && anchorEditId === account.id && (
                   <div className="mt-2 flex gap-2" onClick={e => e.stopPropagation()}>

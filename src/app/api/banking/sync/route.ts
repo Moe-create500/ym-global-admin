@@ -12,12 +12,8 @@ export async function POST(req: NextRequest) {
   const db = getDb();
 
   const accounts: any[] = accountId
-    ? [db.prepare("SELECT * FROM bank_accounts WHERE id = ? AND status = 'active'").get(accountId)].filter(Boolean)
-    : db.prepare("SELECT * FROM bank_accounts WHERE status = 'active'").all();
-
-  if (accounts.length === 0) {
-    return NextResponse.json({ error: 'No active accounts' }, { status: 404 });
-  }
+    ? [db.prepare("SELECT * FROM bank_accounts WHERE id = ? AND status = 'active' AND COALESCE(provider,'teller') = 'teller'").get(accountId)].filter(Boolean)
+    : db.prepare("SELECT * FROM bank_accounts WHERE status = 'active' AND COALESCE(provider,'teller') = 'teller'").all();
 
   let totalTxns = 0;
   const errors: string[] = [];
@@ -61,10 +57,14 @@ export async function POST(req: NextRequest) {
           : await getAccountTransactions(account.access_token, account.teller_account_id, 200);
 
         for (const txn of txns) {
-          const existing = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(txn.id);
+          const amountCents = Math.round(parseFloat(txn.amount || '0') * 100);
+          // Dedup by teller id, THEN by content — ids are application-scoped,
+          // so a new Teller app must not re-import history
+          const existing = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(txn.id)
+            || db.prepare('SELECT id FROM bank_transactions WHERE bank_account_id = ? AND date = ? AND amount_cents = ? AND description = ?')
+              .get(account.id, txn.date, amountCents, txn.description);
           if (existing) continue;
 
-          const amountCents = Math.round(parseFloat(txn.amount || '0') * 100);
           const runningBalance = txn.running_balance ? Math.round(parseFloat(txn.running_balance) * 100) : null;
 
           db.prepare(`
@@ -86,9 +86,21 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Plaid items (new connections live here)
+  let plaidSynced = 0;
+  try {
+    const { syncPlaidItems } = await import('@/lib/plaid');
+    const plaid = await syncPlaidItems(db);
+    plaidSynced = plaid.accounts_synced;
+    totalTxns += plaid.transactions_imported;
+    errors.push(...plaid.errors);
+  } catch (e: any) {
+    errors.push(`plaid sync: ${String(e?.message || e).slice(0, 150)}`);
+  }
+
   return NextResponse.json({
     success: true,
-    accounts_synced: accounts.length,
+    accounts_synced: accounts.length + plaidSynced,
     transactions_imported: totalTxns,
     errors: errors.length > 0 ? errors : undefined,
   });

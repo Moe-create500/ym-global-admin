@@ -75,6 +75,15 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
   ensureWorkflowTables(db);
   let productId = productIdIn;
   const newProduct = config?.newProduct && typeof config.newProduct === 'object' ? config.newProduct : null;
+  // New products launch with Kalodata video ads: 9 on the first campaign
+  // (then the auto-created daily schedule tops up 5/day in fresh ad sets).
+  // First campaign defaults: top-4 countries, $100/day CBO.
+  if (newProduct && config.videoCount == null) config.videoCount = 9;
+  if (newProduct && config.adCount == null) config.adCount = 0;
+  if (newProduct && !(Array.isArray(config.targeting?.countries) && config.targeting.countries.length)) {
+    config.targeting = { ...(config.targeting || {}), countries: ['US', 'GB', 'AU', 'CA'] };
+  }
+  if (newProduct && !Number(config.dailyBudgetCents)) config.dailyBudgetCents = 10000;
   const videoCount = Math.min(Math.max(Number(config?.videoCount) || 0, 0), 20);
   if (!storeId || !config?.profileId || !config?.pageId) {
     throw new Error('storeId, config.profileId, config.pageId required');
@@ -117,12 +126,15 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
     productTitle = product.title;
   }
 
-  // Videos come from the Kalodata pool — reserve the best pending ones now
+  // Videos come from the Kalodata pool — reserve the best pending ones now.
+  // New-product runs reserve by their upload batch token (the product row
+  // doesn't exist yet); np_product rebinds those rows to the real product id.
   const wfId = crypto.randomUUID();
   let reservedVideos: any[] = [];
   if (videoCount > 0) {
-    reservedVideos = reserveVideos(db, storeId, videoCount, wfId);
-    if (reservedVideos.length === 0) throw new Error('No pending videos in the pool — import a Kalodata file first');
+    const reserveKey = config.videoBatchId || (newProduct ? null : productId) || null;
+    reservedVideos = reserveVideos(db, storeId, videoCount, wfId, reserveKey);
+    if (reservedVideos.length === 0) throw new Error('No pending videos in the pool for this product — import a Kalodata file or paste TikTok links first');
     prefill.videos = reservedVideos.map((v: any) => ({ id: v.id, url: v.tiktok_url, caption: (v.caption || '').slice(0, 120), revenue: v.revenue }));
   }
   const vidN = reservedVideos.length;
@@ -133,15 +145,18 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
   const goLive = config.launchStatus === 'ACTIVE';
   const useExistingCampaign = !!config.existingCampaignId;
   // Everything on Facebook is created PAUSED regardless of config — the
-  // launch gate + activate step are the ONLY way anything starts spending.
+  // activate step is the ONLY way anything starts spending.
   const steps: Step[] = [
     ...(newProduct ? [
       ...Array.from({ length: 7 }, (_, i) => ({ key: `np_image_${i + 1}`, label: `Listing image ${i + 1}/7 (Amazon-style)`, status: 'pending' as const })),
       { key: 'np_product', label: `Create "${productTitle}" on Shopify (7 images, active)`, status: 'pending' as const },
-      { key: 'np_lander', label: 'Build the product lander (Fable 5, Shrine-style)', status: 'pending' as const },
+      { key: 'pixel', label: 'Find or create FB pixel + verify with a test event', status: 'pending' as const },
+      { key: 'np_lander', label: 'Build the product lander (Fable 5, Shrine-style, pixel embedded)', status: 'pending' as const },
     ] : []),
-    ...(batchMode && prefill.audienceId ? [] : [{ key: 'audience', label: 'Generate audience (Fable 5)', status: 'pending' as const }]),
-    { key: 'copy', label: 'Write ad copy (Fable 5)', status: 'pending' },
+    // New products skip audience + ad copy: targeting is broad anyway, the
+    // kalo videos are the creative, and the lander step supplies the ad copy
+    ...(newProduct || (batchMode && prefill.audienceId) ? [] : [{ key: 'audience', label: 'Generate audience (Fable 5)', status: 'pending' as const }]),
+    ...(newProduct ? [] : [{ key: 'copy', label: 'Write ad copy (Fable 5)', status: 'pending' as const }]),
     ...(batchMode ? [] : Array.from({ length: adCount }, (_, i) => ({ key: `image_${i + 1}`, label: `Generate picture ad ${i + 1}/${adCount}`, status: 'pending' as const }))),
     ...Array.from({ length: vidN }, (_, i) => ({ key: `vdl_${i + 1}`, label: `Download TikTok video ${i + 1}/${vidN}`, status: 'pending' as const })),
     { key: 'campaign', label: useExistingCampaign ? 'Attach to existing FB campaign (its budget untouched)' : `Create CBO campaign (paused, $${((Number(config.dailyBudgetCents) || 1000) / 100).toFixed(2)}/day)`, status: 'pending' },
@@ -151,8 +166,10 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
     ...Array.from({ length: adCount }, (_, i) => ({ key: `ad_${i + 1}`, label: `Upload + create picture ad ${i + 1}/${adCount} (paused)`, status: 'pending' as const })),
     ...Array.from({ length: vidN }, (_, i) => ({ key: `vad_${i + 1}`, label: `Upload + create video ad ${i + 1}/${vidN} (paused)`, status: 'pending' as const })),
     ...(goLive ? [
-      { key: 'gate_launch', label: 'LAUNCH GATE — final approval before ads go LIVE and spend begins', status: 'pending' as const },
-      { key: 'activate', label: 'Activate campaign + ad set + ads', status: 'pending' as const },
+      { key: 'activate', label: 'Activate campaign + ad set + ads (goes LIVE automatically)', status: 'pending' as const },
+    ] : []),
+    ...(newProduct && goLive ? [
+      { key: 'schedule_daily', label: 'Create the daily top-up schedule — 5 kalo ads/day in a fresh ad set ($15 min spend), starting tomorrow', status: 'pending' as const },
     ] : []),
   ];
 
@@ -179,6 +196,7 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
         referenceImageUrls: newProduct.referenceImageUrls.slice(0, 3),
       } : null,
       mode: newProduct ? 'new_product' : batchMode ? 'batch' : 'generate',
+      scheduledRun: !!config.scheduledRun, // lets the 5-min tick resume us after a restart
       creativeIds: batchMode ? creativeIds : undefined,
       existingCampaignId: useExistingCampaign ? config.existingCampaignId : null,
       dailyBudgetCents: Math.max(Number(config.dailyBudgetCents) || 1000, 100),
@@ -187,6 +205,9 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
       profileId: config.profileId,
       pageId: config.pageId,
       landingUrl: config.landingUrl,
+      videoBatchId: config.videoBatchId || null,
+      reusePixel: !!config.reusePixel,
+      freshPixel: !!config.freshPixel,
       audienceId: config.audienceId || null,
       selectedImageUrl: config.selectedImageUrl || null,
       customInstructions: typeof config.customInstructions === 'string' && config.customInstructions.trim() ? config.customInstructions.trim().slice(0, 500) : null,
@@ -295,7 +316,23 @@ export async function advanceWorkflow(db: Database.Database, id: string, opts?: 
           result.videoFiles[idx] = filePath;
           mine.status = 'done'; mine.detail = `${v.id} (${v.caption?.slice(0, 40) || 'video'})`;
         } catch (e: any) {
-          mine.status = 'error'; mine.detail = String(e?.message || e).slice(0, 300);
+          // Dead/blocked TikTok — swap in the next-best pending video from the
+          // pool instead of killing the launch (up to 3 substitutes per slot)
+          let swapped = false;
+          const firstErr = String(e?.message || e).slice(0, 120);
+          for (let sub = 0; sub < 3 && !swapped; sub++) {
+            const repl: any = reserveVideos(db, wf.storeId, 1, wf.id, wf.productId || wf.config?.videoBatchId || null)[0];
+            if (!repl) break;
+            try {
+              const filePath = await downloadPoolVideo(db, { id: repl.id, store_id: wf.storeId, tiktok_url: repl.tiktok_url });
+              videos[idx] = { id: repl.id, url: repl.tiktok_url, caption: (repl.caption || '').slice(0, 120), revenue: repl.revenue };
+              result.videos = videos;
+              result.videoFiles[idx] = filePath;
+              mine.status = 'done'; mine.detail = `${repl.id} (substitute — ${v.id} unavailable)`;
+              swapped = true;
+            } catch { /* that one's dead too — next */ }
+          }
+          if (!swapped) { mine.status = 'error'; mine.detail = `${firstErr} (no working substitute in pool)`; }
         }
         save(db, wf.id, { steps, result });
       }
@@ -353,23 +390,12 @@ export async function advanceWorkflow(db: Database.Database, id: string, opts?: 
     return getWorkflow(db, id)!;
   }
 
-  // Review gates are retired — auto-complete them (covers older runs)
-  if (step.key === 'gate_review') {
-    step.status = 'done';
-    step.detail = 'auto-approved (review gate removed — flow runs hands-off)';
-    save(db, wf.id, { steps, status: 'running', error: null });
-    return getWorkflow(db, id)!;
-  }
-
-  // The launch gate holds — unless a scheduled run was configured to go live
+  // All gates are retired — runs are fully autonomous. Auto-complete any gate
+  // step so workflows created before the change flow straight through.
   if (step.key.startsWith('gate_')) {
-    if (opts?.autoApproveLaunchGate) {
-      step.status = 'done';
-      step.detail = `Auto-approved by schedule ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
-      save(db, wf.id, { steps, status: 'running', error: null });
-      return getWorkflow(db, id)!;
-    }
-    if (wf.status !== 'awaiting_approval') save(db, wf.id, { status: 'awaiting_approval', error: null });
+    step.status = 'done';
+    step.detail = `auto-approved (gates removed — fully autonomous) ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
+    save(db, wf.id, { steps, status: 'running', error: null });
     return getWorkflow(db, id)!;
   }
 
@@ -496,7 +522,8 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
 
     // When attaching to an existing campaign, the new ad set is BASED ON the
     // campaign's existing ad sets: same pixel, same optimization/billing.
-    let pixelId: string | undefined = profile.pixel_id || undefined;
+    // New-product runs prefer the pixel their own pixel step just resolved.
+    let pixelId: string | undefined = result.pixelId || profile.pixel_id || undefined;
     let optimizationGoal: string | undefined;
     let billingEvent: string | undefined;
     let countries: string[] = cfg.targeting?.countries?.length ? cfg.targeting.countries : ['US'];
@@ -507,7 +534,13 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
           `https://graph.facebook.com/v24.0/${cfg.existingCampaignId}/adsets?fields=name,status,promoted_object,optimization_goal,billing_event,targeting&limit=25&access_token=${profile.access_token}`
         );
         const d = await res.json();
-        const tpl = (d.data || []).find((a: any) => a.status !== 'DELETED' && a.status !== 'ARCHIVED');
+        // Prefer ACTIVE ad sets with a pixel — a paused/broken ad set must not
+        // become the template (it may carry a wrong pixel or stale settings)
+        const rows = (d.data || []).filter((a: any) => a.status !== 'DELETED' && a.status !== 'ARCHIVED');
+        const tpl = rows.find((a: any) => a.status === 'ACTIVE' && a.promoted_object?.pixel_id)
+          || rows.find((a: any) => a.status === 'ACTIVE')
+          || rows.find((a: any) => a.promoted_object?.pixel_id)
+          || rows[0];
         if (tpl) {
           if (tpl.promoted_object?.pixel_id) pixelId = tpl.promoted_object.pixel_id;
           if (tpl.optimization_goal) optimizationGoal = tpl.optimization_goal;
@@ -522,7 +555,7 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     const isCbo = !!result.campaignIsCbo;
     // Naming convention: 07/12/2026 - M.O - Auto Launch (LA date at execution)
     const laDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: '2-digit', day: '2-digit', year: 'numeric' });
-    const adset = await createAdSet(profile.ad_account_id, profile.access_token, {
+    const adsetOptions: any = {
       name: `${laDate} - M.O - Auto Launch`,
       campaignId: result.campaignId,
       dailyBudgetCents: cfg.dailyBudgetCents,
@@ -548,9 +581,22 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
         const sched = cfg.schedule || {};
         return sched.durationDays > 0 ? { endTime: new Date(Date.now() + sched.durationDays * 86_400_000).toISOString() } : {};
       })(),
-    });
+    };
+    let adset: { id: string };
+    let minSpendNote = '';
+    try {
+      adset = await createAdSet(profile.ad_account_id, profile.access_token, adsetOptions);
+    } catch (e: any) {
+      // Campaign's min-spend budget fully committed (combined minimum spend
+      // validation) — a live ad set WITHOUT the guarantee beats a dead run;
+      // CBO still distributes budget to it.
+      if (adsetOptions.minSpendTargetCents && /minimum spend/i.test(String(e?.message || e))) {
+        adset = await createAdSet(profile.ad_account_id, profile.access_token, { ...adsetOptions, minSpendTargetCents: undefined });
+        minSpendNote = ' ⚠ min spend dropped — campaign budget fully committed by older ad sets';
+      } else throw e;
+    }
     result.adSetId = adset.id;
-    return { detail: `Ad set ${adset.id}${basedOn}${isCbo ? ' (CBO — budget on campaign)' : ''}${hasPixel ? '' : ' (no pixel — link clicks)'}, broad targeting, Advantage+ off, runs until turned off`, result };
+    return { detail: `Ad set ${adset.id}${basedOn}${isCbo ? ' (CBO — budget on campaign)' : ''}${hasPixel ? '' : ' (no pixel — link clicks)'}${minSpendNote}, broad targeting, Advantage+ off, runs until turned off`, result };
   }
 
   if (step.key.startsWith('ad_')) {
@@ -645,8 +691,34 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     if (adsetErr) throw new Error(`Ad set activation failed: ${adsetErr}`);
     const campErr = await activate(result.campaignId);
     if (campErr) throw new Error(`Campaign activation failed: ${campErr}`);
-    const liveCount = adIds.length - adFailures.length;
-    return { detail: `LIVE — ${liveCount}/${adIds.length} ads${minSpendNote}${adFailures.length ? ` (${adFailures.length} failed: ${adFailures[0].slice(0, 120)})` : ''}`, result };
+
+    // Verify every flip actually stuck. FB accepts the status POST while an ad
+    // is still IN_PROCESS and can quietly leave it PAUSED (seen 2026-07-13:
+    // "LIVE — 20/20" reported with one ad still paused). Re-read, retry
+    // stragglers once, and never report an object live that isn't.
+    await new Promise(r => setTimeout(r, 4000));
+    const stillPaused = async (objectId: string): Promise<boolean> => {
+      try {
+        const cur = await (await fetch(`https://graph.facebook.com/v24.0/${objectId}?fields=status&access_token=${token}`)).json();
+        return cur?.status === 'PAUSED';
+      } catch { return false; } // read failed — don't retry blind
+    };
+    for (const [objectId, label] of [[result.adSetId, 'Ad set'], [result.campaignId, 'Campaign']] as [string, string][]) {
+      if (await stillPaused(objectId)) {
+        const err = await activate(objectId);
+        if (err || await stillPaused(objectId)) throw new Error(`${label} slipped back to PAUSED and the retry failed${err ? `: ${err}` : ''}`);
+      }
+    }
+    const adStragglers: string[] = [];
+    for (const adId of adIds) {
+      if (adFailures.some(f => f.startsWith(adId))) continue; // already counted
+      if (await stillPaused(adId)) {
+        const err = await activate(adId);
+        if (err || await stillPaused(adId)) adStragglers.push(adId);
+      }
+    }
+    const liveCount = adIds.length - adFailures.length - adStragglers.length;
+    return { detail: `LIVE — ${liveCount}/${adIds.length} ads${minSpendNote}${adFailures.length ? ` (${adFailures.length} failed: ${adFailures[0].slice(0, 120)})` : ''}${adStragglers.length ? ` (${adStragglers.length} stuck PAUSED after retry — flip manually in Ads Manager: ${adStragglers.join(', ')})` : ''}`, result };
   }
 
   if (step.key === 'np_product') {
@@ -657,22 +729,47 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     const now = Date.now();
     const title = `${np.brandName} ${np.productName}`;
 
-    // Create with the hero image; add the rest one-by-one (keeps payloads small)
-    const firstB64 = fs.readFileSync(files[0].filePath).toString('base64');
-    const created = (await shopifyMutate(db, wf.storeId, 'POST', 'products.json', {
-      product: {
-        title,
-        vendor: np.brandName,
-        status: 'active',
-        published: true,
-        body_html: `<p>${np.brief.slice(0, 400)}</p>`,
-        variants: [{ price: (np.priceCents / 100).toFixed(2), inventory_management: null }],
-        images: [{ attachment: firstB64 }],
-      },
-    }, now))?.product;
-    if (!created?.id) throw new Error('Shopify product creation returned no id');
+    // Clean launch template: main product section only — none of the theme's
+    // leftover content sections from previous products
+    let tplNote = '';
+    let tplSuffix: string | null = null;
+    try {
+      const { ensureCleanProductTemplate } = await import('@/lib/shopify-theme');
+      const tpl = await ensureCleanProductTemplate(db, wf.storeId, now);
+      tplSuffix = tpl.suffix; tplNote = ` · ${tpl.note}`;
+    } catch (e: any) { tplNote = ` · launch template skipped: ${String(e?.message || e).slice(0, 80)}`; }
 
-    for (let i = 1; i < files.length; i++) {
+    // Retry safety: if a previous attempt already created the product on
+    // Shopify (then died on images/local insert), reuse it — never duplicate
+    let created: any = null;
+    if (result.shopifyProductId) {
+      const { shopifyGet } = await import('@/lib/shopify-sync');
+      try { created = (await shopifyGet(db, wf.storeId, `products/${result.shopifyProductId}.json`, now))?.product; } catch {}
+    }
+    if (!created?.id) {
+      // Create with the hero image; add the rest one-by-one (keeps payloads small)
+      const firstB64 = fs.readFileSync(files[0].filePath).toString('base64');
+      created = (await shopifyMutate(db, wf.storeId, 'POST', 'products.json', {
+        product: {
+          title,
+          vendor: np.brandName,
+          status: 'active',
+          published: true,
+          ...(tplSuffix ? { template_suffix: tplSuffix } : {}),
+          body_html: `<p>${np.brief.slice(0, 400)}</p>`,
+          variants: [{ price: (np.priceCents / 100).toFixed(2), inventory_management: null }],
+          images: [{ attachment: firstB64 }],
+        },
+      }, now))?.product;
+      if (!created?.id) throw new Error('Shopify product creation returned no id');
+      // Persist the id IMMEDIATELY — everything after this must not re-create
+      result.shopifyProductId = String(created.id);
+      save(db, wf.id, { result });
+    }
+
+    // Attach remaining gallery images — skip any already there (retry safety)
+    const haveImages = (created.images || []).length;
+    for (let i = Math.max(1, haveImages); i < files.length; i++) {
       try {
         await shopifyMutate(db, wf.storeId, 'POST', `products/${created.id}/images.json`, {
           image: { attachment: fs.readFileSync(files[i].filePath).toString('base64'), position: i + 1 },
@@ -680,31 +777,105 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
       } catch (e: any) { /* one bad image shouldn't sink the product */ }
     }
 
-    // Local product row so the rest of the pipeline (audience/copy/ads) works
-    const localId = crypto.randomUUID();
-    const heroSrc = created.images?.[0]?.src || created.image?.src || null;
-    db.prepare(`INSERT INTO products (id, store_id, shopify_product_id, title, image_url, price_cents, status, images, synced_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, datetime('now'))`)
-      .run(localId, wf.storeId, String(created.id), title, heroSrc, np.priceCents, JSON.stringify((created.images || []).map((im: any) => im.src)));
+    // Local product row so the rest of the pipeline (audience/copy/ads) works —
+    // reuse an existing row on retry, never insert a twin
+    const existingLocal: any = db.prepare('SELECT id FROM products WHERE store_id = ? AND shopify_product_id = ?')
+      .get(wf.storeId, String(created.id));
+    const localId = existingLocal?.id || crypto.randomUUID();
+    if (!existingLocal) {
+      const heroSrc = created.images?.[0]?.src || created.image?.src || null;
+      db.prepare(`INSERT INTO products (id, store_id, shopify_product_id, title, image_url, price_cents, status, images, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'active', ?, datetime('now'))`)
+        .run(localId, wf.storeId, String(created.id), title, heroSrc, np.priceCents, JSON.stringify((created.images || []).map((im: any) => im.src)));
+    }
 
     result.shopifyProductId = String(created.id);
     result.productHandle = created.handle;
     // Rewrite the workflow's product id — later steps read wf.productId
     save(db, wf.id, { productId: localId });
     wf.productId = localId;
-    return { detail: `${title} → Shopify #${created.id} (${files.length} images)`, result };
+
+    // Kalodata videos were imported under a batch token before the product
+    // existed — rebind them so the daily top-up schedule finds them
+    if (cfg.videoBatchId) {
+      db.prepare('UPDATE video_ads_pool SET product_id = ? WHERE product_id = ? AND store_id = ?')
+        .run(localId, cfg.videoBatchId, wf.storeId);
+    }
+    return { detail: `${title} → Shopify #${created.id} (${files.length} images)${tplNote}`, result };
+  }
+
+  if (step.key === 'pixel') {
+    if (!profile?.access_token || !profile?.ad_account_id) throw new Error('FB profile missing token or ad account');
+    if (!result.shopifyProductId) throw new Error('Product missing — rerun np_product');
+    const { getOrCreatePixel, createFreshPixel, findActivePixel, sendPixelTestEvent } = await import('@/lib/facebook');
+    const pxName = `${cfg.newProduct?.brandName || 'YM'} ${cfg.newProduct?.productName || ''} Pixel`.trim();
+    // AUTO (default): an account already running campaigns has a proven,
+    // purchase-fed pixel — ride it. Only a cold account gets a fresh pixel.
+    // cfg.freshPixel / cfg.reusePixel force either way.
+    let px: { id: string; created: boolean; name: string; note?: string };
+    if (result.pixelId) {
+      // Retry after a later-step failure must not mint ANOTHER pixel
+      px = { id: result.pixelId, created: false, name: pxName, note: 'already resolved on a previous attempt' };
+    } else if (cfg.freshPixel) {
+      px = await createFreshPixel(profile.ad_account_id, profile.access_token, pxName, profile.business_id || null);
+    } else if (cfg.reusePixel) {
+      px = await getOrCreatePixel(profile.ad_account_id, profile.access_token, pxName);
+    } else {
+      const activePixelId = await findActivePixel(profile.ad_account_id, profile.access_token);
+      if (activePixelId) px = { id: activePixelId, created: false, name: pxName, note: 'auto — pixel already converting on this account\'s active campaigns' };
+      else if (profile.pixel_id) px = { id: profile.pixel_id, created: false, name: pxName, note: 'auto — profile\'s saved pixel (no active campaigns found)' };
+      else px = await createFreshPixel(profile.ad_account_id, profile.access_token, pxName, profile.business_id || null);
+    }
+    result.pixelId = px.id;
+    result.pixelCreated = px.created;
+    result.pixelNote = (px as any).note || null;
+    // Persist to the profile so EVERY future launch on this ad account
+    // optimizes for purchases instead of falling back to link clicks
+    if (!profile.pixel_id) {
+      db.prepare("UPDATE fb_profiles SET pixel_id = ?, updated_at = datetime('now') WHERE id = ?").run(px.id, profile.id);
+    }
+    const test = await sendPixelTestEvent(px.id, profile.access_token,
+      `https://facebook.com/products/${result.productHandle || result.shopifyProductId}`);
+    result.pixelTest = test;
+    // Install in theme.liquid — themes often strip <script> from product
+    // descriptions, so the lander embed alone can't be trusted to fire
+    let themeNote = '';
+    try {
+      const { ensurePixelInTheme } = await import('@/lib/shopify-theme');
+      themeNote = ` · ${await ensurePixelInTheme(db, wf.storeId, px.id, Date.now())}`;
+    } catch (e: any) { themeNote = ` · theme install skipped: ${String(e?.message || e).slice(0, 80)}`; }
+    return { detail: `Pixel ${px.id} (${px.created ? 'created new' : 'reusing account pixel'}${result.pixelNote ? ` — ${result.pixelNote}` : ''}) — ${test.received ? '✓ test event received' : `⚠ test event failed: ${test.note}`}${themeNote}`, result };
   }
 
   if (step.key === 'np_lander') {
     const np = cfg.newProduct;
     if (!result.shopifyProductId) throw new Error('Product missing — rerun np_product');
     const { generateLanderHtml } = await import('@/lib/ad-copy');
+    const { pixelEmbedHtml } = await import('@/lib/facebook');
     const { shopifyMutate, shopifyGet } = await import('@/lib/shopify-sync');
     const now = Date.now();
 
-    const html = await generateLanderHtml({
+    const lander = await generateLanderHtml({
       brandName: np.brandName, productName: np.productName, priceCents: np.priceCents, brief: np.brief,
     });
+    let html = lander.html;
+    // The lander copy doubles as the FB ad copy — no separate audience/copy
+    // steps needed for new products (the kalo videos are the creative)
+    const lc = lander.copy;
+    result.copy = {
+      headline: lc.headline,
+      primaryText: `${lc.subhead}\n\n${(lc.benefits || []).slice(0, 3).map(b => `${b.icon} ${b.title}`).join('\n')}\n\n${lc.guaranteeTitle}`,
+      description: lc.guaranteeTitle,
+    };
+    // Pixel fires on the exact page the ads land on: PageView + ViewContent
+    // with the real product id/price, so the ad set can optimize for purchases
+    if (result.pixelId) {
+      html += pixelEmbedHtml(result.pixelId, {
+        contentName: `${np.brandName} ${np.productName}`,
+        contentId: `shopify_${result.shopifyProductId}`,
+        valueCents: np.priceCents,
+      });
+    }
     await shopifyMutate(db, wf.storeId, 'PUT', `products/${result.shopifyProductId}.json`, {
       product: { id: Number(result.shopifyProductId), body_html: html },
     }, now);
@@ -712,6 +883,14 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     const shop = (await shopifyGet(db, wf.storeId, 'shop.json', now))?.shop;
     const domain = shop?.domain || shop?.myshopify_domain;
     const landingUrl = `https://${domain}/products/${result.productHandle}`;
+
+    // Trust nothing: fetch the live page and verify the lander actually shows;
+    // force a render section into the launch template when the theme hides it
+    let renderNote = '';
+    try {
+      const { ensureLanderRenders } = await import('@/lib/shopify-theme');
+      renderNote = ` · ${await ensureLanderRenders(db, wf.storeId, landingUrl, Date.now())}`;
+    } catch (e: any) { renderNote = ` · render check skipped: ${String(e?.message || e).slice(0, 80)}`; }
     db.prepare(`INSERT INTO product_landing_pages (store_id, product_id, url, source, updated_at) VALUES (?, ?, ?, 'resolved', datetime('now'))
       ON CONFLICT(store_id, product_id) DO UPDATE SET url = excluded.url, source = 'resolved', updated_at = datetime('now')`)
       .run(wf.storeId, wf.productId, landingUrl);
@@ -720,7 +899,38 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     save(db, wf.id, { config: newCfg });
     wf.config = newCfg;
     result.landingUrl = landingUrl;
-    return { detail: landingUrl, result };
+    return { detail: `${landingUrl}${renderNote}`, result };
+  }
+
+  if (step.key === 'schedule_daily') {
+    if (!result.campaignId) throw new Error('Campaign missing — the daily schedule attaches to it');
+    if (result.dailyScheduleId) {
+      return { detail: `daily schedule already created (${result.dailyScheduleId}) — retry skipped duplicate`, result };
+    }
+    const { createSchedule } = await import('@/lib/launch-scheduler');
+    const np = cfg.newProduct;
+    const title = np ? `${np.brandName} ${np.productName}` : 'Product';
+    // Same LA wall time as the launch → computeNextRun lands on TOMORROW
+    const laTime = new Date().toLocaleTimeString('en-GB', { timeZone: 'America/Los_Angeles', hour: '2-digit', minute: '2-digit' });
+    const s = createSchedule(db, {
+      storeId: wf.storeId,
+      productId: wf.productId, // real local product id (np_product rewrote it)
+      name: `${title} — daily 5 kalo ads @ ${laTime} PST`,
+      cadence: 'daily', timeOfDay: laTime, autoLive: true,
+      config: {
+        profileId: cfg.profileId, pageId: cfg.pageId,
+        landingUrl: result.landingUrl || cfg.landingUrl,
+        adCount: 0, videoCount: 5,
+        // Fresh ad set inside the SAME campaign each day, $15/day guaranteed
+        existingCampaignId: result.campaignId,
+        dailyBudgetCents: 1500, minSpendTargetCents: 1500,
+        targeting: cfg.targeting || { countries: ['US'] },
+        launchStatus: 'ACTIVE',
+        newProduct: null, videoBatchId: undefined, audienceId: null, creativeIds: undefined,
+      },
+    });
+    result.dailyScheduleId = s.id;
+    return { detail: `Daily top-up live: 5 kalo video ads/day, fresh ad set ($15 min spend), every day at ${laTime} PST starting tomorrow — schedule ${s.id}`, result };
   }
 
   if (step.key.startsWith('vad_')) {
@@ -744,16 +954,27 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
       save(db, wf.id, { result });
     }
 
-    // Wait for processing + a thumbnail (required for video creatives)
+    // Wait for processing + a thumbnail (required for video creatives).
+    // Some videos NEVER get a thumbnail from FB even when fully processed
+    // (video 1411133314160819, 2026-07-13) — if the video reports ready three
+    // checks in a row with no thumbnail, stop waiting and fall back.
     let thumbnailUrl = '';
-    for (let i = 0; i < 24; i++) {
+    let readyNoThumb = 0;
+    for (let i = 0; i < 36; i++) {
       const st = await checkVideoProcessingStatus(fbVideoId, profile.access_token);
       if (st.thumbnailUrl) thumbnailUrl = st.thumbnailUrl;
       if (st.status === 'ready' && thumbnailUrl) break;
+      if (st.status === 'ready' && !thumbnailUrl && ++readyNoThumb >= 3) break;
       if (st.status === 'error') throw new Error(`FB video processing failed for ${fbVideoId}`);
-      await new Promise(r => setTimeout(r, 5000));
+      await new Promise(r => setTimeout(r, 10_000));
     }
-    if (!thumbnailUrl) throw new Error(`Video ${fbVideoId} has no thumbnail yet — retry in a minute`);
+    let thumbNote = '';
+    if (!thumbnailUrl) {
+      // Fallback: the product's own hero image (public Shopify CDN URL)
+      const prod: any = db.prepare('SELECT image_url FROM products WHERE id = ?').get(wf.productId);
+      if (prod?.image_url) { thumbnailUrl = prod.image_url; thumbNote = ' (product image as thumbnail — FB gave none)'; }
+    }
+    if (!thumbnailUrl) throw new Error(`Video ${fbVideoId} has no thumbnail and product has no image to fall back to`);
 
     const adCreative = await createAdCreative(profile.ad_account_id, profile.access_token, {
       name: `${cfg.campaignName} | video ${idx + 1}`,
@@ -773,8 +994,8 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     });
     result.adIds = result.adIds || [];
     result.adIds[(cfg.adCount || 0) + idx] = ad.id;
-    if (meta?.id) db.prepare("UPDATE video_ads_pool SET status = 'used', used_at = datetime('now') WHERE id = ?").run(meta.id);
-    return { detail: `Video ad ${ad.id}`, result };
+    if (meta?.id) db.prepare("UPDATE video_ads_pool SET status = 'used', used_at = datetime('now') WHERE id = ? AND store_id = ?").run(meta.id, wf.storeId);
+    return { detail: `Video ad ${ad.id}${thumbNote}`, result };
   }
 
   throw new Error(`Unknown step: ${step.key}`);

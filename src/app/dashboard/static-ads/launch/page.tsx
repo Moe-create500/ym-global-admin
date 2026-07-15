@@ -32,8 +32,23 @@ const NODE_DEFS = [
   { id: 'campaign', icon: '📣', title: 'Campaign', stepKeys: ['campaign'] },
   { id: 'adset', icon: '🎯', title: 'Ad Set', stepKeys: ['adset'] },
   { id: 'ads', icon: '🧩', title: 'Create Ads', stepKeys: ['ad_'] },
-  { id: 'gate_launch', icon: '🚦', title: 'Launch Gate', stepKeys: ['gate_launch'] },
   { id: 'activate', icon: '⚡', title: 'Go Live', stepKeys: ['activate'] },
+];
+
+// New Product flow: same canvas, longer pipeline — brief → 7 listing images →
+// Shopify product → lander, then the standard ad pipeline.
+const NP_NODE_DEFS = [
+  { id: 'np_brief', icon: '🧾', title: 'Product Brief', stepKeys: [] as string[] },
+  { id: 'np_images', icon: '🖼️', title: 'Listing Images', stepKeys: ['np_image_'] },
+  { id: 'np_product', icon: '🛍️', title: 'Shopify Product', stepKeys: ['np_product'] },
+  { id: 'pixel', icon: '📡', title: 'FB Pixel', stepKeys: ['pixel'] },
+  { id: 'np_lander', icon: '📄', title: 'Lander + Ad Copy', stepKeys: ['np_lander'] },
+  { id: 'kalo', icon: '🎬', title: 'Kalo Video Ads', stepKeys: ['vdl_'] },
+  { id: 'campaign', icon: '📣', title: 'Campaign', stepKeys: ['campaign'] },
+  { id: 'adset', icon: '🎯', title: 'Ad Set', stepKeys: ['adset'] },
+  { id: 'ads', icon: '🧩', title: 'Create Ads', stepKeys: ['vad_'] },
+  { id: 'activate', icon: '⚡', title: 'Go Live', stepKeys: ['activate'] },
+  { id: 'schedule_daily', icon: '📅', title: 'Daily Top-Up', stepKeys: ['schedule_daily'] },
 ];
 
 function FlowNode({ data, selected }: NodeProps<Node<FlowNodeData>>) {
@@ -112,6 +127,39 @@ export default function LaunchFlowPage() {
   const [npRefUrls, setNpRefUrls] = useState('');
   const [npRefUploads, setNpRefUploads] = useState<string[]>([]);
   const [npUploading, setNpUploading] = useState(false);
+  // Kalodata videos are imported under a batch token BEFORE the product exists;
+  // the np_product step rebinds them to the real product id.
+  const [npVideoBatch, setNpVideoBatch] = useState(() => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2)));
+  const [npVidCount, setNpVidCount] = useState(9);
+  const [npKaloStats, setNpKaloStats] = useState<{ pending: number } | null>(null);
+  const [npKaloMsg, setNpKaloMsg] = useState('');
+  const [npKaloLinks, setNpKaloLinks] = useState('');
+  const [npPixelMode, setNpPixelMode] = useState<'auto' | 'fresh' | 'reuse'>('auto');
+
+  const loadNpKaloStats = useCallback((sid: string, batch: string) => {
+    fetch(`/api/static-ads/videos?storeId=${sid}&productId=${batch}`).then(r => r.json())
+      .then(d => setNpKaloStats(d.stats || null)).catch(() => {});
+  }, []);
+  useEffect(() => { if (storeId && flowTab === 'newProduct') loadNpKaloStats(storeId, npVideoBatch); }, [storeId, flowTab, npVideoBatch, loadNpKaloStats]);
+
+  async function npImportKalo(file: File | null, links: string[]) {
+    setNpKaloMsg('');
+    let res: Response;
+    if (file) {
+      const fd = new FormData();
+      fd.append('storeId', storeId); fd.append('productId', npVideoBatch); fd.append('file', file);
+      res = await fetch('/api/static-ads/videos', { method: 'POST', body: fd });
+    } else {
+      res = await fetch('/api/static-ads/videos', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId, productId: npVideoBatch, links }),
+      });
+    }
+    const d = await res.json();
+    setNpKaloMsg(res.ok ? `✓ ${d.imported} videos imported for this launch (${d.skipped} already known)` : (d.error || 'import failed'));
+    if (res.ok) setNpKaloLinks('');
+    loadNpKaloStats(storeId, npVideoBatch);
+  }
 
   async function uploadRefPhoto(file: File) {
     setNpUploading(true);
@@ -129,6 +177,7 @@ export default function LaunchFlowPage() {
   const [vidCount, setVidCount] = useState(9);
   const [vidUploading, setVidUploading] = useState(false);
   const [vidMsg, setVidMsg] = useState('');
+  const [vidLinks, setVidLinks] = useState('');
 
   // Recurring launch schedules
   interface Schedule { id: string; name: string; storeName?: string; cadence: string; timeOfDay: string; dayOfWeek: number | null; autoLive: boolean; isActive: boolean; lastRunAt: string | null; lastResult: string | null; nextRunAt: string; config?: any }
@@ -145,10 +194,16 @@ export default function LaunchFlowPage() {
   const [schedMsg, setSchedMsg] = useState('');
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [wf, setWf] = useState<Workflow | null>(null);
-  const [running, setRunning] = useState(false);
+  // Multiple workflows run at once: one advance loop per workflow id. `wf` is
+  // only which run the canvas/panels are LOOKING at — never a lock.
+  const [runningIds, setRunningIds] = useState<string[]>([]);
+  const [liveWfs, setLiveWfs] = useState<Record<string, Workflow>>({});
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [selectedNode, setSelectedNode] = useState<string>('product');
-  const runningRef = useRef(false);
+  const runningRef = useRef<Set<string>>(new Set());
+  const wfIdRef = useRef<string | null>(null);
+  const storeIdRef = useRef('');
 
   useEffect(() => {
     // Batch launch from the gallery: ?store=...&creatives=id1,id2
@@ -197,11 +252,13 @@ export default function LaunchFlowPage() {
 
   // Remember which run this tab is looking at (survives refresh)
   useEffect(() => {
+    wfIdRef.current = wf?.id || null;
     if (wf?.id) localStorage.setItem('launch_active_wf', wf.id);
   }, [wf?.id]);
 
   useEffect(() => {
     if (!storeId) return;
+    storeIdRef.current = storeId;
     setProductId(''); setProfileId(''); setPages([]); setPageId(''); setWf(null);
     loadStoreData(storeId);
   }, [storeId, loadStoreData]);
@@ -256,17 +313,29 @@ export default function LaunchFlowPage() {
   const profile = profiles.find(p => p.id === profileId);
   const ready = storeId && productId && profileId && pageId && landingUrl.startsWith('http')
     && (campaignMode === 'new' || !!existingCampaignId);
+  const npBriefReady = !!(storeId && npBrand.trim() && npName.trim() && parseFloat(npPrice) > 0
+    && (npRefUploads.length > 0 || npRefUrls.includes('http')));
+  const npReady = npBriefReady && !!profileId && !!pageId && (npKaloStats?.pending || 0) > 0;
 
   // ─── Engine driving ───
+  // One loop per workflow id; several loops run side by side. Each loop only
+  // touches the shared view (`wf`, `error`) when ITS workflow is the one on
+  // screen — background runs update the live strip instead.
   async function advanceLoop(wfId: string) {
-    runningRef.current = true; setRunning(true);
+    if (runningRef.current.has(wfId)) return; // this tab is already driving it
+    runningRef.current.add(wfId);
+    setRunningIds(Array.from(runningRef.current));
+    const update = (w: Workflow) => {
+      setLiveWfs(prev => ({ ...prev, [w.id]: w }));
+      if (wfIdRef.current === w.id) setWf(w);
+    };
     // The image batch runs minutes-long inside ONE advance call — poll for
     // live per-image progress while it's in flight
     const poller = setInterval(() => {
       fetch(`/api/static-ads/workflow?id=${wfId}`).then(r => r.json())
-        .then(d => { if (d.workflow && runningRef.current) setWf(d.workflow); }).catch(() => {});
+        .then(d => { if (d.workflow && runningRef.current.has(wfId)) update(d.workflow); }).catch(() => {});
     }, 4000);
-    while (runningRef.current) {
+    while (runningRef.current.has(wfId)) {
       try {
         const res = await fetch('/api/static-ads/workflow', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -274,26 +343,37 @@ export default function LaunchFlowPage() {
         });
         const d = await res.json();
         if (!res.ok) throw new Error(d.error || 'advance failed');
-        setWf(d.workflow);
+        update(d.workflow);
         if (d.workflow.status !== 'running') break; // done / error / awaiting_approval
-      } catch (e: any) { setError(e.message); break; }
+      } catch (e: any) { if (wfIdRef.current === wfId) setError(e.message); break; }
     }
     clearInterval(poller);
-    runningRef.current = false; setRunning(false);
-    loadStoreData(storeId);
+    runningRef.current.delete(wfId);
+    setRunningIds(Array.from(runningRef.current));
+    loadStoreData(storeIdRef.current);
+  }
+
+  // Point the canvas/panels at a run; keeps the ref in sync so in-flight loops
+  // know immediately which run is on screen.
+  function viewWf(w: Workflow | null) {
+    wfIdRef.current = w?.id || null;
+    setWf(w);
   }
 
   async function start() {
-    if (!ready) return;
-    setError('');
-    const res = await fetch('/api/static-ads/workflow', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'create', storeId, productId, config: launchConfig() }),
-    });
-    const d = await res.json();
-    if (!res.ok) { setError(d.error || 'create failed'); return; }
-    setWf(d.workflow);
-    void advanceLoop(d.workflow.id);
+    if (!ready || creating) return;
+    setError(''); setCreating(true);
+    try {
+      const res = await fetch('/api/static-ads/workflow', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'create', storeId, productId, config: launchConfig() }),
+      });
+      const d = await res.json();
+      if (!res.ok) { setError(d.error || 'create failed'); return; }
+      viewWf(d.workflow);
+      void advanceLoop(d.workflow.id);
+    } catch (e: any) { setError(e.message || 'create failed'); }
+    finally { setCreating(false); }
   }
 
   async function approve(stepKey: string) {
@@ -356,62 +436,90 @@ export default function LaunchFlowPage() {
     setFlowTab('schedules');
   }
 
-  const loadVideoPool = useCallback((sid: string) => {
-    fetch(`/api/static-ads/videos?storeId=${sid}`).then(r => r.json())
+  const loadVideoPool = useCallback((sid: string, pid?: string) => {
+    fetch(`/api/static-ads/videos?storeId=${sid}${pid ? `&productId=${pid}` : ''}`).then(r => r.json())
       .then(d => { setVidStats(d.stats || null); setVidRecent(d.recent || []); }).catch(() => {});
   }, []);
-  useEffect(() => { if (storeId) loadVideoPool(storeId); }, [storeId, loadVideoPool]);
+  useEffect(() => { if (storeId) loadVideoPool(storeId, productId); }, [storeId, productId, loadVideoPool]);
 
   async function uploadKalodata(file: File) {
     setVidUploading(true); setVidMsg('');
     const fd = new FormData();
     fd.append('storeId', storeId); fd.append('file', file);
+    if (productId) fd.append('productId', productId);
     const res = await fetch('/api/static-ads/videos', { method: 'POST', body: fd });
     const d = await res.json();
-    setVidMsg(res.ok ? `Imported ${d.imported} new videos (${d.parsed} in file, ${d.skipped} already known)` : (d.error || 'import failed'));
+    setVidMsg(res.ok ? `Imported ${d.imported} new videos for ${productId ? 'this product' : 'the store'} (${d.parsed} in file, ${d.skipped} already known — never re-posted)` : (d.error || 'import failed'));
     setVidUploading(false);
-    loadVideoPool(storeId);
+    loadVideoPool(storeId, productId);
+  }
+
+  async function importVideoLinks() {
+    const links = vidLinks.split('\n').map(s => s.trim()).filter(s => s.includes('tiktok'));
+    if (!links.length) { setVidMsg('Paste one TikTok link per line'); return; }
+    setVidUploading(true); setVidMsg('');
+    const res = await fetch('/api/static-ads/videos', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeId, productId: productId || undefined, links }),
+    });
+    const d = await res.json();
+    setVidMsg(res.ok ? `Imported ${d.imported} of ${d.parsed} links (${d.skipped} already known${d.invalid ? `, ${d.invalid} invalid` : ''})` : (d.error || 'import failed'));
+    setVidUploading(false);
+    if (res.ok) setVidLinks('');
+    loadVideoPool(storeId, productId);
   }
 
   async function startNewProduct() {
-    setError('');
+    if (creating) return;
+    setError(''); setCreating(true);
     const refUrls = [
       ...npRefUploads,
       ...npRefUrls.split('\n').map(s => s.trim()).filter(s => s.startsWith('http')),
     ].slice(0, 3);
-    const res = await fetch('/api/static-ads/workflow', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'create', storeId,
-        config: {
-          ...launchConfig(), landingUrl: undefined, creativeIds: undefined,
-          newProduct: {
-            brandName: npBrand.trim(), productName: npName.trim(),
-            priceCents: Math.round(parseFloat(npPrice || '0') * 100),
-            brief: npBrief.trim(), referenceImageUrls: refUrls,
+    try {
+      const res = await fetch('/api/static-ads/workflow', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'create', storeId,
+          config: {
+            ...launchConfig(), landingUrl: undefined, creativeIds: undefined,
+            adCount: 0, videoCount: npVidCount, videoBatchId: npVideoBatch,
+            reusePixel: npPixelMode === 'reuse', freshPixel: npPixelMode === 'fresh',
+            newProduct: {
+              brandName: npBrand.trim(), productName: npName.trim(),
+              priceCents: Math.round(parseFloat(npPrice || '0') * 100),
+              brief: npBrief.trim(), referenceImageUrls: refUrls,
+            },
           },
-        },
-      }),
-    });
-    const d = await res.json();
-    if (!res.ok) { setError(d.error || 'create failed'); return; }
-    setWf(d.workflow);
-    void advanceLoop(d.workflow.id);
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) { setError(d.error || 'create failed'); return; }
+      // Fresh batch token for the next launch — this one's videos are reserved
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) setNpVideoBatch(crypto.randomUUID());
+      viewWf(d.workflow);
+      void advanceLoop(d.workflow.id);
+    } catch (e: any) { setError(e.message || 'create failed'); }
+    finally { setCreating(false); }
   }
 
   async function startVideoLaunch() {
-    setError('');
-    const res = await fetch('/api/static-ads/workflow', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'create', storeId, productId,
-        config: { ...launchConfig(), creativeIds: undefined, adCount: 0, videoCount: vidCount },
-      }),
-    });
-    const d = await res.json();
-    if (!res.ok) { setError(d.error || 'create failed'); return; }
-    setWf(d.workflow);
-    void advanceLoop(d.workflow.id);
+    if (creating) return;
+    setError(''); setCreating(true);
+    try {
+      const res = await fetch('/api/static-ads/workflow', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'create', storeId, productId,
+          config: { ...launchConfig(), creativeIds: undefined, adCount: 0, videoCount: vidCount },
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) { setError(d.error || 'create failed'); return; }
+      viewWf(d.workflow);
+      void advanceLoop(d.workflow.id);
+    } catch (e: any) { setError(e.message || 'create failed'); }
+    finally { setCreating(false); }
   }
 
   async function scheduleDailyMix(w: Workflow) {
@@ -506,31 +614,42 @@ export default function LaunchFlowPage() {
     if (err) return { status: 'error', detail: err.detail, progress: steps.length > 1 ? `${done}/${steps.length}` : undefined };
     if (done === steps.length) return { status: 'done', progress: steps.length > 1 ? `${done}/${steps.length}` : undefined };
     if (isCurrent && current!.key.startsWith('gate_') && wf.status === 'awaiting_approval') return { status: 'gate' };
-    if (isCurrent && running) return { status: 'running', progress: steps.length > 1 ? `${done}/${steps.length}` : undefined };
+    if (isCurrent && runningIds.includes(wf.id)) return { status: 'running', progress: steps.length > 1 ? `${done}/${steps.length}` : undefined };
     return { status: 'pending', progress: steps.length > 1 && done > 0 ? `${done}/${steps.length}` : undefined };
   }
 
+  const npMode = flowTab === 'newProduct';
   const activeDefs = useMemo(() => {
-    let defs = NODE_DEFS;
-    if (batchMode) {
+    let defs = npMode ? NP_NODE_DEFS : NODE_DEFS;
+    if (!npMode && batchMode) {
       // Batch: ads already exist — no generation nodes; a fallback audience
       // step (creatives without one) maps into the Copy node
       defs = defs.filter(d => d.id !== 'audience' && d.id !== 'images')
         .map(d => d.id === 'copy' ? { ...d, stepKeys: ['audience', 'copy'] } : d);
     }
     return defs.filter(d => {
-      if (!goLive && (d.id === 'gate_launch' || d.id === 'activate')) return !!wf && wf.steps.some(s => s.key === d.id);
+      if (!goLive && d.id === 'activate') return !!wf && wf.steps.some(s => s.key === d.id);
       return true;
     });
-  }, [goLive, wf, batchMode]);
+  }, [goLive, wf, batchMode, npMode]);
 
   // Both rows read left→right (natural reading order); the row transition is a
   // stepped return edge routed in the gap between rows.
   const PER_ROW = 5;
   const nodes: Node<FlowNodeData>[] = useMemo(() => activeDefs.map((d, i) => {
-    const st = d.id === 'product' ? { status: (productId ? 'done' : 'idle') as NodeStatus } : nodeStatus(d.stepKeys);
+    const st = d.id === 'product' ? { status: (productId ? 'done' : 'idle') as NodeStatus }
+      : d.id === 'np_brief' ? { status: ((wf || npBriefReady) ? 'done' : 'idle') as NodeStatus }
+      : nodeStatus(d.stepKeys);
+    const npCfg = wf?.config?.newProduct;
     const subtitle =
       d.id === 'product' ? (batchMode ? `${batchCreatives!.length} selected ads` : (products.find(p => p.id === productId)?.title || 'pick a product'))
+      : d.id === 'np_brief' ? (npCfg ? `${npCfg.brandName} ${npCfg.productName}` : (npName.trim() ? `${npBrand.trim()} ${npName.trim()}` : 'brand · product · brief · photos'))
+      : d.id === 'np_images' ? '7 Amazon-style listing shots'
+      : d.id === 'np_product' ? (wf?.result?.productHandle ? `/${wf.result.productHandle} — ACTIVE` : 'created live on Shopify')
+      : d.id === 'pixel' ? (wf?.result?.pixelId ? `${wf.result.pixelId}${wf.result.pixelTest?.received ? ' ✓ tested' : ''}` : (npPixelMode === 'auto' ? 'auto: active campaign pixel' : npPixelMode === 'reuse' ? 'reuse account pixel' : 'fresh pixel + test'))
+      : d.id === 'np_lander' ? (wf?.result?.landingUrl ? 'lander live ↗ · ad copy ready' : 'template + Fable 5 copy → ads too')
+      : d.id === 'kalo' ? (wf ? `${(wf.config?.videoCount || 0)} winning TikToks` : `${npKaloStats?.pending ?? 0} ready · ${npVidCount} first launch`)
+      : d.id === 'schedule_daily' ? (wf?.result?.dailyScheduleId ? '✓ scheduled — 5/day' : '5 ads/day · new ad set · $15 min')
       : d.id === 'audience' ? (wf?.result?.audience?.name || 'Fable 5 auto-generates')
       : d.id === 'copy' ? (wf?.result?.copy?.headline || 'Fable 5 writes it')
       : d.id === 'images' ? `${wf?.config?.adCount || adCount} ads from proven templates`
@@ -542,8 +661,7 @@ export default function LaunchFlowPage() {
             ? `min $${wf?.config ? ((wf.config.minSpendTargetCents ?? wf.config.dailyBudgetCents) / 100).toFixed(0) : (minSpendTarget || '—')}/day · joins campaign`
             : `$${wf?.config ? (wf.config.dailyBudgetCents / 100).toFixed(0) : dailyBudget}/day CBO · until stopped`)
       : d.id === 'ads' ? 'upload + attach copy (paused)'
-      : d.id === 'gate_launch' ? 'final approval before spend'
-      : 'flips everything ACTIVE';
+      : 'flips everything ACTIVE — automatic';
 
     const row = Math.floor(i / PER_ROW);
     const col = i % PER_ROW;
@@ -558,7 +676,7 @@ export default function LaunchFlowPage() {
       position: { x, y },
       data: { icon: d.icon, title: d.title, subtitle, status: st.status, progress: (st as any).progress, isGate: d.id.startsWith('gate'), tpos, spos },
     };
-  }), [activeDefs, wf, productId, products, profile, adCount, dailyBudget, running, batchMode, batchCreatives, campaignMode, campaigns, existingCampaignId, durationDays]);
+  }), [activeDefs, wf, productId, products, profile, adCount, dailyBudget, runningIds, batchMode, batchCreatives, campaignMode, campaigns, existingCampaignId, durationDays, npBriefReady, npBrand, npName]);
 
   const edges: Edge[] = useMemo(() => activeDefs.slice(0, -1).map((d, i) => {
     const next = activeDefs[i + 1];
@@ -584,6 +702,19 @@ export default function LaunchFlowPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wf?.id]);
 
+  // Keep the inspector selection valid for the visible pipeline
+  useEffect(() => {
+    if (npMode && !NP_NODE_DEFS.some(d => d.id === selectedNode)) setSelectedNode('np_brief');
+    if (!npMode && !NODE_DEFS.some(d => d.id === selectedNode)) setSelectedNode('product');
+    // New-product first campaign defaults: $100/day CBO, top-4 countries.
+    // Only upgrade untouched generic defaults — never stomp user edits.
+    if (npMode) {
+      setDailyBudget(v => (v === '10' ? '100' : v));
+      setCountries(v => (v.trim().toUpperCase() === 'US' ? 'US, GB, AU, CA' : v));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [npMode]);
+
   // Plain step-list runner for new-product and video workflows (no canvas)
   function StepRunPanel({ w }: { w: Workflow }) {
     return (
@@ -601,7 +732,7 @@ export default function LaunchFlowPage() {
               <span className="w-4 flex-shrink-0 mt-0.5">
                 {s.status === 'done' ? <span className="text-emerald-400">✓</span>
                   : s.status === 'error' ? <span className="text-red-400">✗</span>
-                  : running && w.steps.find(x => x.status !== 'done')?.key === s.key
+                  : runningIds.includes(w.id) && w.steps.find(x => x.status !== 'done')?.key === s.key
                     ? <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
                     : <span className="text-slate-600">○</span>}
               </span>
@@ -619,10 +750,10 @@ export default function LaunchFlowPage() {
             🚦 Approve — GO LIVE, start spending
           </button>
         )}
-        {w.status === 'error' && !running && (
+        {w.status === 'error' && !runningIds.includes(w.id) && (
           <button onClick={retry} className="mt-3 w-full bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg py-2">↻ Retry failed steps + continue</button>
         )}
-        {w.status === 'running' && !running && (
+        {w.status === 'running' && !runningIds.includes(w.id) && (
           <button onClick={() => void advanceLoop(w.id)} className="mt-3 w-full bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg py-2">▶ Resume run</button>
         )}
         {w.status === 'done' && (w.config?.videoCount || 0) > 0 && w.result?.campaignId && (
@@ -643,14 +774,14 @@ export default function LaunchFlowPage() {
   // ─── Inspector for the selected node ───
   function Inspector() {
     const r = wf?.result || {};
-    const def = NODE_DEFS.find(d => d.id === selectedNode);
+    const def = (npMode ? NP_NODE_DEFS : NODE_DEFS).find(d => d.id === selectedNode);
     const nodeErr = wf?.steps.find(s =>
       s.status === 'error' && (def?.stepKeys || []).some(k => k.endsWith('_') ? s.key.startsWith(k) : s.key === k));
     const errBox = nodeErr ? (
       <div className="mb-3 bg-red-900/30 border border-red-800 text-red-300 text-xs rounded-lg px-3 py-2">
         <p className="font-semibold mb-0.5">Step failed:</p>
         <p className="break-words">{nodeErr.detail}</p>
-        {wf?.status === 'error' && !running && (
+        {wf?.status === 'error' && !runningIds.includes(wf.id) && (
           <button onClick={retry}
             className="mt-2 w-full bg-red-600 hover:bg-red-500 text-white font-semibold rounded-lg py-2 text-xs">
             ↻ Retry this step + continue the run
@@ -752,6 +883,136 @@ export default function LaunchFlowPage() {
             )}</div>
         </div>);
       }
+      case 'np_brief': {
+        const npCfg = wf?.config?.newProduct;
+        if (npCfg) {
+          return (
+          <div className="space-y-2 text-sm">
+            <p className="text-white font-medium">{npCfg.brandName} {npCfg.productName}</p>
+            <p className="text-xs text-slate-400">${(npCfg.priceCents / 100).toFixed(2)} · {stores.find(s => s.id === wf!.storeId)?.name}</p>
+            <p className="text-xs text-slate-300 whitespace-pre-wrap">{npCfg.brief}</p>
+            {(npCfg.referenceImageUrls || []).length > 0 && (
+              <div className="flex gap-1.5">
+                {npCfg.referenceImageUrls.map((u: string) => (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img key={u} src={u} alt="ref" className="w-14 h-14 rounded-lg object-cover border border-slate-700" />
+                ))}
+              </div>
+            )}
+            <p className="text-[10px] text-slate-500">Locked for this run.</p>
+          </div>);
+        }
+        return (
+        <div className="space-y-3">
+          <div><label className={labelCls}>Store</label>
+            <select value={storeId} onChange={e => setStoreId(e.target.value)} className={inputCls}>
+              {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select></div>
+          <div className="grid grid-cols-2 gap-2">
+            <div><label className={labelCls}>Brand name</label>
+              <input value={npBrand} onChange={e => setNpBrand(e.target.value)} placeholder="e.g. Purebite" className={inputCls} /></div>
+            <div><label className={labelCls}>Product name</label>
+              <input value={npName} onChange={e => setNpName(e.target.value)} placeholder="e.g. D3+K2 Drops" className={inputCls} /></div>
+          </div>
+          <div><label className={labelCls}>Price $</label>
+            <input type="number" min={1} step="0.01" value={npPrice} onChange={e => setNpPrice(e.target.value)} className={inputCls} /></div>
+          <div><label className={labelCls}>Product brief — what it is, who it&apos;s for, key benefits</label>
+            <textarea rows={4} value={npBrief} onChange={e => setNpBrief(e.target.value)} className={inputCls} /></div>
+          <div>
+            <label className={labelCls}>Reference photos (up to 3) — drive every listing image</label>
+            <input type="file" accept="image/*" disabled={npUploading || npRefUploads.length >= 3}
+              onChange={e => { const f = e.target.files?.[0]; if (f) void uploadRefPhoto(f); e.target.value = ''; }}
+              className="w-full text-xs text-slate-400 file:bg-slate-800 file:border-0 file:text-slate-200 file:rounded-lg file:px-3 file:py-2 file:mr-3" />
+            {npUploading && <p className="text-xs text-blue-400 mt-1">Uploading…</p>}
+            {npRefUploads.length > 0 && (
+              <div className="flex gap-2 mt-2">
+                {npRefUploads.map(u => (
+                  <div key={u} className="relative">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={u} alt="ref" className="w-16 h-16 rounded-lg object-cover border border-slate-700" />
+                    <button onClick={() => setNpRefUploads(prev => prev.filter(x => x !== u))}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-600 text-white rounded-full text-[9px] leading-4">✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <input value={npRefUrls} onChange={e => setNpRefUrls(e.target.value)}
+              placeholder="…or paste an image URL" className={`${inputCls} mt-2`} />
+          </div>
+          <p className={`text-[11px] ${npBriefReady ? 'text-emerald-400' : 'text-slate-500'}`}>
+            {npBriefReady ? '✓ Brief complete — set up Campaign + Ad Set nodes, then Run.' : 'Fill brand, product, price, brief and at least one photo.'}
+          </p>
+        </div>);
+      }
+      case 'np_images': return (
+        <div className="space-y-3">
+          {errBox}
+          <p className="text-xs text-slate-400">7 Amazon-style listing shots (hero, lifestyle, benefits, ingredients…) generated from your reference photos — they become the Shopify product gallery.</p>
+          {wf && <p className="text-[11px] text-slate-500">{(r.listingImages || []).filter(Boolean).length}/7 generated{runningIds.includes(wf.id) ? ' — running…' : ''}</p>}
+          {(r.listingImages || []).filter(Boolean).length > 0 && (
+            <div className="grid grid-cols-3 gap-1.5">
+              {(r.listingImages || []).filter(Boolean).map((img: any) => (
+                <a key={img.id} href={`/api/static-ads/images/${img.id}?store=${wf!.storeId}`} target="_blank" rel="noreferrer" title={img.label}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={`/api/static-ads/images/${img.id}?store=${wf!.storeId}&w=150`} alt={img.label} className="rounded aspect-square object-cover w-full" />
+                </a>
+              ))}
+            </div>
+          )}
+        </div>);
+      case 'np_product': return (
+        <div className="space-y-2">
+          {errBox}
+          <p className="text-xs text-slate-400">Creates the product on Shopify — ACTIVE and published, all 7 listing images attached, price from your brief.</p>
+          {r.shopifyProductId && <p className="text-xs text-emerald-400">Product ID: {r.shopifyProductId}</p>}
+          {r.productHandle && shopifyDomain && (
+            <a href={`https://${shopifyDomain}/products/${r.productHandle}`} target="_blank" rel="noreferrer"
+              className="block text-center bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium rounded-lg py-2">
+              ✓ View live product ↗
+            </a>
+          )}
+        </div>);
+      case 'pixel': return (
+        <div className="space-y-2">
+          {errBox}
+          <p className="text-xs text-slate-400"><b>Auto (default):</b> if this ad account already has active campaigns, their pixel is proven and purchase-fed — the launch rides it. Only a cold account (new store) gets a fresh pixel. Either way it&apos;s verified with a server-side test event (Events Manager → Test events, code TEST_YM_LAUNCH), embedded in the lander (PageView + ViewContent with real product id/price), and the ad set optimizes for purchases with it.</p>
+          {!wf && (
+            <div className="grid grid-cols-3 gap-1.5">
+              {([['auto', '🤖 Auto'], ['fresh', '✨ Fresh'], ['reuse', '♻️ Reuse']] as const).map(([mode, label]) => (
+                <button key={mode} onClick={() => setNpPixelMode(mode)}
+                  className={`text-xs rounded-lg py-1.5 border ${npPixelMode === mode ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {r.pixelId && (
+            <div className="bg-slate-800/60 rounded-lg p-2.5 space-y-1">
+              <p className="text-xs text-white">Pixel <span className="font-mono">{r.pixelId}</span> {r.pixelCreated ? '(created new)' : '(account pixel reused)'}</p>
+              <p className={`text-xs ${r.pixelTest?.received ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {r.pixelTest?.received ? '✓ test event received by Meta' : `⚠ ${r.pixelTest?.note || 'not tested yet'}`}
+              </p>
+            </div>
+          )}
+        </div>);
+      case 'np_lander': return (
+        <div className="space-y-2">
+          {errBox}
+          <p className="text-xs text-slate-400">Fable 5 writes the copy into the repo&apos;s ready-made Shrine-style template (fast + consistent) and it goes straight into the product page — that page is what the ads drive to. The same copy becomes the video ads&apos; headline + primary text, and the FB pixel is embedded at the bottom: PageView + ViewContent fire on every visit.</p>
+          {wf?.result?.copy?.headline && (
+            <div className="bg-slate-800/60 rounded-lg p-2.5">
+              <p className="text-[10px] text-slate-500 uppercase mb-1">Ad copy (from the lander)</p>
+              <p className="text-xs text-white font-medium">{wf.result.copy.headline}</p>
+              <p className="text-[11px] text-slate-400 whitespace-pre-wrap mt-1">{wf.result.copy.primaryText}</p>
+            </div>
+          )}
+          {r.landingUrl && (
+            <a href={r.landingUrl} target="_blank" rel="noreferrer"
+              className="block text-center bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium rounded-lg py-2">
+              ✓ Open lander ↗
+            </a>
+          )}
+        </div>);
       case 'audience': return r.audience ? (
         <div className="space-y-2 text-sm">
           <p className="text-white font-medium">{r.audience.name}</p>
@@ -794,6 +1055,52 @@ export default function LaunchFlowPage() {
             </div>
           )}
           {!(r.creatives || []).filter(Boolean).length && wf && <p className="text-xs text-slate-500">Generating… thumbnails appear as each finishes.</p>}
+        </div>);
+      case 'kalo': return (
+        <div className="space-y-3">
+          {errBox}
+          <p className="text-xs text-slate-400">Import the Kalodata export for THIS product — the top {npVidCount} by revenue launch in the first campaign, the rest feed the daily top-up (5/day in a fresh ad set, $15 min spend). Every video gets a unique ID — nothing ever double-posts.</p>
+          {!wf && (
+            <>
+              <div>
+                <label className={labelCls}>Kalodata export (.xlsx)</label>
+                <input type="file" accept=".xlsx"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) void npImportKalo(f, []); e.target.value = ''; }}
+                  className="w-full text-xs text-slate-400 file:bg-slate-800 file:border-0 file:text-slate-200 file:rounded-lg file:px-3 file:py-2 file:mr-3" />
+              </div>
+              <div>
+                <label className={labelCls}>…or paste TikTok links (one per line)</label>
+                <textarea rows={2} value={npKaloLinks} onChange={e => setNpKaloLinks(e.target.value)}
+                  placeholder="https://www.tiktok.com/@creator/video/…" className={inputCls} />
+                {npKaloLinks.trim() && (
+                  <button onClick={() => void npImportKalo(null, npKaloLinks.split('\n').map(s => s.trim()).filter(s => s.includes('tiktok')))}
+                    className="mt-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg">Import links</button>
+                )}
+              </div>
+              <div><label className={labelCls}>Videos in the first campaign</label>
+                <input type="number" min={1} max={20} value={npVidCount}
+                  onChange={e => setNpVidCount(Math.min(Math.max(Number(e.target.value) || 1, 1), 20))} className={inputCls} /></div>
+              <p className={`text-xs ${(npKaloStats?.pending || 0) > 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {(npKaloStats?.pending || 0) > 0 ? `✓ ${npKaloStats!.pending} videos ready for this launch` : '⚠ No videos yet — import the Kalodata file to enable launch'}
+              </p>
+              {npKaloMsg && <p className="text-xs text-slate-300">{npKaloMsg}</p>}
+            </>
+          )}
+          {wf && (wf.result?.videos || wf.config?.prefillVideos) && (
+            <div className="space-y-1 max-h-48 overflow-y-auto">
+              {(wf.result?.videos || []).map((v: any, i: number) => (
+                <p key={v.id || i} className="text-[11px] text-slate-400 truncate">🎬 ${Math.round(v.revenue || 0).toLocaleString()} rev · @{v.author || ''} {v.caption || v.id}</p>
+              ))}
+            </div>
+          )}
+        </div>);
+      case 'schedule_daily': return (
+        <div className="space-y-2">
+          {errBox}
+          <p className="text-xs text-slate-400">After the first campaign goes live, the engine schedules itself: every day at the same time it downloads the next 5 best unused videos from this product&apos;s pool, builds a <b>fresh ad set with a $15/day minimum spend</b> inside the same campaign, and goes live automatically — starting tomorrow.</p>
+          {r.dailyScheduleId && (
+            <p className="text-xs text-emerald-400">✓ Schedule created — manage it on the Schedules tab. Keep the pool fed: re-import a new Kalodata export anytime (dupes are skipped automatically).</p>
+          )}
         </div>);
       case 'campaign': return (
         <div className="space-y-3">
@@ -890,17 +1197,18 @@ export default function LaunchFlowPage() {
           <p className="text-xs text-slate-400">Each image is uploaded to Meta and becomes a paused ad carrying the copy + Shop Now → your landing URL.</p>
           {(r.adIds || []).filter(Boolean).map((id: string, i: number) => <p key={id} className="text-xs text-emerald-400">Ad {i + 1}: {id}</p>)}
         </div>);
-      case 'gate_launch': {
+      case 'activate': {
         const n = wf ? (wf.config.adCount || adCount) : adCount;
         const b = wf ? (wf.config.dailyBudgetCents / 100).toFixed(2) : parseFloat(dailyBudget || '10').toFixed(2);
         return (
-        <div className="space-y-3">
+        <div className="space-y-2">
+          {errBox}
           {!wf && <button onClick={() => setGoLive(v => !v)}
             className={`w-full rounded-lg px-3 py-2 text-sm font-medium border ${goLive ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
-            {goLive ? 'Will go LIVE after this gate' : 'Staying PAUSED (no gate needed)'}
+            {goLive ? '⚡ Goes LIVE automatically when done' : 'Staying PAUSED (manual go-live in Ads Manager)'}
           </button>}
           <div className="bg-slate-800/60 rounded-lg p-2.5 space-y-1">
-            <p className="text-[10px] text-slate-500 uppercase">What approval starts</p>
+            <p className="text-[10px] text-slate-500 uppercase">What starts spending</p>
             {(wf ? !!wf.config.existingCampaignId : campaignMode === 'existing') ? (
               <p className="text-xs text-white">
                 {n} ads join <span className="text-slate-300">{campaigns.find(c => c.id === (wf?.config?.existingCampaignId || existingCampaignId))?.name || 'the chosen campaign'}</span>
@@ -910,20 +1218,10 @@ export default function LaunchFlowPage() {
               <p className="text-xs text-white">{n} ads · <span className="text-amber-300 font-semibold">${b}/day CBO</span> (budget on the campaign)</p>
             )}
             <p className="text-xs text-white">
-              starts immediately · <span className="text-amber-400 font-semibold">runs until you turn it off</span>
+              starts immediately when the run finishes · <span className="text-amber-400 font-semibold">runs until you turn it off</span>
             </p>
             <p className="text-[11px] text-slate-400">{profile?.profile_name || profile?.ad_account_id} → {pages.find(p => p.id === (wf?.config?.pageId || pageId))?.name || 'page'}</p>
           </div>
-          <p className="text-xs text-slate-400">Everything already exists on Facebook, paused. Review it in <a href={adsManagerUrl} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Ads Manager ↗</a> first if you want.</p>
-          {currentGate?.key === 'gate_launch' && (
-            <button onClick={() => approve('gate_launch')} className="w-full bg-red-600 hover:bg-red-500 text-white font-semibold rounded-lg py-2.5 text-sm">
-              🚦 Approve — GO LIVE, start spending
-            </button>)}
-        </div>);
-      }
-      case 'activate': return (
-        <div className="space-y-2">
-          {errBox}
           <p className="text-xs text-slate-400">Flips ads → ad set → campaign to ACTIVE, in that order — nothing serves until the campaign flips last.</p>
           {wf?.steps.find(s => s.key === 'activate')?.status === 'done' && (
             <a href={adsManagerUrl} target="_blank" rel="noreferrer"
@@ -932,6 +1230,7 @@ export default function LaunchFlowPage() {
             </a>
           )}
         </div>);
+      }
       default: return null;
     }
   }
@@ -942,7 +1241,7 @@ export default function LaunchFlowPage() {
         <div className="flex items-center gap-5">
           <div>
             <h1 className="text-xl font-bold text-white">🚀 Launch Flow</h1>
-            <p className="text-xs text-slate-400">Click any node to configure or inspect. Gates hold the run for your approval.</p>
+            <p className="text-xs text-slate-400">Click any node to configure or inspect. Runs are fully autonomous — ads go live the moment they&apos;re built.</p>
           </div>
           <div className="flex gap-1 bg-slate-900 border border-slate-800 rounded-lg p-1">
             <button onClick={() => setFlowTab('ads')}
@@ -963,36 +1262,67 @@ export default function LaunchFlowPage() {
             </button>
           </div>
         </div>
-        <div className={`flex items-center gap-3 ${flowTab !== 'ads' ? 'invisible' : ''}`}>
+        <div className={`flex items-center gap-3 ${flowTab !== 'ads' && flowTab !== 'newProduct' ? 'invisible' : ''}`}>
           {wf && <span className={`text-[11px] px-2 py-1 rounded-full ${
             wf.status === 'done' ? 'bg-emerald-900/50 text-emerald-400' : wf.status === 'error' ? 'bg-red-900/50 text-red-400'
             : wf.status === 'awaiting_approval' ? 'bg-amber-900/50 text-amber-400' : 'bg-blue-900/50 text-blue-400'
           }`}>{wf.status === 'awaiting_approval' ? '⏸ awaiting your approval' : wf.status}</span>}
-          {!wf && <button onClick={start} disabled={!ready || running}
+          {!wf && <button onClick={npMode ? startNewProduct : start} disabled={(npMode ? !npReady : !ready) || creating}
             className="bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 disabled:opacity-40 text-white text-sm font-semibold rounded-lg px-5 py-2">
-            ▶ Run workflow
+            {creating ? 'Starting…' : npMode ? '🧪 Launch end-to-end' : '▶ Run workflow'}
           </button>}
-          {!wf && <button onClick={() => { setSchedModal(true); setSchedMsg(''); }} disabled={!ready || running}
+          {!wf && flowTab === 'ads' && <button onClick={() => { setSchedModal(true); setSchedMsg(''); }} disabled={!ready || creating}
             title="Run this exact configuration on a recurring schedule"
             className="bg-slate-800 border border-slate-700 hover:border-blue-500 disabled:opacity-40 text-slate-200 text-sm font-medium rounded-lg px-4 py-2">
             ⏰ Schedule
           </button>}
-          {wf?.status === 'running' && !running && (
+          {wf?.status === 'running' && !runningIds.includes(wf.id) && (
             <button onClick={() => void advanceLoop(wf.id)}
               className="bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-lg px-4 py-2">
               ▶ Resume run
             </button>
           )}
-          {wf?.status === 'error' && !running && <button onClick={retry} className="bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg px-4 py-2">Retry + continue</button>}
-          {wf && !running && (
-            <button onClick={() => { setWf(null); setError(''); localStorage.removeItem('launch_active_wf'); }}
+          {wf?.status === 'error' && !runningIds.includes(wf.id) && <button onClick={retry} className="bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg px-4 py-2">Retry + continue</button>}
+          {wf && (
+            <button onClick={() => { viewWf(null); setError(''); localStorage.removeItem('launch_active_wf'); }}
               className="bg-slate-800 border border-slate-700 text-slate-300 text-sm rounded-lg px-4 py-2">New run</button>
           )}
           <Link href="/dashboard/static-ads" className="text-xs text-blue-400 hover:text-blue-300">← Picture Ads</Link>
         </div>
       </div>
 
-      {error && flowTab === 'ads' && <div className="mx-6 mt-3 bg-red-900/30 border border-red-800 text-red-300 text-sm rounded-lg px-4 py-2">{error}</div>}
+      {/* Live runs strip — every unfinished workflow, across all concurrent loops */}
+      {(() => {
+        const merged: Record<string, Workflow> = {};
+        for (const w of workflows) if (w.status === 'running' || w.status === 'awaiting_approval') merged[w.id] = w;
+        for (const w of Object.values(liveWfs)) if (w.status === 'running' || w.status === 'awaiting_approval' || runningIds.includes(w.id)) merged[w.id] = w;
+        const live = Object.values(merged);
+        if (!live.length) return null;
+        return (
+          <div className="mx-6 mt-3 flex gap-2 flex-wrap">
+            {live.map(w => {
+              const driving = runningIds.includes(w.id);
+              const done = w.steps.filter(s => s.status === 'done').length;
+              return (
+                <button key={w.id}
+                  onClick={() => { viewWf(w); setError(''); if (w.status === 'running') void advanceLoop(w.id); }}
+                  className={`flex items-center gap-2 text-xs rounded-lg px-3 py-1.5 border transition-colors ${
+                    wf?.id === w.id ? 'border-blue-500 bg-blue-950/40 text-white' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'}`}>
+                  {driving
+                    ? <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                    : <span className={`w-2 h-2 rounded-full flex-shrink-0 ${w.status === 'awaiting_approval' ? 'bg-amber-400 animate-pulse' : 'bg-blue-400'}`} />}
+                  <span className="max-w-[16rem] truncate">{w.name}</span>
+                  <span className="text-slate-500">{done}/{w.steps.length}</span>
+                  {w.status === 'awaiting_approval' && <span className="text-amber-400">🚦 approve</span>}
+                  {!driving && w.status === 'running' && <span className="text-emerald-400">▶ resume</span>}
+                </button>
+              );
+            })}
+          </div>
+        );
+      })()}
+
+      {error && (flowTab === 'ads' || flowTab === 'newProduct') && <div className="mx-6 mt-3 bg-red-900/30 border border-red-800 text-red-300 text-sm rounded-lg px-4 py-2">{error}</div>}
 
       {schedModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => setSchedModal(false)}>
@@ -1129,80 +1459,6 @@ export default function LaunchFlowPage() {
             )}
           </div>
         </div>
-      ) : flowTab === 'newProduct' ? (
-        <div className="flex-1 overflow-y-auto p-6">
-          <div className="max-w-2xl space-y-4">
-            <p className="text-sm text-slate-400">Brand-new product, end to end: 7 Amazon-style listing images → live Shopify product → Shrine-style lander → audience → picture ads → gated CBO campaign.</p>
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div><label className={labelCls}>Store</label>
-                  <select value={storeId} onChange={e => setStoreId(e.target.value)} className={inputCls} disabled={!!wf && running}>
-                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select></div>
-                <div><label className={labelCls}>Price $</label>
-                  <input type="number" min={1} step="0.01" value={npPrice} onChange={e => setNpPrice(e.target.value)} className={inputCls} /></div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><label className={labelCls}>Brand name</label>
-                  <input value={npBrand} onChange={e => setNpBrand(e.target.value)} placeholder="e.g. Purebite" className={inputCls} /></div>
-                <div><label className={labelCls}>Product name</label>
-                  <input value={npName} onChange={e => setNpName(e.target.value)} placeholder="e.g. D3+K2 Drops" className={inputCls} /></div>
-              </div>
-              <div><label className={labelCls}>Product brief — what it is, who it&apos;s for, key benefits</label>
-                <textarea rows={3} value={npBrief} onChange={e => setNpBrief(e.target.value)} className={inputCls} /></div>
-              <div>
-                <label className={labelCls}>Product reference photos (up to 3)</label>
-                <input type="file" accept="image/*" disabled={npUploading || npRefUploads.length >= 3}
-                  onChange={e => { const f = e.target.files?.[0]; if (f) void uploadRefPhoto(f); e.target.value = ''; }}
-                  className="w-full text-xs text-slate-400 file:bg-slate-800 file:border-0 file:text-slate-200 file:rounded-lg file:px-3 file:py-2 file:mr-3" />
-                {npUploading && <p className="text-xs text-blue-400 mt-1">Uploading…</p>}
-                {npRefUploads.length > 0 && (
-                  <div className="flex gap-2 mt-2">
-                    {npRefUploads.map(u => (
-                      <div key={u} className="relative">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={u} alt="ref" className="w-16 h-16 rounded-lg object-cover border border-slate-700" />
-                        <button onClick={() => setNpRefUploads(prev => prev.filter(x => x !== u))}
-                          className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-600 text-white rounded-full text-[9px] leading-4">✕</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <input value={npRefUrls} onChange={e => setNpRefUrls(e.target.value)}
-                  placeholder="…or paste an image URL" className={`${inputCls} mt-2`} />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><label className={labelCls}>FB Ad Account</label>
-                  <select value={profileId} onChange={e => setProfileId(e.target.value)} className={inputCls}>
-                    <option value="">— select —</option>
-                    {profiles.map(p => <option key={p.id} value={p.id}>{p.profile_name || p.ad_account_name || p.ad_account_id}</option>)}
-                  </select></div>
-                <div><label className={labelCls}>FB Page</label>
-                  <select value={pageId} onChange={e => setPageId(e.target.value)} className={inputCls} disabled={pagesLoading}>
-                    <option value="">{pagesLoading ? 'loading…' : '— select —'}</option>
-                    {pages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select></div>
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div><label className={labelCls}>Budget $/day (CBO)</label>
-                  <input type="number" min={1} value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} className={inputCls} /></div>
-                <div><label className={labelCls}>Picture ads</label>
-                  <input type="number" min={1} max={20} value={adCount} onChange={e => setAdCount(Math.min(Math.max(Number(e.target.value) || 1, 1), 20))} className={inputCls} /></div>
-                <div><label className={labelCls}>Go live?</label>
-                  <button onClick={() => setGoLive(v => !v)}
-                    className={`w-full rounded-lg px-3 py-2 text-sm font-medium border ${goLive ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
-                    {goLive ? 'ACTIVE (gated)' : 'Stay PAUSED'}
-                  </button></div>
-              </div>
-              <button onClick={startNewProduct}
-                disabled={running || !storeId || !npBrand.trim() || !npName.trim() || !(parseFloat(npPrice) > 0) || (npRefUploads.length === 0 && !npRefUrls.includes('http')) || !profileId || !pageId}
-                className="w-full bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 disabled:opacity-40 text-white font-semibold rounded-lg py-3">
-                {running ? 'Running…' : '🧪 Launch new product end-to-end'}
-              </button>
-            </div>
-            {wf && wf.config?.mode === 'new_product' && <StepRunPanel w={wf} />}
-          </div>
-        </div>
       ) : flowTab === 'videos' ? (
         <div className="flex-1 overflow-y-auto p-6">
           <div className="max-w-2xl space-y-4">
@@ -1223,11 +1479,20 @@ export default function LaunchFlowPage() {
                 </div>
               </div>
               <div>
-                <label className={labelCls}>Import Kalodata export (.xlsx)</label>
+                <label className={labelCls}>Import Kalodata export (.xlsx){productId ? ' — stored for the selected product' : ' — pick a product below to bind the videos to it'}</label>
                 <input type="file" accept=".xlsx" disabled={vidUploading}
                   onChange={e => { const f = e.target.files?.[0]; if (f) void uploadKalodata(f); e.target.value = ''; }}
                   className="w-full text-xs text-slate-400 file:bg-slate-800 file:border-0 file:text-slate-200 file:rounded-lg file:px-3 file:py-2 file:mr-3" />
-                {vidUploading && <p className="text-xs text-blue-400 mt-1">Parsing…</p>}
+                <label className={`${labelCls} mt-3`}>…or paste TikTok links (one per line)</label>
+                <textarea rows={2} value={vidLinks} onChange={e => setVidLinks(e.target.value)}
+                  placeholder="https://www.tiktok.com/@creator/video/1234567890…" className={inputCls} />
+                {vidLinks.trim() && (
+                  <button onClick={() => void importVideoLinks()} disabled={vidUploading}
+                    className="mt-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-medium rounded-lg">
+                    Import {vidLinks.split('\n').filter(s => s.includes('tiktok')).length} links
+                  </button>
+                )}
+                {vidUploading && <p className="text-xs text-blue-400 mt-1">Importing…</p>}
                 {vidMsg && <p className="text-xs text-slate-300 mt-1">{vidMsg}</p>}
               </div>
               {vidRecent.length > 0 && (
@@ -1268,12 +1533,12 @@ export default function LaunchFlowPage() {
               <div><label className={labelCls}>Landing URL {landingLoading ? '· resolving…' : ''}</label>
                 <input value={landingUrl} onChange={e => setLandingUrl(e.target.value)} className={inputCls} placeholder="auto-resolves when product picked" /></div>
               <button onClick={startVideoLaunch}
-                disabled={running || !storeId || !productId || !profileId || !pageId || !landingUrl.startsWith('http') || !(vidStats?.pending)}
+                disabled={creating || !storeId || !productId || !profileId || !pageId || !landingUrl.startsWith('http') || !(vidStats?.pending)}
                 className="w-full bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 disabled:opacity-40 text-white font-semibold rounded-lg py-3">
-                {running ? 'Running…' : `🎬 Launch top ${vidCount} videos in one CBO campaign`}
+                {creating ? 'Starting…' : `🎬 Launch top ${vidCount} videos in one CBO campaign`}
               </button>
             </div>
-            {wf && (wf.config?.videoCount || 0) > 0 && <StepRunPanel w={wf} />}
+            {wf && (wf.config?.videoCount || 0) > 0 && StepRunPanel({ w: wf })}
           </div>
         </div>
       ) : (
@@ -1293,10 +1558,13 @@ export default function LaunchFlowPage() {
         {/* Inspector panel */}
         <div className="w-80 border-l border-slate-800 bg-slate-900 p-4 overflow-y-auto">
           <p className="text-sm font-semibold text-white mb-1">
-            {NODE_DEFS.find(d => d.id === selectedNode)?.icon} {NODE_DEFS.find(d => d.id === selectedNode)?.title}
+            {(npMode ? NP_NODE_DEFS : NODE_DEFS).find(d => d.id === selectedNode)?.icon} {(npMode ? NP_NODE_DEFS : NODE_DEFS).find(d => d.id === selectedNode)?.title}
           </p>
           <div className="border-t border-slate-800 pt-3 mt-2">
-            <Inspector />
+            {/* Plain function call, NOT <Inspector /> — an inline-defined
+                component remounts on every parent render, killing input focus
+                after each keystroke */}
+            {Inspector()}
           </div>
 
           {/* Past runs */}
@@ -1308,7 +1576,7 @@ export default function LaunchFlowPage() {
                   w.status === 'done' ? 'bg-emerald-400' : w.status === 'error' ? 'bg-red-400'
                   : w.status === 'awaiting_approval' ? 'bg-amber-400' : w.status === 'cancelled' ? 'bg-slate-500' : 'bg-blue-400'
                 }`} />
-                <button onClick={() => { setWf(w); setError(''); if (w.status === 'running') void advanceLoop(w.id); }}
+                <button onClick={() => { viewWf(w); setError(''); if (w.status === 'running') void advanceLoop(w.id); }}
                   className="text-xs text-slate-300 hover:text-white truncate text-left flex-1">{w.name}</button>
                 <span className="text-[9px] text-slate-500">{w.steps.filter(s => s.status === 'done').length}/{w.steps.length}</span>
               </div>

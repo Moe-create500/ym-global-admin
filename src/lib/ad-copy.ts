@@ -11,47 +11,60 @@ export interface AdCopy {
 }
 
 /** Shrine-vibe product landing page HTML (goes into the Shopify product
- *  body_html — clean sections, soft shadows, benefit blocks, guarantee, FAQ). */
+ *  body_html). The page skeleton is a ready-made template in the repo
+ *  (lib/lander-template.ts) — Fable 5 only writes the copy as small JSON, so
+ *  this is fast and the layout is pixel-consistent across products. */
 export async function generateLanderHtml(product: {
   brandName: string; productName: string; priceCents: number; brief: string;
-}): Promise<string> {
+}): Promise<{ html: string; copy: import('@/lib/lander-template').LanderCopy }> {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not configured');
+  const { renderLander } = await import('@/lib/lander-template');
   const client = new Anthropic();
 
   const response = await client.beta.messages.create({
     model: 'claude-fable-5',
-    max_tokens: 16000,
+    max_tokens: 5000,
     betas: ['server-side-fallback-2026-06-01'],
     fallbacks: [{ model: 'claude-opus-4-8' }],
-    system: 'You are a world-class DTC landing-page designer and copywriter. You output raw HTML only — no markdown fences, no explanation.',
+    system: 'You are a world-class DTC landing-page copywriter. You respond with valid JSON only — no markdown, no explanation.',
     messages: [{
       role: 'user',
-      content: `Write the product-page body HTML for this product, in the style of top-converting Shopify "Shrine theme" landers: clean, modern, mobile-first, soft rounded cards, generous spacing.
+      content: `Write high-converting Shopify lander copy for this product. Compliant (no medical claims), no fabricated statistics or review counts, spell everything correctly.
 
 BRAND: ${product.brandName}
 PRODUCT: ${product.productName}
 PRICE: $${(product.priceCents / 100).toFixed(2)}
 ABOUT: ${product.brief.slice(0, 1500)}
 
-Structure (all inline styles, no external CSS/JS, no <html>/<head>/<body> wrappers — this is injected into a Shopify product description):
-1. Bold benefit-led headline + one-line subhead
-2. 3-4 benefit cards (emoji icon, bold title, 1-2 sentences)
-3. "How it works / how to use" — 3 numbered steps
-4. Social-proof section: 3 short realistic customer quotes with first names + star characters (no fake statistics, no fabricated review counts)
-5. Risk-reversal guarantee box
-6. FAQ — 4 questions with answers
+Style reference: top-converting DTC supplement landers — emotive, second-person, specific to THIS product's pains and payoffs. Outcomes must be phrased as reported experiences ("Reported…", "Noticed…", "Experienced…"), never promises. The journey is a 3-phase emotional arc of what life looks like as the product becomes routine (no medical claims, no specific timeframes like "in 2 weeks").
 
-Rules: compliant copy (no medical claims), spell everything correctly, max width 720px centered, use only inline style attributes, keep total under 400 lines.`,
+Return EXACTLY this JSON shape:
+{
+  "headline": "bold benefit-led headline, max 9 words",
+  "subhead": "one supporting line, max 20 words",
+  "whyTitle": "e.g. Why Our <Product> Works Better.",
+  "benefits": [{"icon": "one emoji", "title": "2-4 words", "text": "1-2 sentences"}, exactly 5 items],
+  "outcomesTitle": "e.g. What Consistent Support Can Look Like",
+  "outcomes": ["Reported/Noticed/Experienced-style outcome line", exactly 4 items],
+  "journeyTitle": "e.g. Your Journey Ahead",
+  "journey": [{"title": "emotive phase title, 4-7 words", "text": "3-4 sentence second-person paragraph about how this phase feels"}, exactly 3 items],
+  "quotes": [{"headline": "dramatic 8-14 word quote headline", "text": "2-3 sentence story-style customer quote", "name": "realistic first name + last initial"}, exactly 3 items],
+  "guaranteeTitle": "e.g. 30-Day Money-Back Guarantee",
+  "guaranteeText": "1-2 reassuring sentences",
+  "faqs": [{"q": "question", "a": "1-2 sentence answer"}, exactly 5 items]
+}`,
     }],
   });
 
   if (response.stop_reason === 'refusal') throw new Error('Model declined to write this lander');
-  const html = response.content
+  const raw = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')
     .map(b => b.text).join('').trim()
-    .replace(/^```html?\n?/, '').replace(/\n?```$/, '');
-  if (!html.includes('<')) throw new Error('Lander generation returned no HTML');
-  return html;
+    .replace(/^```json?\n?/, '').replace(/\n?```$/, '');
+  let copy: any;
+  try { copy = JSON.parse(raw); } catch { throw new Error(`Lander copy was not valid JSON: ${raw.slice(0, 120)}`); }
+  if (!copy.headline || !Array.isArray(copy.benefits)) throw new Error('Lander copy JSON missing required fields');
+  return { html: renderLander(copy), copy };
 }
 
 export async function generateAdCopy(

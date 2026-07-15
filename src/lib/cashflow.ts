@@ -55,6 +55,9 @@ export interface CashflowProjection {
   generated_at_date: string;
   horizon_days: number;
   stores: StoreCashflow[];
+  // EVERY Shopify store, unfiltered — the connections panel must list stores
+  // that have no data yet (that's exactly what connecting them is for)
+  all_stores: { store_id: string; store_name: string }[];
   calendar: { date: string; confirmed_cents: number; cumulative_cents: number; events: CashEvent[] }[];
   totals: {
     landed_today_cents: number;
@@ -461,6 +464,9 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     generated_at_date: today,
     horizon_days: horizonDays,
     stores: storeResults,
+    // independent of any store filter on the projection itself
+    all_stores: (db.prepare("SELECT id, name FROM stores WHERE platform = 'shopify' ORDER BY name").all() as any[])
+      .map((s: any) => ({ store_id: s.id, store_name: s.name })),
     calendar,
     totals: {
       landed_today_cents: storeResults.reduce((s, x) => s + x.landed_today_cents, 0),

@@ -54,6 +54,24 @@ export function saveShopifyCreds(db: Database.Database, storeId: string, shopDom
   `).run(storeId, domain, clientId.trim(), clientSecret.trim());
 }
 
+/** Save a permanent Admin API token (shpat_…) — stored as a pre-minted cached
+ *  token with a year-2100 expiry, so the mint path never runs. If the token is
+ *  ever revoked, the 401 surfaces directly (mint isn't possible). */
+export function savePermanentToken(db: Database.Database, storeId: string, shopDomain: string, token: string) {
+  ensureShopifyCredsTable(db);
+  const domain = normalizeShopDomain(shopDomain);
+  const FOREVER = 4102444800000; // 2100-01-01
+  db.prepare(`
+    INSERT INTO shopify_credentials (store_id, shop_domain, client_id, client_secret, token_cache, token_expires_at, updated_at)
+    VALUES (?, ?, 'permanent', 'permanent-token', ?, ?, datetime('now'))
+    ON CONFLICT(store_id) DO UPDATE SET
+      shop_domain = excluded.shop_domain,
+      client_id = 'permanent', client_secret = 'permanent-token',
+      token_cache = excluded.token_cache, token_expires_at = excluded.token_expires_at,
+      updated_at = datetime('now')
+  `).run(storeId, domain, token.trim(), FOREVER);
+}
+
 export interface StoreCreds {
   store_id: string; shop_domain: string; client_id: string; client_secret: string;
   token_cache: string | null; token_expires_at: number | null;
@@ -63,6 +81,30 @@ export interface StoreCreds {
 export function getCreds(db: Database.Database, storeId: string): StoreCreds | null {
   ensureShopifyCredsTable(db);
   return (db.prepare('SELECT * FROM shopify_credentials WHERE store_id = ?').get(storeId) as any) || null;
+}
+
+/** Mint a brand-new token and cache it. Returns null if minting isn't possible
+ *  (e.g. a hand-installed permanent token with placeholder client creds). */
+async function mintToken(db: Database.Database, creds: StoreCreds, nowMs: number): Promise<string | null> {
+  const res = await fetch(`https://${creds.shop_domain}/admin/oauth/access_token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({
+      client_id: creds.client_id,
+      client_secret: creds.client_secret,
+      grant_type: 'client_credentials',
+    }),
+  });
+  const text = await res.text();
+  if (!res.ok) return null;
+  let json: any;
+  try { json = JSON.parse(text); } catch { return null; }
+  const token = json.access_token;
+  if (!token) return null;
+  const expiresMs = nowMs + (Number(json.expires_in) || 86400) * 1000;
+  db.prepare('UPDATE shopify_credentials SET token_cache = ?, token_expires_at = ? WHERE store_id = ?')
+    .run(token, expiresMs, creds.store_id);
+  return token;
 }
 
 /** Mint (or reuse a cached) access token via client_credentials. Returns the token string. */
@@ -75,35 +117,33 @@ export async function getAccessToken(db: Database.Database, storeId: string, now
     return creds.token_cache;
   }
 
-  const res = await fetch(`https://${creds.shop_domain}/admin/oauth/access_token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-    body: JSON.stringify({
-      client_id: creds.client_id,
-      client_secret: creds.client_secret,
-      grant_type: 'client_credentials',
-    }),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Token mint failed (${res.status}): ${text.slice(0, 300)}`);
-  let json: any;
-  try { json = JSON.parse(text); } catch { throw new Error(`Token response not JSON: ${text.slice(0, 200)}`); }
-  const token = json.access_token;
-  if (!token) throw new Error(`No access_token in response: ${text.slice(0, 200)}`);
-  const expiresMs = nowMs + (Number(json.expires_in) || 86400) * 1000;
-
-  db.prepare('UPDATE shopify_credentials SET token_cache = ?, token_expires_at = ? WHERE store_id = ?')
-    .run(token, expiresMs, storeId);
+  const token = await mintToken(db, creds, nowMs);
+  if (!token) throw new Error(`Token mint failed for ${creds.shop_domain} — check the store's client credentials`);
   return token;
+}
+
+/** Run an Admin API request; if Shopify rejects the token (401 — Shopify can
+ *  invalidate cached tokens before their stated expiry), mint a fresh one and
+ *  retry ONCE. If minting isn't possible (permanent-token stores), the
+ *  original 401 surfaces untouched. */
+async function withAuthRetry(db: Database.Database, storeId: string, nowMs: number, doFetch: (token: string) => Promise<Response>): Promise<Response> {
+  const token = await getAccessToken(db, storeId, nowMs);
+  let res = await doFetch(token);
+  if (res.status === 401) {
+    const creds = getCreds(db, storeId);
+    const fresh = creds ? await mintToken(db, creds, nowMs) : null;
+    if (fresh && fresh !== token) res = await doFetch(fresh);
+  }
+  return res;
 }
 
 /** Authenticated GET against the store's Admin API. Returns { json, linkHeader }. */
 export async function shopifyGetRaw(db: Database.Database, storeId: string, path: string, nowMs: number): Promise<{ json: any; link: string | null }> {
   const creds = getCreds(db, storeId);
   if (!creds) throw new Error('No Shopify credentials saved for this store');
-  const token = await getAccessToken(db, storeId, nowMs);
   const url = path.startsWith('http') ? path : `https://${creds.shop_domain}/admin/api/${API_VERSION}/${path}`;
-  const res = await fetch(url, { headers: { 'X-Shopify-Access-Token': token, 'Accept': 'application/json' } });
+  const res = await withAuthRetry(db, storeId, nowMs, token =>
+    fetch(url, { headers: { 'X-Shopify-Access-Token': token, 'Accept': 'application/json' } }));
   const text = await res.text();
   if (!res.ok) throw new Error(`GET ${path.slice(0, 60)} failed (${res.status}): ${text.slice(0, 300)}`);
   let json: any;
@@ -119,13 +159,13 @@ export async function shopifyGet(db: Database.Database, storeId: string, path: s
 export async function shopifyMutate(db: Database.Database, storeId: string, method: 'POST' | 'PUT', path: string, body: any, nowMs: number): Promise<any> {
   const creds = getCreds(db, storeId);
   if (!creds) throw new Error('No Shopify credentials saved for this store');
-  const token = await getAccessToken(db, storeId, nowMs);
   const url = `https://${creds.shop_domain}/admin/api/${API_VERSION}/${path}`;
-  const res = await fetch(url, {
-    method,
-    headers: { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json', 'Accept': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const res = await withAuthRetry(db, storeId, nowMs, token =>
+    fetch(url, {
+      method,
+      headers: { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(body),
+    }));
   const text = await res.text();
   if (!res.ok) throw new Error(`${method} ${path.slice(0, 60)} failed (${res.status}): ${text.slice(0, 300)}`);
   try { return JSON.parse(text); } catch { throw new Error(`Response not JSON: ${text.slice(0, 200)}`); }

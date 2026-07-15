@@ -7,14 +7,22 @@ import crypto from 'crypto';
 
 export async function syncBankAccounts(): Promise<{ accounts_synced: number; transactions_imported: number; errors: string[] }> {
   const db = getDb();
-  const accounts: any[] = db.prepare("SELECT * FROM bank_accounts WHERE status = 'active'").all();
+  // Teller-provider rows only — Plaid items sync separately below
+  const accounts: any[] = db.prepare("SELECT * FROM bank_accounts WHERE status = 'active' AND COALESCE(provider, 'teller') = 'teller'").all();
   let totalTxns = 0;
   let synced = 0;
   const errors: string[] = [];
+  const isRateLimit = (e: any) => /429|too_many_requests|rate limit/i.test(String(e?.message || e));
+  let rateLimited = false;
 
   for (const account of accounts) {
     // Manual-anchor accounts (e.g. Shopify Balance) have no Teller feed — skip
     if (!account.access_token || !account.teller_account_id) continue;
+    // Circuit breaker: once Teller rate-limits, STOP — hammering the remaining
+    // accounts burns the whole quota and the limit never gets a chance to clear
+    if (rateLimited) break;
+    // Gentle pacing between accounts keeps a full pass under the burst limit
+    await new Promise(r => setTimeout(r, 1500));
     try {
       // Sync balance
       try {
@@ -40,6 +48,7 @@ export async function syncBankAccounts(): Promise<{ accounts_synced: number; tra
         `).run(...params);
         synced++;
       } catch (balErr: any) {
+        if (isRateLimit(balErr)) { rateLimited = true; errors.push('Teller rate limit hit — remaining accounts skipped this pass'); continue; }
         const msg = String(balErr.message || balErr);
         const friendly = /not_found|404|410|unauthorized|401/i.test(msg)
           ? 'CONNECTION EXPIRED — reconnect this bank via Connect Card (Teller re-auth required)'
@@ -66,9 +75,13 @@ export async function syncBankAccounts(): Promise<{ accounts_synced: number; tra
         }
 
         for (const txn of txns) {
-          const existing = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(txn.id);
-          if (existing) continue;
           const amountCents = Math.round(parseFloat(txn.amount || '0') * 100);
+          // Dedup by teller id, THEN by content — transaction ids are
+          // application-scoped, so a new Teller app must not re-import history
+          const existing = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(txn.id)
+            || db.prepare('SELECT id FROM bank_transactions WHERE bank_account_id = ? AND date = ? AND amount_cents = ? AND description = ?')
+              .get(account.id, txn.date, amountCents, txn.description);
+          if (existing) continue;
           const runningBalance = txn.running_balance ? Math.round(parseFloat(txn.running_balance) * 100) : null;
           db.prepare(`
             INSERT INTO bank_transactions (id, bank_account_id, teller_transaction_id, date, description,
@@ -82,11 +95,23 @@ export async function syncBankAccounts(): Promise<{ accounts_synced: number; tra
           totalTxns++;
         }
       } catch (txnErr: any) {
+        if (isRateLimit(txnErr)) { rateLimited = true; errors.push('Teller rate limit hit — remaining accounts skipped this pass'); continue; }
         errors.push(`${account.account_name}: txn error - ${txnErr.message}`);
       }
     } catch (err: any) {
       errors.push(`${account.account_name}: ${err.message}`);
     }
+  }
+
+  // Plaid items (new connections live here — Teller went invite-only)
+  try {
+    const { syncPlaidItems } = await import('@/lib/plaid');
+    const plaid = await syncPlaidItems(db);
+    synced += plaid.accounts_synced;
+    totalTxns += plaid.transactions_imported;
+    errors.push(...plaid.errors);
+  } catch (e: any) {
+    errors.push(`plaid sync: ${String(e?.message || e).slice(0, 150)}`);
   }
 
   return { accounts_synced: synced, transactions_imported: totalTxns, errors };

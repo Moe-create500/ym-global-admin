@@ -10,3 +10,15 @@ node_modules/
 database.sqlite
 .DS_Store
 tsconfig.tsbuildinfo
+/certificates/
+*.pem
+*.tar.gz
+.env.backup-*
+.env.*
+/public/uploads/
+/static-ads/
+/tmp/
+.firebase/
+.next.bak*/
+.next.broken*/
+lib.pre-scp*/

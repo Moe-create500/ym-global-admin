@@ -11,11 +11,23 @@ export const dynamic = 'force-dynamic';
 const THUMB_WIDTHS = new Set([150, 300, 600]);
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+  if (!/^[\w-]+$/.test(params.id)) return NextResponse.json({ error: 'Not found' }, { status: 404 });
   const db = getDb();
   const creative: any = db.prepare('SELECT store_id FROM creatives WHERE id = ?').get(params.id);
-  if (!creative) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  const filePath = path.join(process.cwd(), 'static-ads', creative.store_id, `${params.id}.png`);
+  let filePath: string;
+  let storeDir: string;
+  if (creative) {
+    storeDir = creative.store_id;
+    filePath = path.join(process.cwd(), 'static-ads', storeDir, `${params.id}.png`);
+  } else {
+    // New-product listing images live outside the creatives table:
+    // static-ads/{storeId}/listing/{id}.png — the caller passes the store.
+    const store = req.nextUrl.searchParams.get('store') || '';
+    if (!/^[\w-]+$/.test(store)) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    storeDir = store;
+    filePath = path.join(process.cwd(), 'static-ads', storeDir, 'listing', `${params.id}.png`);
+  }
 
   if (!fs.existsSync(filePath)) {
     return NextResponse.json({ error: 'Image file not found' }, { status: 404 });
@@ -23,7 +35,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 
   const w = Number(req.nextUrl.searchParams.get('w') || 0);
   if (THUMB_WIDTHS.has(w)) {
-    const thumbDir = path.join(process.cwd(), 'static-ads', creative.store_id, '.thumbs');
+    const thumbDir = path.join(process.cwd(), 'static-ads', storeDir, '.thumbs');
     const thumbPath = path.join(thumbDir, `${params.id}-w${w}.webp`);
 
     if (!fs.existsSync(thumbPath)) {

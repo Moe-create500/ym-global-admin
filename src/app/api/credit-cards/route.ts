@@ -44,7 +44,16 @@ export async function GET(req: NextRequest) {
     ORDER BY institution_name, account_name
   `).all();
 
-  const totalAvailable = cards.reduce((s: number, c: any) => s + (c.balance_available_cents || 0), 0);
+  // REAL available: credit LINES only — a child card's "available" is its
+  // allocation ceiling, spendable is capped by its parent line. Cards with no
+  // parent line (standalone, e.g. Amex) count their own availability.
+  const isLine = (c: any) => /^CORP Account/i.test(c.account_name || '');
+  const fam = (c: any) => String(c.account_name || '').replace(/^CORP Account - /i, '').replace(/ LINE$/i, '').slice(0, 14).toLowerCase();
+  const parents = cards.filter(isLine);
+  const totalAvailable = cards.reduce((s: number, c: any) => {
+    if (isLine(c)) return s + (c.balance_available_cents || 0);
+    return parents.some((p: any) => fam(p) === fam(c)) ? s : s + (c.balance_available_cents || 0);
+  }, 0);
   const totalLedger = cards.reduce((s: number, c: any) => s + (c.balance_ledger_cents || 0), 0);
 
   return NextResponse.json({
@@ -62,12 +71,8 @@ export async function POST() {
   const db = getDb();
 
   const accounts: any[] = db.prepare(
-    "SELECT * FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'"
+    "SELECT * FROM bank_accounts WHERE account_type = 'credit' AND status = 'active' AND COALESCE(provider,'teller') = 'teller'"
   ).all();
-
-  if (accounts.length === 0) {
-    return NextResponse.json({ error: 'No active credit card accounts' }, { status: 404 });
-  }
 
   let totalTxns = 0;
   const errors: string[] = [];
@@ -105,10 +110,14 @@ export async function POST() {
         const txns = await getAllAccountTransactions(account.access_token, account.teller_account_id);
 
         for (const txn of txns) {
-          const existing = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(txn.id);
+          const amountCents = Math.round(parseFloat(txn.amount || '0') * 100);
+          // Dedup by teller id, THEN by content — ids are application-scoped,
+          // so a new Teller app must not re-import history
+          const existing = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(txn.id)
+            || db.prepare('SELECT id FROM bank_transactions WHERE bank_account_id = ? AND date = ? AND amount_cents = ? AND description = ?')
+              .get(account.id, txn.date, amountCents, txn.description);
           if (existing) continue;
 
-          const amountCents = Math.round(parseFloat(txn.amount || '0') * 100);
           const runningBalance = txn.running_balance ? Math.round(parseFloat(txn.running_balance) * 100) : null;
 
           db.prepare(`
@@ -130,9 +139,21 @@ export async function POST() {
     }
   }
 
+  // Plaid credit cards sync with everything else on the item
+  let plaidSynced = 0;
+  try {
+    const { syncPlaidItems } = await import('@/lib/plaid');
+    const plaid = await syncPlaidItems(db);
+    plaidSynced = plaid.accounts_synced;
+    totalTxns += plaid.transactions_imported;
+    errors.push(...plaid.errors);
+  } catch (e: any) {
+    errors.push(`plaid sync: ${String(e?.message || e).slice(0, 150)}`);
+  }
+
   return NextResponse.json({
     success: true,
-    accounts_synced: accounts.length,
+    accounts_synced: accounts.length + plaidSynced,
     transactions_imported: totalTxns,
     errors: errors.length > 0 ? errors : undefined,
   });
@@ -164,8 +185,18 @@ export async function PUT(req: NextRequest) {
       // Only import credit card accounts
       if (account.type !== 'credit') continue;
 
-      const existing = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(account.id);
-      if (existing) continue;
+      // Match by teller_account_id, else institution + last_four + type — ids
+      // are application-scoped, so a new Teller app must re-attach to the same rows
+      const existing: any = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(account.id)
+        || db.prepare(`SELECT id FROM bank_accounts WHERE last_four = ? AND account_type = ? AND institution_name = ? ORDER BY updated_at DESC LIMIT 1`)
+          .get(account.last_four, account.type, account.institution?.name || 'Unknown');
+      if (existing) {
+        // Reconnect: refresh token + enrollment + account id on the existing row
+        db.prepare(`UPDATE bank_accounts SET access_token = ?, teller_enrollment_id = ?, teller_account_id = ?, status = 'active', updated_at = datetime('now') WHERE id = ?`)
+          .run(accessToken, enrollmentId || account.enrollment_id, account.id, existing.id);
+        imported++;
+        continue;
+      }
 
       let balanceAvailable = 0;
       let balanceLedger = 0;

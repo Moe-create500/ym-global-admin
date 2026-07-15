@@ -21,8 +21,13 @@ export async function GET(req: NextRequest) {
   const totalAvailable = (accounts as any[]).reduce((s, a) => s + (a.balance_available_cents || 0), 0);
   const totalLedger = (accounts as any[]).reduce((s, a) => s + (a.balance_ledger_cents || 0), 0);
 
+  // Accounts parked until their store is known (bulk Shopify Balance
+  // enrollments) — shown in their own section, counted nowhere
+  const unassigned = db.prepare("SELECT * FROM bank_accounts WHERE status = 'unassigned' ORDER BY last_four").all();
+
   return NextResponse.json({
     accounts,
+    unassigned,
     summary: { total_available_cents: totalAvailable, total_ledger_cents: totalLedger, account_count: accounts.length },
   });
 }
@@ -44,13 +49,18 @@ export async function POST(req: NextRequest) {
     console.log('[banking] Got accounts:', accounts.length);
 
     for (const account of accounts) {
-      const existing: any = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(account.id);
+      // Match by teller_account_id first; fall back to institution + last_four
+      // + type — account ids are application-scoped in Teller, so re-enrolling
+      // under a NEW Teller app must still land on the existing rows (history!)
+      const existing: any = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(account.id)
+        || db.prepare(`SELECT id FROM bank_accounts WHERE last_four = ? AND account_type = ? AND institution_name = ? ORDER BY updated_at DESC LIMIT 1`)
+          .get(account.last_four, account.type, account.institution?.name || 'Unknown');
       if (existing) {
-        // Reconnect: refresh the access token + enrollment on the existing row
+        // Reconnect: refresh token + enrollment + account id on the existing row
         db.prepare(`
-          UPDATE bank_accounts SET access_token = ?, teller_enrollment_id = ?, status = 'active', updated_at = datetime('now')
+          UPDATE bank_accounts SET access_token = ?, teller_enrollment_id = ?, teller_account_id = ?, status = 'active', updated_at = datetime('now')
           WHERE id = ?
-        `).run(accessToken, enrollmentId || account.enrollment_id, existing.id);
+        `).run(accessToken, enrollmentId || account.enrollment_id, account.id, existing.id);
         imported++;
         continue;
       }
@@ -85,6 +95,26 @@ export async function POST(req: NextRequest) {
 }
 
 // DELETE: Disconnect a bank account
+// PATCH { accountId, storeId } → reassign an account to another store
+export async function PATCH(req: NextRequest) {
+  const { accountId, storeId } = await req.json().catch(() => ({}));
+  if (!accountId || !storeId) return NextResponse.json({ error: 'accountId and storeId required' }, { status: 400 });
+  const db = getDb();
+  const store: any = db.prepare('SELECT name FROM stores WHERE id = ?').get(storeId);
+  if (!store) return NextResponse.json({ error: 'store not found' }, { status: 404 });
+  const acct: any = db.prepare('SELECT institution_name, account_name FROM bank_accounts WHERE id = ?').get(accountId);
+  if (!acct) return NextResponse.json({ error: 'account not found' }, { status: 404 });
+  // Rename generically-named Shopify Balance rows on assignment — the custom
+  // name also marks them as manually assigned (auto-matcher skips them)
+  const newName = /shopify/i.test(acct.institution_name || '') && acct.account_name === 'Shopify Balance'
+    ? `${String(store.name).toUpperCase()} Shopify Balance`
+    : acct.account_name;
+  // Manual assignment also activates parked (unassigned) accounts
+  db.prepare("UPDATE bank_accounts SET store_id = ?, account_name = ?, status = 'active', updated_at = datetime('now') WHERE id = ?")
+    .run(storeId, newName, accountId);
+  return NextResponse.json({ success: true });
+}
+
 export async function DELETE(req: NextRequest) {
   const accountId = req.nextUrl.searchParams.get('accountId');
   if (!accountId) return NextResponse.json({ error: 'accountId required' }, { status: 400 });

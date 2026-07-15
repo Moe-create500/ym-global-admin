@@ -13,6 +13,7 @@ interface CreditCard {
   balance_available_cents: number;
   balance_ledger_cents: number;
   balance_updated_at: string | null;
+  teller_enrollment_id: string | null;
 }
 
 interface Transaction {
@@ -57,7 +58,7 @@ function timeAgo(dateStr: string | null): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-const TELLER_APP_ID = process.env.NEXT_PUBLIC_TELLER_APP_ID || '';
+
 
 export default function CreditCardsPage() {
   const [cards, setCards] = useState<CreditCard[]>([]);
@@ -81,39 +82,42 @@ export default function CreditCardsPage() {
     loadCards();
   }, []);
 
-  const handleTellerConnect = useCallback(() => {
+  // Plaid Link (Teller went invite-only). Fresh connects re-attach to
+  // existing card rows by institution + last_four; reconnect on a plaid card
+  // opens Plaid's UPDATE mode for its item.
+  const handlePlaidConnect = useCallback(async (reconnectAccountId?: string | null) => {
     const w = window as any;
-    if (!w.TellerConnect) { alert('Teller Connect not loaded yet'); return; }
-
+    if (!w.Plaid) { alert('Plaid not loaded yet — give the page a second and try again'); return; }
     setConnecting(true);
-    const teller = w.TellerConnect.setup({
-      applicationId: TELLER_APP_ID,
-      environment: process.env.NEXT_PUBLIC_TELLER_ENV || 'sandbox',
-      selectAccount: 'multiple',
-      onSuccess: async (enrollment: any) => {
-        const token = enrollment.accessToken || enrollment.access_token;
-        const eid = enrollment.enrollment?.id || enrollment.id;
-        if (!token) { alert('No access token received from Teller'); setConnecting(false); return; }
-        try {
-          const res = await fetch('/api/credit-cards', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accessToken: token, enrollmentId: eid }),
-          });
-          const data = await res.json();
-          if (data.error) { alert('Error: ' + data.error); }
-          else { setSyncResult(`Connected ${data.imported} new credit card(s)`); }
-          loadCards();
-          // Auto-sync after connecting
-          await fetch('/api/credit-cards', { method: 'POST' });
-          loadCards();
-        } catch (err: any) { alert('Failed: ' + err.message); }
-        setConnecting(false);
-      },
-      onExit: () => { setConnecting(false); },
-      onFailure: () => { setConnecting(false); },
-    });
-    teller.open();
+    try {
+      const lt = await fetch('/api/plaid/link-token', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: reconnectAccountId || undefined }),
+      }).then(r => r.json());
+      if (!lt.link_token) { alert(lt.error || 'Could not create Plaid link token'); setConnecting(false); return; }
+      const handler = w.Plaid.create({
+        token: lt.link_token,
+        onSuccess: async (public_token: string) => {
+          try {
+            if (lt.mode !== 'update' && public_token) {
+              const res = await fetch('/api/plaid/exchange', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ publicToken: public_token }),
+              });
+              const data = await res.json();
+              if (data.error) alert('Error: ' + data.error);
+              else setSyncResult(`Connected ${data.imported} account(s) via ${data.institution}`);
+            } else {
+              await fetch('/api/credit-cards', { method: 'POST' });
+            }
+            loadCards();
+          } catch (err: any) { alert('Failed: ' + err.message); }
+          setConnecting(false);
+        },
+        onExit: () => { setConnecting(false); },
+      });
+      handler.open();
+    } catch (e: any) { alert(String(e?.message || e)); setConnecting(false); }
   }, []);
 
   async function loadCards() {
@@ -182,7 +186,7 @@ export default function CreditCardsPage() {
   return (
     <div>
       <Script
-        src="https://cdn.teller.io/connect/connect.js"
+        src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"
         onLoad={() => setTellerReady(true)}
       />
 
@@ -208,7 +212,7 @@ export default function CreditCardsPage() {
           Sync
           </button>
           <button
-            onClick={handleTellerConnect}
+            onClick={() => handlePlaidConnect()}
             disabled={!tellerReady || connecting}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
           >
@@ -241,7 +245,7 @@ export default function CreditCardsPage() {
           {/* KPIs */}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-              <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Total Available</p>
+              <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Real Available (lines)</p>
               <p className={`text-xl font-bold ${summary.total_available_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                 {cents(summary.total_available_cents)}
               </p>
@@ -256,28 +260,42 @@ export default function CreditCardsPage() {
             </div>
           </div>
 
-          {/* Card Grid */}
+          {/* Card Grid — corporate credit LINES first, their cards indented
+              beneath (mirrors how BoA presents CORP parent + employee cards) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-            {cards.map(card => (
+            {[...cards].sort((a, b) => {
+              const fam = (c: CreditCard) => c.account_name.replace(/^CORP Account - /i, '').replace(/ LINE$/i, '').slice(0, 14).toLowerCase();
+              const isParent = (c: CreditCard) => /^CORP Account/i.test(c.account_name) ? 0 : 1;
+              return fam(a).localeCompare(fam(b)) || isParent(a) - isParent(b);
+            }).map(card => {
+              const fam = (c: CreditCard) => c.account_name.replace(/^CORP Account - /i, '').replace(/ LINE$/i, '').slice(0, 14).toLowerCase();
+              const isLine = /^CORP Account/i.test(card.account_name);
+              const parent = !isLine ? cards.find(c => /^CORP Account/i.test(c.account_name) && fam(c) === fam(card)) : undefined;
+              const hasParent = !!parent;
+              // A card can only spend what its LINE has left — the card's own
+              // "available" is just its allocation ceiling
+              const lineAvail = parent ? (parent.balance_available_cents || 0) : null;
+              const overstated = lineAvail !== null && lineAvail < (card.balance_available_cents || 0);
+              return (
               <button
                 key={card.id}
                 onClick={() => loadTransactions(card.id)}
                 className={`bg-slate-900 border rounded-xl p-5 text-left transition-colors ${
-                  selectedCard === card.id ? 'border-blue-600' : 'border-slate-800 hover:border-slate-700'
-                }`}
+                  selectedCard === card.id ? 'border-blue-600' : isLine ? 'border-slate-600' : 'border-slate-800 hover:border-slate-700'
+                } ${hasParent ? 'sm:ml-4 opacity-95' : ''}`}
               >
                 <div className="flex items-center justify-between mb-3">
                   <div>
-                    <h3 className="font-semibold text-white text-sm">{card.institution_name}</h3>
+                    <h3 className="font-semibold text-white text-sm">{isLine ? '🏦 ' : '↳ '}{card.institution_name}</h3>
                     <p className="text-xs text-slate-400">{card.account_name} ****{card.last_four}</p>
                   </div>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">
-                    {card.account_subtype || 'credit_card'}
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${isLine ? 'bg-blue-900/60 text-blue-300' : 'bg-slate-800 text-slate-400'}`}>
+                    {isLine ? 'credit line' : 'card'}
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <p className="text-[10px] text-slate-500 uppercase">Available</p>
+                    <p className="text-[10px] text-slate-500 uppercase">{hasParent ? 'Card limit open' : 'Available'}</p>
                     <p className={`text-sm font-semibold ${card.balance_available_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                       {cents(card.balance_available_cents || 0)}
                     </p>
@@ -287,14 +305,28 @@ export default function CreditCardsPage() {
                     <p className="text-sm font-semibold text-white">{cents(card.balance_ledger_cents || 0)}</p>
                   </div>
                 </div>
-                <p className="text-[10px] text-slate-600 mt-2">Updated {timeAgo(card.balance_updated_at)}</p>
+                {overstated && (
+                  <p className="mt-1.5 text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 rounded px-2 py-1">
+                    ⚠ Real spendable ≈ {cents(lineAvail!)} — capped by the credit line ({parent!.account_name.replace(/^CORP Account - /i, '')} owes {cents(parent!.balance_ledger_cents || 0)})
+                  </p>
+                )}
+                <div className="flex items-center justify-between mt-2">
+                  <p className="text-[10px] text-slate-600">Updated {timeAgo(card.balance_updated_at)}</p>
+                  <span
+                    role="button"
+                    onClick={e => { e.stopPropagation(); handlePlaidConnect(card.id); }}
+                    className={`text-[10px] px-2 py-0.5 rounded font-semibold cursor-pointer ${(card as any).last_sync_error ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'text-slate-500 hover:text-white'}`}>
+                    ↻ Reconnect
+                  </span>
+                </div>
                 {(card as any).last_sync_error && (
                   <p className="text-[10px] text-red-300 mt-1 bg-red-950/40 border border-red-900/50 rounded px-2 py-1">
                     ⚠ {(card as any).last_sync_error}
                   </p>
                 )}
               </button>
-            ))}
+              );
+            })}
           </div>
 
           {/* Transactions */}

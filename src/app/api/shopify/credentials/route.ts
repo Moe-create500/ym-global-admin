@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { ensureShopifyCredsTable, saveShopifyCreds, getCreds, probeStore, normalizeShopDomain } from '@/lib/shopify-sync';
+import { ensureShopifyCredsTable, saveShopifyCreds, savePermanentToken, getCreds, probeStore, normalizeShopDomain } from '@/lib/shopify-sync';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,16 +15,22 @@ export async function GET() {
 }
 
 // POST /api/shopify/credentials { storeId, shopDomain, clientId, clientSecret }
-// Saves creds, then live-probes the store to confirm the token mints and payments scope is granted.
+//   or { storeId, shopDomain, permanentToken } — a shpat_… pasted in the
+//   secret field is auto-detected as a permanent token (no client id needed)
+// Saves creds, then live-probes the store to confirm the token works and payments scope is granted.
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
-  const { storeId, shopDomain, clientId, clientSecret } = body || {};
-  if (!storeId || !shopDomain || !clientId || !clientSecret) {
-    return NextResponse.json({ error: 'storeId, shopDomain, clientId, clientSecret all required' }, { status: 400 });
+  const { storeId, shopDomain, clientId, clientSecret, permanentToken } = body || {};
+  const permToken = (typeof permanentToken === 'string' && permanentToken.trim().startsWith('shpat_') && permanentToken.trim())
+    || (typeof clientSecret === 'string' && clientSecret.trim().startsWith('shpat_') && clientSecret.trim())
+    || null;
+  if (!storeId || !shopDomain || (!permToken && (!clientId || !clientSecret))) {
+    return NextResponse.json({ error: 'storeId + shopDomain + either a permanent shpat_ token or clientId+clientSecret required' }, { status: 400 });
   }
 
   const db = getDb();
-  saveShopifyCreds(db, storeId, shopDomain, clientId, clientSecret);
+  if (permToken) savePermanentToken(db, storeId, shopDomain, permToken);
+  else saveShopifyCreds(db, storeId, shopDomain, clientId, clientSecret);
 
   try {
     const probe = await probeStore(db, storeId, Date.now());

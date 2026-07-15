@@ -888,7 +888,7 @@ export async function createAdCreative(
   if (options.videoId) {
     const ctaLink = validateLandingUrl(options.ctaLink || options.linkUrl || '');
     const ctaType = normalizeCtaType(options.ctaType || options.callToAction);
-    return fbPostWithRetry(`${adAccountId}/adcreatives`, accessToken, {
+    return postCreativeWithOptOuts(adAccountId, accessToken, {
       name: options.name,
       object_story_spec: {
         page_id: options.pageId,
@@ -910,7 +910,7 @@ export async function createAdCreative(
   if (!options.imageHash) throw new Error('createAdCreative: imageHash is required for image ads');
   const link = validateLandingUrl(options.linkUrl || options.ctaLink || '');
   const ctaType = normalizeCtaType(options.callToAction || options.ctaType);
-  return fbPostWithRetry(`${adAccountId}/adcreatives`, accessToken, {
+  return postCreativeWithOptOuts(adAccountId, accessToken, {
     name: options.name,
     object_story_spec: {
       page_id: options.pageId,
@@ -927,6 +927,45 @@ export async function createAdCreative(
       },
     },
   });
+}
+
+// Advantage+ creative auto-"enhancements" OFF — FB must run creatives exactly
+// as uploaded. The old blanket standard_enhancements field is deprecated
+// (subcode 3858504); features must be opted out INDIVIDUALLY now.
+const OPT_OUT = { enroll_status: 'OPT_OUT' };
+const CREATIVE_OPT_OUTS = {
+  creative_features_spec: {
+    image_brightness_and_contrast: OPT_OUT,
+    image_templates: OPT_OUT,
+    image_touchups: OPT_OUT,
+    image_uncrop: OPT_OUT,
+    enhance_cta: OPT_OUT,
+    text_optimizations: OPT_OUT,
+    inline_comment: OPT_OUT,
+    adapt_to_placement: OPT_OUT,
+    media_type_automation: OPT_OUT,
+    description_automation: OPT_OUT,
+    add_text_overlay: OPT_OUT,
+    product_extensions: OPT_OUT,
+    site_extensions: OPT_OUT,
+    expand_image: OPT_OUT,
+    cv_transformation: OPT_OUT,
+  },
+};
+
+/** Create the creative with all enhancement opt-outs; if FB rejects the spec
+ *  (they churn the allowed feature keys), create WITHOUT it — a live ad with
+ *  default enhancements beats a dead launch, and the warning lands in logs. */
+async function postCreativeWithOptOuts(adAccountId: string, accessToken: string, payload: Record<string, any>): Promise<{ id: string }> {
+  try {
+    return await fbPost(`${adAccountId}/adcreatives`, accessToken, {
+      ...payload,
+      degrees_of_freedom_spec: CREATIVE_OPT_OUTS,
+    });
+  } catch (e: any) {
+    console.warn('[FB] creative enhancement opt-outs rejected — creating without:', String(e?.message || e).slice(0, 180));
+    return fbPostWithRetry(`${adAccountId}/adcreatives`, accessToken, payload);
+  }
 }
 
 /**
@@ -950,4 +989,114 @@ export async function createAd(
     creative: { creative_id: options.creativeId },
     status: options.status || 'PAUSED',
   });
+}
+
+// ═══════════════ Pixels ═══════════════
+
+/** The pixel this ad account is ALREADY converting with: first ACTIVE ad set's
+ *  promoted pixel. An account running campaigns has a proven, purchase-fed
+ *  pixel — new launches should ride it, not start a cold one. */
+export async function findActivePixel(adAccountId: string, accessToken: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/adsets?fields=promoted_object,effective_status&limit=100&access_token=${accessToken}`);
+    const d = await res.json();
+    if (d.error) return null;
+    const active = (d.data || []).find((a: any) => a.effective_status === 'ACTIVE' && a.promoted_object?.pixel_id);
+    return active?.promoted_object?.pixel_id || null;
+  } catch { return null; }
+}
+
+/** Reuse the ad account's pixel if one exists, otherwise create one. */
+export async function getOrCreatePixel(
+  adAccountId: string,
+  accessToken: string,
+  name: string,
+): Promise<{ id: string; created: boolean; name: string }> {
+  const res = await fetch(`${FB_GRAPH_URL}/${adAccountId}/adspixels?fields=id,name,last_fired_time&limit=25&access_token=${accessToken}`);
+  const d = await res.json();
+  if (d.error) throw new Error(`Pixel lookup failed: ${d.error.error_user_msg || d.error.message}`);
+  const existing = (d.data || [])[0];
+  if (existing) return { id: existing.id, created: false, name: existing.name };
+  const created = await fbPostWithRetry(`${adAccountId}/adspixels`, accessToken, { name });
+  if (!created?.id) throw new Error('Pixel creation returned no id');
+  return { id: created.id, created: true, name };
+}
+
+/** Create a FRESH pixel for a new product launch (the default — clean signal
+ *  per product). Ad accounts cap direct pixel creation, so on failure fall
+ *  back to the Business Manager (more slots), sharing it back to the account;
+ *  if that's not possible either, reuse the account pixel as a last resort. */
+export async function createFreshPixel(
+  adAccountId: string,
+  accessToken: string,
+  name: string,
+  businessId?: string | null,
+): Promise<{ id: string; created: boolean; name: string; note?: string }> {
+  try {
+    const created = await fbPost(`${adAccountId}/adspixels`, accessToken, { name });
+    if (created?.id) return { id: created.id, created: true, name };
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    if (businessId) {
+      try {
+        const bm = await fbPost(`${businessId}/adspixels`, accessToken, { name });
+        if (bm?.id) {
+          try {
+            await fbPost(`${bm.id}/shared_accounts`, accessToken, {
+              account_id: adAccountId.replace('act_', ''), business: businessId,
+            });
+          } catch { /* pixel still usable by the owning business */ }
+          return { id: bm.id, created: true, name, note: 'created via Business Manager (ad account at pixel limit)' };
+        }
+      } catch { /* fall through to reuse */ }
+    }
+    const fallback = await getOrCreatePixel(adAccountId, accessToken, name);
+    return { ...fallback, note: `fresh pixel unavailable (${msg.slice(0, 80)}) — reused account pixel` };
+  }
+  const fallback = await getOrCreatePixel(adAccountId, accessToken, name);
+  return { ...fallback, note: 'fresh pixel unavailable — reused account pixel' };
+}
+
+/** Server-side test event (Conversions API) — proves the pixel exists and the
+ *  token can deliver events to it. Shows in Events Manager → Test events under
+ *  the code; never pollutes real data. Non-fatal by design: returns the outcome. */
+export async function sendPixelTestEvent(
+  pixelId: string,
+  accessToken: string,
+  eventSourceUrl: string,
+): Promise<{ received: boolean; note: string }> {
+  try {
+    const d = await fbPost(`${pixelId}/events`, accessToken, {
+      data: [{
+        event_name: 'ViewContent',
+        event_time: Math.floor(Date.now() / 1000),
+        action_source: 'website',
+        event_source_url: eventSourceUrl,
+        // CAPI requires at least one customer-information parameter beyond
+        // user agent — IP + UA together satisfy it for a test event
+        user_data: { client_user_agent: 'Mozilla/5.0 (ym-global pixel verify)', client_ip_address: '54.70.53.108' },
+      }],
+      test_event_code: 'TEST_YM_LAUNCH',
+    });
+    if (Number(d?.events_received) >= 1) return { received: true, note: 'test event received (Events Manager code TEST_YM_LAUNCH)' };
+    return { received: false, note: `unexpected response: ${JSON.stringify(d).slice(0, 120)}` };
+  } catch (e: any) {
+    return { received: false, note: String(e?.message || e).slice(0, 150) };
+  }
+}
+
+/** FB pixel base code + PageView + ViewContent, embeddable in a Shopify product
+ *  description — Shopify renders <script> in body_html, so the pixel fires on
+ *  the exact page the ads drive to. Guarded so a theme-installed copy of the
+ *  same pixel doesn't double-init. */
+export function pixelEmbedHtml(pixelId: string, ev: { contentName: string; contentId: string; valueCents: number; currency?: string }): string {
+  const cur = ev.currency || 'USD';
+  return `
+<script>
+!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
+if(!(window._fbq_inited_${pixelId})){window._fbq_inited_${pixelId}=1;fbq('init','${pixelId}');}
+fbq('track','PageView');
+fbq('track','ViewContent',{content_name:${JSON.stringify(ev.contentName)},content_ids:[${JSON.stringify(ev.contentId)}],content_type:'product',value:${(ev.valueCents / 100).toFixed(2)},currency:'${cur}'});
+</script>
+<noscript><img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=${pixelId}&ev=PageView&noscript=1"/></noscript>`;
 }
