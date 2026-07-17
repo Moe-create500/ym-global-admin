@@ -10,12 +10,15 @@ function render(tpl: string, vars: Record<string, string>): string {
   return tpl.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? '');
 }
 
-// POST /api/chargebacks/draft { chargebackId, workflowId? }
-// Pulls the live dispute + order from Shopify, renders the playbook's evidence
-// templates with real order data, and saves the draft onto the dispute via the
-// Dispute Evidence API. NEVER submits — review + final submit stay human.
+// POST /api/chargebacks/draft { chargebackId, workflowId?, dryRun? }
+// Pulls the live dispute + order from Shopify, gathers shipment proof
+// (fulfillment + tracking + DWS warehouse scan), renders the playbook's
+// evidence templates with real order data, and saves the draft onto the
+// dispute via the Dispute Evidence API. NEVER submits — review + final
+// submit stay human. dryRun gathers and returns everything without writing
+// anything anywhere (no playbook required).
 export async function POST(req: NextRequest) {
-  const { chargebackId, workflowId } = await req.json();
+  const { chargebackId, workflowId, dryRun } = await req.json();
   if (!chargebackId) return NextResponse.json({ error: 'chargebackId required' }, { status: 400 });
 
   const db = getDb();
@@ -26,12 +29,12 @@ export async function POST(req: NextRequest) {
   }
 
   const wfId = workflowId || cb.response_workflow_id;
-  if (!wfId) return NextResponse.json({ error: 'Pick a playbook first' }, { status: 400 });
-  const wf: any = db.prepare('SELECT * FROM cb_response_workflows WHERE id = ?').get(wfId);
-  if (!wf) return NextResponse.json({ error: 'Playbook not found' }, { status: 404 });
+  if (!wfId && !dryRun) return NextResponse.json({ error: 'Pick a playbook first' }, { status: 400 });
+  const wf: any = wfId ? db.prepare('SELECT * FROM cb_response_workflows WHERE id = ?').get(wfId) : null;
+  if (wfId && !wf) return NextResponse.json({ error: 'Playbook not found' }, { status: 404 });
 
   let tpl: any = {};
-  try { tpl = wf.template_json ? JSON.parse(wf.template_json) : {}; } catch { /* empty template */ }
+  try { tpl = wf?.template_json ? JSON.parse(wf.template_json) : {}; } catch { /* empty template */ }
 
   const store: any = db.prepare('SELECT id, name FROM stores WHERE id = ?').get(cb.store_id);
   const nowMs = Date.now();
@@ -56,6 +59,10 @@ export async function POST(req: NextRequest) {
     const lineItems = (order?.line_items || [])
       .map((li: any) => `${li.quantity}x ${li.title} — $${li.price}`)
       .join('; ');
+
+    // Diagram steps 2-3: fulfilled? → DWS scan? → strongest physical proof
+    const { gatherShipmentProof } = await import('@/lib/chargeback-evidence');
+    const proof = await gatherShipmentProof(db, cb.store_id, order);
 
     const vars: Record<string, string> = {
       store_name: store?.name || '',
@@ -87,6 +94,28 @@ export async function POST(req: NextRequest) {
     if (customer?.email || order?.email) evidence.customer_email_address = customer?.email || order?.email;
     if (customer?.first_name) evidence.customer_first_name = customer.first_name;
     if (customer?.last_name) evidence.customer_last_name = customer.last_name;
+
+    // Diagram step 4: shipment date, carrier, tracking as first-class evidence
+    // fields, and the DWS warehouse proof appended to the narrative.
+    if (proof.shippedDate) evidence.shipping_date = proof.shippedDate;
+    if (proof.carrier) evidence.shipping_carrier = proof.carrier;
+    if (proof.trackingNumber) evidence.shipping_tracking_number = proof.trackingNumber;
+    if (proof.proofText) {
+      evidence.uncategorized_text = [evidence.uncategorized_text, proof.proofText].filter(Boolean).join('\n\n');
+      drafted.uncategorized_text = evidence.uncategorized_text;
+    }
+
+    if (dryRun) {
+      return NextResponse.json({
+        dryRun: true,
+        dispute: { id: cb.dispute_id, status: dispute.status, reason: cb.reason, amount: vars.amount },
+        checks: proof.checks,
+        dws: proof.dws,
+        evidence,
+        vars,
+        note: 'DRY RUN — nothing was saved to Shopify or the database.',
+      });
+    }
 
     if (Object.keys(drafted).length === 0) {
       return NextResponse.json({ error: 'Playbook has no templates configured — edit it in Defense Workflows first' }, { status: 400 });
