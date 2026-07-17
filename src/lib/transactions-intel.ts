@@ -127,7 +127,8 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
 
   db.transaction(() => {
     for (const t of txns) {
-      if (t.linked && t.link_confidence === 'manual' && !opts.force) continue;
+      // Manual assignments are never overwritten, even on force re-scans.
+      if (t.linked && t.link_confidence === 'manual') continue;
       if (t.linked && !opts.force) {
         // already auto-linked — still collect for payment pairing
         const existing: any = db.prepare('SELECT class, pair_txn_id FROM txn_links WHERE txn_id = ?').get(t.id);
@@ -175,8 +176,11 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
         if (hit) { storeId = hit.id; storeSource = 'description'; }
       }
 
-      // 3. the account itself belongs to a store
-      if (!storeId && t.account_store_id && !t.is_global) {
+      // 3. the account itself belongs to a store — checking accounts only.
+      // Credit cards are shared instruments (one card funds many stores), so a
+      // charge with no invoice/description/FB signal stays unattributed rather
+      // than inheriting whichever store the card row is filed under.
+      if (!storeId && t.account_store_id && !t.is_global && t.account_type !== 'credit') {
         storeId = t.account_store_id; storeSource = 'account';
       }
 
