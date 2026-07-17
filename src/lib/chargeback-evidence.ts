@@ -27,8 +27,17 @@ export interface ShipmentProof {
   checks: string[];
 }
 
-const normalizeOrderRef = (v: string | null | undefined) =>
-  String(v || '').replace(/^#/, '').trim().toLowerCase();
+// DWS externalOrderId arrives source-prefixed ("SHIPHERO-#82497") while the
+// Shopify order name is "#82497" — compare on the part after the last '#'.
+const normalizeOrderRef = (v: string | null | undefined) => {
+  const s = String(v || '').trim().toLowerCase();
+  const hash = s.lastIndexOf('#');
+  return (hash >= 0 ? s.slice(hash + 1) : s).trim();
+};
+
+// DWS photo urls are relative to the ShipSourced host.
+const SS_BASE = process.env.SHIPSOURCED_API_URL || 'https://shipsourcedcenter.com';
+const absolutizePhoto = (u: string | null) => (u && u.startsWith('/') ? `${SS_BASE}${u}` : u);
 
 /**
  * Gather physical shipment evidence for a live Shopify order object.
@@ -95,7 +104,7 @@ export async function gatherShipmentProof(
     parts.push(
       `Independent fulfillment-warehouse records confirm the physical package: it was weighed and scanned at the automated scale station${dwsScan.dwsMachine ? ` (${dwsScan.dwsMachine})` : ''} on ${dwsScan.dwsScannedAt.replace('T', ' ').slice(0, 16)} UTC` +
       `${dwsScan.dwsWeightOz != null ? `, recording an actual weight of ${dwsScan.dwsWeightOz} oz` : ''}${dims ? ` and dimensions ${dims}` : ''}.` +
-      `${dwsScan.dwsPhotoUrl ? ` A photograph of the sealed package taken at scan time is available at: ${dwsScan.dwsPhotoUrl}` : ''}`
+      `${dwsScan.dwsPhotoUrl ? ` A photograph of the sealed package taken at scan time is available at: ${absolutizePhoto(dwsScan.dwsPhotoUrl)}` : ''}`
     );
   }
 
@@ -105,7 +114,7 @@ export async function gatherShipmentProof(
       scannedAt: dwsScan.dwsScannedAt, machine: dwsScan.dwsMachine,
       weightOz: dwsScan.dwsWeightOz, declaredWeightOz: dwsScan.declaredWeightOz,
       lengthIn: dwsScan.dwsLengthIn, widthIn: dwsScan.dwsWidthIn, heightIn: dwsScan.dwsHeightIn,
-      photoUrl: dwsScan.dwsPhotoUrl,
+      photoUrl: absolutizePhoto(dwsScan.dwsPhotoUrl),
     } : null,
     proofText: parts.join('\n\n'),
     checks,
