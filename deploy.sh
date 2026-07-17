@@ -5,7 +5,7 @@ set -euo pipefail
 # Deploys code ONLY — never touches database files on the server
 # GITHUB SYNC: Always pulls partner's creatives + pushes your changes
 
-SERVER="ubuntu@54.70.53.108"
+SERVER="ubuntu@32.187.28.147"
 KEY="$HOME/.ssh/SHIPSOURCED.pem"
 REMOTE_DIR="/home/ubuntu/ym-global"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -71,4 +71,4 @@ ssh -i "$KEY" "$SERVER" "pm2 restart ym-global"
 echo ""
 echo "=== Deploy complete ==="
 echo "GitHub synced + Server deployed"
-echo "Verify: https://54.70.53.108/"
+echo "Verify: https://32.187.28.147/"
