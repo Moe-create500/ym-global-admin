@@ -35,6 +35,18 @@ export async function register() {
           console.error(`[auto-sync] ${label} bank sync error:`, e);
         }
 
+        // Reconcile freshly imported bank transactions (incremental — only
+        // touches unlinked rows, sub-second) so Transactions stays current
+        // without anyone pressing Scan.
+        try {
+          const { runTransactionScan } = await import('@/lib/transactions-intel');
+          const { getDb } = await import('@/lib/db');
+          const scan = runTransactionScan(getDb(), { days: 45 });
+          if (scan.classified > 0) bankNote += `, ${scan.classified} txns reconciled`;
+        } catch (e) {
+          console.error(`[auto-sync] ${label} txn scan error:`, e);
+        }
+
         // Fulfillment-status refresh vs ShipSourced — keeps the CFO unfulfilled
         // estimate honest (order sync only inserts, never updates statuses)
         let statusNote = 'statuses skipped';
