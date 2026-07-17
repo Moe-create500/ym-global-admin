@@ -274,3 +274,51 @@ export async function getAllClientProducts(clientId: string): Promise<SSClientPr
   }
   return all;
 }
+
+// ── DWS scans (actual weight/dims from the China warehouse scale station) ──
+
+export interface SSDwsScan {
+  shipmentId: string;
+  orderId: string;
+  externalOrderId: string | null;
+  source: string | null;
+  trackingNumber: string | null;
+  carrier: string | null;
+  dwsWeightOz: number | null;
+  dwsLengthIn: number | null;
+  dwsWidthIn: number | null;
+  dwsHeightIn: number | null;
+  dwsPhotoUrl: string | null;
+  dwsScannedAt: string;
+  dwsMachine: string | null;
+  declaredWeightOz: number | null;
+  labelCost: number | null;
+}
+
+export interface SSDwsResponse {
+  scans: SSDwsScan[];
+  count: number;
+  nextCursor: string | null;
+}
+
+/** One page of DWS scans for a ShipSourced client (cursor-paginated, ascending). */
+export function getDwsScans(clientId: string, opts?: { since?: string; cursor?: string; limit?: number }): Promise<SSDwsResponse> {
+  const p = new URLSearchParams({ clientId });
+  if (opts?.since) p.set('since', opts.since);
+  if (opts?.cursor) p.set('cursor', opts.cursor);
+  if (opts?.limit) p.set('limit', String(opts.limit));
+  return apiFetch<SSDwsResponse>(`/api/integration/dws?${p.toString()}`);
+}
+
+/** All DWS scans since a date for a client (follows pagination). */
+export async function getAllDwsScans(clientId: string, since?: string): Promise<SSDwsScan[]> {
+  const all: SSDwsScan[] = [];
+  let cursor: string | undefined;
+  while (true) {
+    const page = await getDwsScans(clientId, { since, cursor, limit: 1000 });
+    all.push(...page.scans);
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  return all;
+}
