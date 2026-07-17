@@ -11,6 +11,9 @@ export function getDb(): Database.Database {
     _db.pragma('journal_mode = WAL');
     _db.pragma('busy_timeout = 5000');
     _db.pragma('foreign_keys = ON');
+    // WAL + NORMAL: commits skip the per-commit fsync (batched at checkpoint).
+    // Crash-safe for corruption; worst case loses only the most recent commit.
+    _db.pragma('synchronous = NORMAL');
 
     // Migration: add platform_fee_pct and amazon_category to stores
     const cols = _db.prepare("PRAGMA table_info(stores)").all() as any[];
@@ -47,6 +50,69 @@ export function getDb(): Database.Database {
     if (!cplCols.find((c: any) => c.name === 'platform')) {
       _db.exec("ALTER TABLE card_payments_log ADD COLUMN platform TEXT DEFAULT 'facebook'");
     }
+
+    // Migration: chargeback workflow columns (Chargebacks tab)
+    const cbCols = _db.prepare("PRAGMA table_info(chargebacks)").all() as any[];
+    if (cbCols.length > 0) {
+      if (!cbCols.find((c: any) => c.name === 'evidence_due_by')) {
+        _db.exec("ALTER TABLE chargebacks ADD COLUMN evidence_due_by TEXT DEFAULT NULL");
+      }
+      if (!cbCols.find((c: any) => c.name === 'dispute_type')) {
+        _db.exec("ALTER TABLE chargebacks ADD COLUMN dispute_type TEXT DEFAULT NULL");
+      }
+      if (!cbCols.find((c: any) => c.name === 'raw_status')) {
+        _db.exec("ALTER TABLE chargebacks ADD COLUMN raw_status TEXT DEFAULT NULL");
+      }
+      if (!cbCols.find((c: any) => c.name === 'workflow_status')) {
+        _db.exec("ALTER TABLE chargebacks ADD COLUMN workflow_status TEXT DEFAULT 'new'");
+      }
+      if (!cbCols.find((c: any) => c.name === 'response_notes')) {
+        _db.exec("ALTER TABLE chargebacks ADD COLUMN response_notes TEXT DEFAULT NULL");
+      }
+      if (!cbCols.find((c: any) => c.name === 'handled_at')) {
+        _db.exec("ALTER TABLE chargebacks ADD COLUMN handled_at TEXT DEFAULT NULL");
+      }
+      if (!cbCols.find((c: any) => c.name === 'response_workflow_id')) {
+        _db.exec("ALTER TABLE chargebacks ADD COLUMN response_workflow_id TEXT DEFAULT NULL");
+      }
+    }
+
+    // Migration: chargeback response workflows (playbooks) — tag each dispute
+    // with the response strategy used, so win rate per reason×workflow is trackable
+    _db.exec(`CREATE TABLE IF NOT EXISTS cb_response_workflows (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    const cbwfCols = _db.prepare("PRAGMA table_info(cb_response_workflows)").all() as any[];
+    if (!cbwfCols.find((c: any) => c.name === 'template_json')) {
+      _db.exec("ALTER TABLE cb_response_workflows ADD COLUMN template_json TEXT DEFAULT NULL");
+    }
+    if (!cbwfCols.find((c: any) => c.name === 'match_reasons')) {
+      _db.exec("ALTER TABLE cb_response_workflows ADD COLUMN match_reasons TEXT DEFAULT NULL");
+    }
+    const wfSeed = _db.prepare('SELECT COUNT(*) as n FROM cb_response_workflows').get() as any;
+    if (wfSeed.n === 0) {
+      const ins = _db.prepare('INSERT INTO cb_response_workflows (id, name, description) VALUES (?, ?, ?)');
+      ins.run('wf_full_evidence', 'Full Evidence Pack', 'Tracking + delivery proof + order details + customer comms');
+      ins.run('wf_delivery_proof', 'Delivery Proof Only', 'Carrier tracking + proof of delivery');
+      ins.run('wf_refund_first', 'Refund First', 'Refund the order to close inquiries before they escalate');
+    }
+    // Starter evidence templates for the seeded playbooks (only where still empty)
+    const tplBackfill = _db.prepare('UPDATE cb_response_workflows SET template_json = ?, match_reasons = ? WHERE id = ? AND template_json IS NULL');
+    tplBackfill.run(JSON.stringify({
+      uncategorized_text: 'This charge is valid. Order {{order_number}} was placed on {{order_date}} by {{customer_name}} ({{customer_email}}) for {{line_items}}. The order shipped via {{carrier}}, tracking {{tracking_number}}, on {{shipping_date}} to the address provided at checkout: {{shipping_address}}. Tracking: {{tracking_url}}. The product was delivered as described and no refund request was received through our support channels before this dispute was filed.',
+      product_description: '{{line_items}} — purchased on {{order_date}} for {{amount}} from {{store_name}}.',
+      refund_refusal_explanation: 'Our refund policy is displayed at checkout. The customer did not contact support to request a refund before filing this dispute, so we had no opportunity to resolve the issue directly.',
+      files: ['shipping_documentation', 'customer_communication', 'response_summary'],
+    }), JSON.stringify(['fraudulent', 'unrecognized', 'general']), 'wf_full_evidence');
+    tplBackfill.run(JSON.stringify({
+      uncategorized_text: 'Order {{order_number}} shipped via {{carrier}}, tracking {{tracking_number}}, on {{shipping_date}} to {{shipping_address}} — the address the customer provided at checkout. Carrier tracking ({{tracking_url}}) confirms delivery.',
+      product_description: '{{line_items}} — purchased on {{order_date}} for {{amount}} from {{store_name}}.',
+      files: ['shipping_documentation'],
+    }), JSON.stringify(['product_not_received']), 'wf_delivery_proof');
 
     // Migration: cfo_snapshots.excluded — a blocked snapshot is skipped by the
     // reconciliation chain (used to redo a window after fixing underlying data)

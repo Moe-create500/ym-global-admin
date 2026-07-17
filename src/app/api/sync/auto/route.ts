@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getStaleStores, syncStore, syncFacebookAds } from '@/lib/sync';
+import { getStaleStores, syncStore, syncFacebookAds, acquireSyncLock, releaseSyncLock } from '@/lib/sync';
 import { getNewClientOrders, getClientBillingConfig, ssOrderKey } from '@/lib/shipsourced';
 import { refreshOrderStatuses } from '@/lib/order-status-refresh';
 import { getDisputes } from '@/lib/chargeflow';
+import { rollUpChargebacks } from '@/lib/chargeback-rollup';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -166,6 +167,12 @@ async function updateUnfulfilledStatuses(storeId: string, clientId: string) {
 
 // Called by the dashboard on load to sync stale stores + Facebook ads
 export async function POST() {
+  // Two dashboard tabs opening at once (or a tab during the 30-min tick) must
+  // not stack full pipelines — skip quietly, data is at most minutes stale.
+  if (!acquireSyncLock('dashboard-auto')) {
+    return NextResponse.json({ synced: false, message: 'Sync already in progress' });
+  }
+  try {
   const stale = getStaleStores(60); // stores not synced in last 60 minutes
 
   const results = [];
@@ -246,27 +253,10 @@ export async function POST() {
 
       cfImported += storeImported;
 
-      // Rollup lost chargebacks into P&L
+      // Rollup lost chargebacks into P&L (shared scoped rollup — the inline
+      // copy this replaces reset every row and omitted COGS from net profit)
       if (storeImported > 0) {
-        const days: any[] = db.prepare(`
-          SELECT chargeback_date as date, SUM(amount_cents) as total
-          FROM chargebacks WHERE store_id = ? AND status = 'lost' GROUP BY chargeback_date
-        `).all(s.id);
-        db.prepare('UPDATE daily_pnl SET chargeback_cents = 0 WHERE store_id = ?').run(s.id);
-        for (const day of days) {
-          const pnl: any = db.prepare(
-            'SELECT id, revenue_cents, ad_spend_cents, shipping_cost_cents, shopify_fees_cents, pick_pack_cents, packaging_cents, other_costs_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
-          ).get(s.id, day.date);
-          if (pnl) {
-            const totalCosts = (pnl.shipping_cost_cents || 0) + (pnl.pick_pack_cents || 0) +
-              (pnl.packaging_cents || 0) + (pnl.ad_spend_cents || 0) + (pnl.shopify_fees_cents || 0) +
-              (pnl.other_costs_cents || 0) + (pnl.app_costs_cents || 0) + day.total;
-            const netProfit = (pnl.revenue_cents || 0) - totalCosts;
-            const margin = pnl.revenue_cents > 0 ? (netProfit / pnl.revenue_cents) * 100 : 0;
-            db.prepare('UPDATE daily_pnl SET chargeback_cents = ?, net_profit_cents = ?, margin_pct = ?, updated_at = datetime(\'now\') WHERE id = ?')
-              .run(day.total, netProfit, margin, pnl.id);
-          }
-        }
+        rollUpChargebacks(db, s.id);
       }
 
       console.log(`[chargeflow] ${s.name}: ${storeImported} imported/updated`);
@@ -296,4 +286,7 @@ export async function POST() {
     fbInvoicesImported: fbResult.invoicesImported,
     results,
   });
+  } finally {
+    releaseSyncLock();
+  }
 }

@@ -3,19 +3,16 @@ export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
     const SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
-    // Overlap guard: never let two full sync passes run at once. On a small box a slow
-    // sync that outruns the 30-min interval would otherwise stack, piling up memory until
-    // the process OOM-crashes. A skipped tick just waits for the next 30-min window.
-    let syncing = false;
-
+    // Overlap guard: never let two full sync passes run at once. Uses the shared
+    // cross-entry-point lock in lib/sync so manual /api/cron/sync and dashboard
+    // auto-syncs can't stack on top of the 30-min tick either.
     const runFullSync = async (label: string, includeProducts: boolean) => {
-      if (syncing) {
-        console.warn(`[auto-sync] ${label} skipped — previous run still in progress`);
+      const { syncAllStores, syncFacebookAds, syncAllProducts, acquireSyncLock, releaseSyncLock, activeSyncLock } = await import('@/lib/sync');
+      if (!acquireSyncLock(`auto:${label}`)) {
+        console.warn(`[auto-sync] ${label} skipped — "${activeSyncLock()}" still in progress`);
         return;
       }
-      syncing = true;
       try {
-        const { syncAllStores, syncFacebookAds, syncAllProducts } = await import('@/lib/sync');
         console.log(`[auto-sync] ${label} starting...`);
         const storeResult = await syncAllStores();
         const fbResult = await syncFacebookAds();
@@ -63,7 +60,7 @@ export async function register() {
       } catch (e) {
         console.error(`[auto-sync] ${label} error:`, e);
       } finally {
-        syncing = false;
+        releaseSyncLock();
       }
     };
 
@@ -73,20 +70,19 @@ export async function register() {
 
       // One-time product sync 2 min after startup (separate from heavy initial sync)
       setTimeout(async () => {
-        if (syncing) {
+        const { syncAllProducts, acquireSyncLock, releaseSyncLock } = await import('@/lib/sync');
+        if (!acquireSyncLock('product-sync')) {
           console.warn('[product-sync] skipped — a sync is already in progress');
           return;
         }
-        syncing = true;
         try {
-          const { syncAllProducts } = await import('@/lib/sync');
           console.log('[product-sync] First product sync starting...');
           const result = await syncAllProducts();
           console.log(`[product-sync] Done: ${result.synced} products synced, ${result.errors.length} errors`);
         } catch (e) {
           console.error('[product-sync] Error:', e);
         } finally {
-          syncing = false;
+          releaseSyncLock();
         }
       }, 120_000);
 

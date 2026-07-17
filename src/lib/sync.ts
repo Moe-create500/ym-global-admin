@@ -152,6 +152,9 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
     // Primary sync from orders endpoint dailyRevenue
     // shipping_cost_cents = ShipSourced fulfillment charges (per-order Charge)
     // cogs_cents = product cost only (usCogs + chinaCogs)
+    // One transaction for the whole per-day write pass: one fsync instead of
+    // one per row, and a crash can't leave a half-written day range.
+    db.transaction(() => {
     for (const [day, rev] of Object.entries(dailyRevMap)) {
       // Skip days before sync start date
       if (store.sync_start_date && day < store.sync_start_date) continue;
@@ -291,6 +294,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
         }
       }
     }
+    })();
 
     // Update ShipSourced billing stats
     // ss_charges_pending_cents = actual billed amount from ShipSourced (combinedPending)
@@ -363,6 +367,7 @@ export async function syncShopifyRevenue(storeId: string): Promise<{ synced: num
 
     let synced = 0;
 
+    db.transaction(() => {
     for (const [date, data] of Object.entries(dailySales)) {
       const existing: any = db.prepare(
         'SELECT id, ad_spend_cents, shopify_fees_cents, other_costs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
@@ -398,6 +403,7 @@ export async function syncShopifyRevenue(storeId: string): Promise<{ synced: num
       }
       synced++;
     }
+    })();
 
     console.log(`[shopify-sync] ${store.name}: synced ${synced} days`);
     return { synced };
@@ -553,6 +559,25 @@ export async function syncTodayRevenueAll(throttleMs = 30000): Promise<{ stores:
   };
 }
 
+// ── Cross-entry-point sync lock ──────────────────────────────────────────────
+// The 30-min timer, /api/cron/sync, /api/sync/shipsourced and /api/sync/auto all
+// run the same heavy pipelines. Concurrent runs double peak memory (the OOM
+// pattern) and hammer external APIs. Lock lives on globalThis so every bundle
+// (instrumentation, route handlers) sees the same one.
+export function acquireSyncLock(label: string): boolean {
+  const g = globalThis as any;
+  if (g.__ymSyncLock) return false;
+  g.__ymSyncLock = label;
+  return true;
+}
+export function releaseSyncLock(): void { (globalThis as any).__ymSyncLock = null; }
+export function activeSyncLock(): string | null { return (globalThis as any).__ymSyncLock || null; }
+
+/** How many stores sync concurrently. Wall-time is external-API dominated
+ *  (~50s/store serial); 3 workers cuts the pass to roughly a third while
+ *  keeping peak memory well inside the 1280MB heap cap. */
+const STORE_SYNC_CONCURRENCY = 3;
+
 export async function syncAllStores(): Promise<{ results: SyncResult[]; logId: string }> {
   const db = getDb();
   const stores: any[] = db.prepare(
@@ -568,14 +593,19 @@ export async function syncAllStores(): Promise<{ results: SyncResult[]; logId: s
   let totalSynced = 0;
   const errors: string[] = [];
 
-  for (const store of stores) {
-    // Sync Shopify revenue first (if configured), then ShipSourced fulfillment/COGS
-    await syncShopifyRevenue(store.id);
-    const result = await syncStore(store.id);
-    results.push(result);
-    totalSynced += result.synced;
-    if (result.error) errors.push(`${result.storeName}: ${result.error}`);
-  }
+  let next = 0;
+  const workers = Array.from({ length: Math.min(STORE_SYNC_CONCURRENCY, stores.length) }, async () => {
+    while (next < stores.length) {
+      const store = stores[next++];
+      // Sync Shopify revenue first (if configured), then ShipSourced fulfillment/COGS
+      await syncShopifyRevenue(store.id);
+      const result = await syncStore(store.id);
+      results.push(result);
+      totalSynced += result.synced;
+      if (result.error) errors.push(`${result.storeName}: ${result.error}`);
+    }
+  });
+  await Promise.all(workers);
 
   db.prepare(`
     UPDATE sync_log SET status = ?, records_synced = ?, error_message = ?, completed_at = datetime('now')
@@ -656,6 +686,18 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
       const insights = allInsights;
       const adIds = new Set<string>();
 
+      // Hoisted statements + one transaction: this loop writes thousands of
+      // rows per account; per-row prepare + autocommit was the slow path.
+      const delByAd = db.prepare(`DELETE FROM ad_spend WHERE store_id = ? AND date = ? AND platform = 'facebook' AND campaign_id = ? AND ad_id = ?`);
+      const delByAdset = db.prepare(`DELETE FROM ad_spend WHERE store_id = ? AND date = ? AND platform = 'facebook' AND campaign_id = ? AND ad_set_id = ? AND ad_id IS NULL`);
+      const delByCampaign = db.prepare(`DELETE FROM ad_spend WHERE store_id = ? AND date = ? AND platform = 'facebook' AND campaign_id = ? AND ad_set_id IS NULL AND ad_id IS NULL`);
+      const insSpend = db.prepare(`
+        INSERT INTO ad_spend (id, store_id, date, platform, campaign_id, campaign_name,
+          ad_set_id, ad_set_name, ad_id, ad_name, spend_cents, impressions, clicks, purchases,
+          purchase_value_cents, roas, reach, frequency, cpm, cpc, ctr, source)
+        VALUES (?, ?, ?, 'facebook', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'api')
+      `);
+      db.transaction(() => {
       for (const insight of insights) {
         const date = insight.date_start;
         const spendCents = Math.round(parseFloat(insight.spend || '0') * 100);
@@ -687,22 +729,14 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
         const adSetId = insight.adset_id || null;
         const adId = insight.ad_id || null;
         if (adId) {
-          db.prepare(`DELETE FROM ad_spend WHERE store_id = ? AND date = ? AND platform = 'facebook' AND campaign_id = ? AND ad_id = ?`)
-            .run(profile.store_id, date, insight.campaign_id, adId);
+          delByAd.run(profile.store_id, date, insight.campaign_id, adId);
         } else if (adSetId) {
-          db.prepare(`DELETE FROM ad_spend WHERE store_id = ? AND date = ? AND platform = 'facebook' AND campaign_id = ? AND ad_set_id = ? AND ad_id IS NULL`)
-            .run(profile.store_id, date, insight.campaign_id, adSetId);
+          delByAdset.run(profile.store_id, date, insight.campaign_id, adSetId);
         } else {
-          db.prepare(`DELETE FROM ad_spend WHERE store_id = ? AND date = ? AND platform = 'facebook' AND campaign_id = ? AND ad_set_id IS NULL AND ad_id IS NULL`)
-            .run(profile.store_id, date, insight.campaign_id);
+          delByCampaign.run(profile.store_id, date, insight.campaign_id);
         }
 
-        db.prepare(`
-          INSERT INTO ad_spend (id, store_id, date, platform, campaign_id, campaign_name,
-            ad_set_id, ad_set_name, ad_id, ad_name, spend_cents, impressions, clicks, purchases,
-            purchase_value_cents, roas, reach, frequency, cpm, cpc, ctr, source)
-          VALUES (?, ?, ?, 'facebook', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'api')
-        `).run(crypto.randomUUID(), profile.store_id, date,
+        insSpend.run(crypto.randomUUID(), profile.store_id, date,
           insight.campaign_id, insight.campaign_name,
           adSetId, insight.adset_name || null,
           adId, insight.ad_name || null,
@@ -711,6 +745,7 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
 
         totalSynced++;
       }
+      })();
 
       // Fetch creative context
       if (adIds.size > 0) {
@@ -778,6 +813,7 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
         GROUP BY date
       `).all(profile.store_id, from, to);
 
+      db.transaction(() => {
       for (const day of days as any[]) {
         const existing: any = db.prepare(
           'SELECT id, revenue_cents, cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
@@ -802,6 +838,7 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
           `).run(id, profile.store_id, day.date, day.total, -day.total, 0);
         }
       }
+      })();
 
       // Sync billing charges from FB activities API
       try {

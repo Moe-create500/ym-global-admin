@@ -61,17 +61,34 @@ export function recalcDailyPnl(
   const handledDates = new Set<string>();
   let recalculated = 0;
 
+  // Hoisted statements + one transaction — full-store recalcs touch thousands
+  // of days; per-day prepare + autocommit was the slow path.
+  const selectPnl = db.prepare(
+    `SELECT id, revenue_cents, cogs_cents, ad_spend_cents,
+            other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed,
+            order_count
+     FROM daily_pnl WHERE store_id = ? AND date = ?`);
+  const updatePnl = db.prepare(`
+    UPDATE daily_pnl SET
+      shipping_cost_cents = ?, pick_pack_cents = 0, packaging_cents = 0,
+      shopify_fees_cents = ?,
+      net_profit_cents = ?, margin_pct = ?,
+      updated_at = datetime('now')
+    WHERE id = ?`);
+  const insertPnl = db.prepare(`
+    INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count,
+      cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents,
+      ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents,
+      net_profit_cents, margin_pct, source)
+    VALUES (?, ?, ?, ?, ?, 0, ?, 0, 0, 0, ?, 0, 0, 0, ?, ?, 'orders')`);
+
+  db.transaction(() => {
   for (const day of orderDays) {
     handledDates.add(day.date);
 
     const fulfillmentCents = day.total_charges || 0;
 
-    const pnl: any = db.prepare(
-      `SELECT id, revenue_cents, cogs_cents, ad_spend_cents,
-              other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed,
-              order_count
-       FROM daily_pnl WHERE store_id = ? AND date = ?`
-    ).get(storeId, day.date);
+    const pnl: any = selectPnl.get(storeId, day.date);
 
     if (pnl) {
       if (pnl.is_confirmed) continue;
@@ -91,14 +108,7 @@ export function recalcDailyPnl(
       const netProfit = revenue - totalCosts;
       const margin = revenue > 0 ? (netProfit / revenue) * 100 : 0;
 
-      db.prepare(`
-        UPDATE daily_pnl SET
-          shipping_cost_cents = ?, pick_pack_cents = 0, packaging_cents = 0,
-          shopify_fees_cents = ?,
-          net_profit_cents = ?, margin_pct = ?,
-          updated_at = datetime('now')
-        WHERE id = ?
-      `).run(fulfillmentCents, shopifyFees, netProfit, margin, pnl.id);
+      updatePnl.run(fulfillmentCents, shopifyFees, netProfit, margin, pnl.id);
     } else {
       const revenue = day.total_revenue || 0;
       const orders = day.order_count || 0;
@@ -107,13 +117,7 @@ export function recalcDailyPnl(
       const netProfit = revenue - totalCosts;
       const margin = revenue > 0 ? (netProfit / revenue) * 100 : 0;
 
-      db.prepare(`
-        INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count,
-          cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents,
-          ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents,
-          net_profit_cents, margin_pct, source)
-        VALUES (?, ?, ?, ?, ?, 0, ?, 0, 0, 0, ?, 0, 0, 0, ?, ?, 'orders')
-      `).run(crypto.randomUUID(), storeId, day.date, revenue, orders,
+      insertPnl.run(crypto.randomUUID(), storeId, day.date, revenue, orders,
         fulfillmentCents, shopifyFees, netProfit, margin);
     }
     recalculated++;
@@ -124,12 +128,7 @@ export function recalcDailyPnl(
     for (const [date, lumpSumCents] of Object.entries(fallbackCharges)) {
       if (handledDates.has(date)) continue;
 
-      const pnl: any = db.prepare(
-        `SELECT id, revenue_cents, cogs_cents, ad_spend_cents,
-                other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed,
-                order_count
-         FROM daily_pnl WHERE store_id = ? AND date = ?`
-      ).get(storeId, date);
+      const pnl: any = selectPnl.get(storeId, date);
 
       if (pnl) {
         if (pnl.is_confirmed) continue;
@@ -147,18 +146,12 @@ export function recalcDailyPnl(
         const netProfit = revenue - totalCosts;
         const margin = revenue > 0 ? (netProfit / revenue) * 100 : 0;
 
-        db.prepare(`
-          UPDATE daily_pnl SET
-            shipping_cost_cents = ?, pick_pack_cents = 0, packaging_cents = 0,
-            shopify_fees_cents = ?,
-            net_profit_cents = ?, margin_pct = ?,
-            updated_at = datetime('now')
-          WHERE id = ?
-        `).run(lumpSumCents, shopifyFees, netProfit, margin, pnl.id);
+        updatePnl.run(lumpSumCents, shopifyFees, netProfit, margin, pnl.id);
       }
       recalculated++;
     }
   }
+  })();
 
   return recalculated;
 }

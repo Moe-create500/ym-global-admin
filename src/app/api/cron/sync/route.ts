@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { syncAllStores, syncFacebookAds } from '@/lib/sync';
+import { syncAllStores, syncFacebookAds, acquireSyncLock, releaseSyncLock, activeSyncLock } from '@/lib/sync';
 import { getDb } from '@/lib/db';
 import { getAccountBalance, getAccountTransactions } from '@/lib/teller';
 import crypto from 'crypto';
@@ -87,6 +87,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // Never stack on top of the 30-min tick or another manual run — concurrent
+  // full syncs double peak memory (the OOM pattern) and hammer external APIs.
+  if (!acquireSyncLock('cron-route')) {
+    return NextResponse.json({ skipped: true, reason: `sync "${activeSyncLock()}" already running` }, { status: 409 });
+  }
+  try {
+
   const { results, logId } = await syncAllStores();
   const totalSynced = results.reduce((sum, r) => sum + r.synced, 0);
   const errors = results.filter(r => r.error);
@@ -132,4 +139,8 @@ export async function GET(req: NextRequest) {
     shopifyPayments: shopifyPayments.length > 0 ? shopifyPayments : undefined,
     logId,
   });
+
+  } finally {
+    releaseSyncLock();
+  }
 }

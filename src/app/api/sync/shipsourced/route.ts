@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { syncStore, syncAllStores } from '@/lib/sync';
+import { syncStore, syncAllStores, acquireSyncLock, releaseSyncLock, activeSyncLock } from '@/lib/sync';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,6 +17,10 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  if (!acquireSyncLock('manual-shipsourced')) {
+    return NextResponse.json({ skipped: true, reason: `sync "${activeSyncLock()}" already running` }, { status: 409 });
+  }
+  try {
   // Sync all connected stores
   const { results, logId } = await syncAllStores();
   const totalSynced = results.reduce((sum, r) => sum + r.synced, 0);
@@ -29,4 +33,7 @@ export async function POST(req: NextRequest) {
     errors: errors.length > 0 ? errors : undefined,
     logId,
   });
+  } finally {
+    releaseSyncLock();
+  }
 }

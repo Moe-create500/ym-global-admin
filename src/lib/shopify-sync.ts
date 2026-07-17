@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import crypto from 'crypto';
 import { storeEvidenceRows } from './evidence-store';
+import { rollUpChargebacks } from './chargeback-rollup';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shopify per-store credential vault + client_credentials token minting.
@@ -261,21 +262,42 @@ export async function syncShopifyPayments(db: Database.Database, storeId: string
   // 3) Disputes → chargebacks table (book lost/needs_response as costs)
   const disputes = await shopifyGetAll(db, storeId, 'shopify_payments/disputes.json?limit=250', 'disputes', nowMs);
   let dbooked = 0;
+  let pnlDirty = false;
   for (const d of disputes) {
     const id = `shopify_dispute_${d.id}`;
     const dateOnly = (d.initiated_at || '').slice(0, 10) || null;
     const amountCents = toCents(d.amount);
-    const status = /won/i.test(d.status) ? 'won' : /lost/i.test(d.status) ? 'lost' : 'open';
-    const exists = db.prepare('SELECT id FROM chargebacks WHERE id = ?').get(id);
+    const raw = String(d.status || '');
+    // accepted = we conceded, money gone → lost. charge_refunded = inquiry closed by
+    // refunding the charge — already netted out of revenue, NOT a chargeback loss.
+    const status = /won/i.test(raw) ? 'won'
+      : /lost|accepted/i.test(raw) ? 'lost'
+      : /charge_refunded/i.test(raw) ? 'refunded'
+      : 'open';
+    const dueBy = (d.evidence_due_by || '').slice(0, 10) || null;
+    const resolved = status !== 'open';
+    const exists: any = db.prepare('SELECT id, status, workflow_status FROM chargebacks WHERE id = ?').get(id);
     if (!exists) {
-      db.prepare(`INSERT INTO chargebacks (id, store_id, order_number, chargeback_date, amount_cents, reason, status, chargeflow_fee_cents, notes, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        id, storeId, d.order_id ? `#${d.order_id}` : null, dateOnly, amountCents,
-        d.reason || 'dispute', status, 0, `Shopify dispute ${d.id} (${d.type}, ${d.status})`, 'shopify_api');
+      db.prepare(`INSERT INTO chargebacks (id, store_id, dispute_id, order_number, chargeback_date, amount_cents, reason, status, chargeflow_fee_cents, notes, source, dispute_type, raw_status, evidence_due_by, workflow_status, handled_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        id, storeId, String(d.id), d.order_id ? `#${d.order_id}` : null, dateOnly, amountCents,
+        d.reason || 'dispute', status, 0, `Shopify dispute ${d.id} (${d.type}, ${raw})`, 'shopify_api',
+        d.type || null, raw, dueBy, resolved ? 'resolved' : 'new', resolved ? new Date(nowMs).toISOString() : null);
       dbooked++;
+      if (status === 'lost') pnlDirty = true;
     } else {
-      db.prepare('UPDATE chargebacks SET status = ?, amount_cents = ? WHERE id = ?').run(status, amountCents, id);
+      // Keep manual workflow states (responding/submitted) while open; flip to
+      // resolved the moment Shopify reports an outcome.
+      const wf = resolved ? 'resolved' : (exists.workflow_status || 'new');
+      db.prepare(`UPDATE chargebacks SET status = ?, amount_cents = ?, raw_status = ?, dispute_type = COALESCE(dispute_type, ?), evidence_due_by = ?, dispute_id = COALESCE(dispute_id, ?), workflow_status = ?,
+          handled_at = CASE WHEN ? = 'resolved' AND handled_at IS NULL THEN datetime('now') ELSE handled_at END,
+          updated_at = datetime('now') WHERE id = ?`)
+        .run(status, amountCents, raw, d.type || null, dueBy, String(d.id), wf, wf, id);
+      if (exists.status !== status && (status === 'lost' || exists.status === 'lost')) pnlDirty = true;
     }
+  }
+  if (pnlDirty) {
+    try { rollUpChargebacks(db, storeId); } catch { /* P&L rollup is best-effort here */ }
   }
   summary.disputes = { pulled: disputes.length, booked: dbooked };
 

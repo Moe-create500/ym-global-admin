@@ -1,81 +1,69 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { rollUpChargebacks } from '@/lib/chargeback-rollup';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
 
-function rollUpChargebacks(db: any, storeId: string) {
-  // Sum lost chargebacks by date into daily_pnl
-  const days: any[] = db.prepare(`
-    SELECT chargeback_date as date, SUM(amount_cents) as total
-    FROM chargebacks WHERE store_id = ? AND status = 'lost'
-    GROUP BY chargeback_date
-  `).all(storeId);
+const SUMMARY_SQL = `
+  SELECT
+    COUNT(*) as total,
+    SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as open_count,
+    SUM(CASE WHEN status = 'won' THEN 1 ELSE 0 END) as won_count,
+    SUM(CASE WHEN status = 'lost' THEN 1 ELSE 0 END) as lost_count,
+    SUM(CASE WHEN status = 'refunded' THEN 1 ELSE 0 END) as refunded_count,
+    SUM(amount_cents) as total_cents,
+    SUM(CASE WHEN status = 'open' THEN amount_cents ELSE 0 END) as open_cents,
+    SUM(CASE WHEN status = 'lost' THEN amount_cents ELSE 0 END) as lost_cents,
+    SUM(CASE WHEN status = 'won' THEN amount_cents ELSE 0 END) as won_cents,
+    SUM(chargeflow_fee_cents) as total_fee_cents
+  FROM chargebacks`;
 
-  // Reset all chargeback_cents and recalc net_profit for the store
-  const allRows: any[] = db.prepare(
-    'SELECT id, revenue_cents, cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents, app_costs_cents FROM daily_pnl WHERE store_id = ?'
-  ).all(storeId);
-  for (const row of allRows) {
-    const totalCosts = (row.cogs_cents || 0) + (row.shipping_cost_cents || 0) + (row.pick_pack_cents || 0) +
-      (row.packaging_cents || 0) + (row.ad_spend_cents || 0) + (row.shopify_fees_cents || 0) +
-      (row.other_costs_cents || 0) + (row.app_costs_cents || 0);
-    const netProfit = (row.revenue_cents || 0) - totalCosts;
-    const margin = row.revenue_cents > 0 ? (netProfit / row.revenue_cents) * 100 : 0;
-    db.prepare('UPDATE daily_pnl SET chargeback_cents = 0, net_profit_cents = ?, margin_pct = ?, updated_at = datetime(\'now\') WHERE id = ?')
-      .run(netProfit, margin, row.id);
-  }
-
-  // Now set chargeback_cents for days with lost chargebacks and recalc
-  for (const day of days) {
-    const pnl: any = db.prepare(
-      'SELECT id, revenue_cents, cogs_cents, ad_spend_cents, shipping_cost_cents, shopify_fees_cents, pick_pack_cents, packaging_cents, other_costs_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
-    ).get(storeId, day.date);
-    if (pnl) {
-      const totalCosts = (pnl.cogs_cents || 0) + (pnl.shipping_cost_cents || 0) + (pnl.pick_pack_cents || 0) +
-        (pnl.packaging_cents || 0) + (pnl.ad_spend_cents || 0) + (pnl.shopify_fees_cents || 0) +
-        (pnl.other_costs_cents || 0) + (pnl.app_costs_cents || 0) + day.total;
-      const netProfit = (pnl.revenue_cents || 0) - totalCosts;
-      const margin = pnl.revenue_cents > 0 ? (netProfit / pnl.revenue_cents) * 100 : 0;
-      db.prepare(`
-        UPDATE daily_pnl SET chargeback_cents = ?, net_profit_cents = ?, margin_pct = ?, updated_at = datetime('now')
-        WHERE id = ?
-      `).run(day.total, netProfit, margin, pnl.id);
-    }
-  }
+function withWinRate(s: any) {
+  const winRate = (s.won_count + s.lost_count) > 0
+    ? (s.won_count / (s.won_count + s.lost_count)) * 100 : 0;
+  return { ...s, win_rate: winRate };
 }
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const storeId = searchParams.get('storeId');
-  if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
-
   const db = getDb();
 
-  const chargebacks = db.prepare(
-    'SELECT * FROM chargebacks WHERE store_id = ? ORDER BY chargeback_date DESC'
-  ).all(storeId);
+  if (storeId) {
+    const chargebacks = db.prepare(
+      'SELECT * FROM chargebacks WHERE store_id = ? ORDER BY chargeback_date DESC'
+    ).all(storeId);
+    const summary: any = db.prepare(`${SUMMARY_SQL} WHERE store_id = ?`).get(storeId);
+    return NextResponse.json({ chargebacks, summary: withWinRate(summary) });
+  }
 
-  const summary: any = db.prepare(`
-    SELECT
+  // All-stores mode (Chargebacks tab): rows joined with store name + shop domain
+  // for Shopify-admin deep links, plus global and per-store summaries.
+  const chargebacks = db.prepare(`
+    SELECT c.*, s.name as store_name, sc.shop_domain
+    FROM chargebacks c
+    JOIN stores s ON s.id = c.store_id
+    LEFT JOIN shopify_credentials sc ON sc.store_id = c.store_id
+    ORDER BY c.chargeback_date DESC
+  `).all();
+  const summary: any = db.prepare(SUMMARY_SQL).get();
+  const perStore: any[] = db.prepare(`
+    SELECT store_id,
       COUNT(*) as total,
       SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as open_count,
       SUM(CASE WHEN status = 'won' THEN 1 ELSE 0 END) as won_count,
       SUM(CASE WHEN status = 'lost' THEN 1 ELSE 0 END) as lost_count,
-      SUM(amount_cents) as total_cents,
-      SUM(CASE WHEN status = 'lost' THEN amount_cents ELSE 0 END) as lost_cents,
-      SUM(CASE WHEN status = 'won' THEN amount_cents ELSE 0 END) as won_cents,
-      SUM(chargeflow_fee_cents) as total_fee_cents
-    FROM chargebacks WHERE store_id = ?
-  `).get(storeId);
+      SUM(CASE WHEN status = 'open' THEN amount_cents ELSE 0 END) as open_cents,
+      SUM(CASE WHEN status = 'lost' THEN amount_cents ELSE 0 END) as lost_cents
+    FROM chargebacks GROUP BY store_id
+  `).all().map(withWinRate);
+  const storeNames = new Map(
+    (db.prepare('SELECT id, name FROM stores').all() as any[]).map((s: any) => [s.id, s.name])
+  );
+  for (const p of perStore) (p as any).store_name = storeNames.get((p as any).store_id) || (p as any).store_id;
 
-  const winRate = (summary.won_count + summary.lost_count) > 0
-    ? (summary.won_count / (summary.won_count + summary.lost_count)) * 100 : 0;
-
-  return NextResponse.json({
-    chargebacks,
-    summary: { ...summary, win_rate: winRate },
-  });
+  return NextResponse.json({ chargebacks, summary: withWinRate(summary), perStore });
 }
 
 export async function POST(req: NextRequest) {
@@ -101,7 +89,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const { id, status, notes, reason, amountCents } = await req.json();
+  const { id, status, notes, reason, amountCents, workflowStatus, responseNotes, evidenceDueBy, responseWorkflowId } = await req.json();
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
   const db = getDb();
@@ -114,6 +102,18 @@ export async function PATCH(req: NextRequest) {
   if (notes !== undefined) { sets.push('"notes" = ?'); vals.push(notes); }
   if (reason !== undefined) { sets.push('"reason" = ?'); vals.push(reason); }
   if (amountCents !== undefined) { sets.push('"amount_cents" = ?'); vals.push(amountCents); }
+  if (workflowStatus !== undefined) {
+    sets.push('"workflow_status" = ?'); vals.push(workflowStatus);
+    // First touch of the workflow stamps handled_at — "every chargeback handled instantly"
+    if (workflowStatus !== 'new') sets.push('"handled_at" = COALESCE(handled_at, datetime(\'now\'))');
+  }
+  if (responseNotes !== undefined) { sets.push('"response_notes" = ?'); vals.push(responseNotes); }
+  if (evidenceDueBy !== undefined) { sets.push('"evidence_due_by" = ?'); vals.push(evidenceDueBy); }
+  if (responseWorkflowId !== undefined) {
+    sets.push('"response_workflow_id" = ?'); vals.push(responseWorkflowId || null);
+    // Tagging a response playbook counts as starting the response
+    sets.push('"handled_at" = COALESCE(handled_at, datetime(\'now\'))');
+  }
 
   vals.push(id);
   db.prepare(`UPDATE chargebacks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
