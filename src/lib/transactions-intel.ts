@@ -74,7 +74,7 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
 
   const txns: any[] = db.prepare(`
     SELECT t.id, t.date, t.description, t.amount_cents, t.bank_account_id,
-           a.account_type, a.store_id AS account_store_id, a.is_global, a.last_four,
+           a.account_type, a.store_id AS account_store_id, a.is_global, a.last_four, a.account_name,
            l.txn_id AS linked, l.confidence AS link_confidence
     FROM bank_transactions t
     JOIN bank_accounts a ON a.id = t.bank_account_id
@@ -85,9 +85,33 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
 
   // Lookup maps built once — the scan itself is pure in-memory matching.
   const stores: any[] = db.prepare('SELECT id, name FROM stores').all();
+  // Word-boundary regex per store: "Aymen" must NOT match inside "PAYMENTS".
   const storeNameMap = stores
-    .map(s => ({ id: s.id, upper: String(s.name).toUpperCase() }))
-    .filter(s => s.upper.length >= 4);
+    .map(s => ({ id: s.id, re: new RegExp(`\\b${String(s.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i') }))
+    .filter((s, i) => String(stores[i].name).length >= 4);
+
+  // Ground truth for payout attribution: each store's Shopify payout ledger
+  // (synced nightly from the Shopify API into cfo_evidence). A bank deposit
+  // matching a ledger payout's exact amount within ±3 days belongs to that
+  // store — no guessing from account labels.
+  const payoutIdx = new Map<number, Array<{ storeId: string; date: string }>>();
+  {
+    const seen = new Set<string>();
+    for (const ev of db.prepare(`SELECT store_id, rows_json FROM cfo_evidence WHERE kind = 'shopify_payouts'`).all() as any[]) {
+      let rows: any[] = [];
+      try { rows = JSON.parse(ev.rows_json || '[]'); } catch { continue; }
+      for (const r of rows) {
+        const cents = Math.abs(r.net_cents ?? r.amount_cents ?? 0);
+        const date = r.payout_date || r.date;
+        if (!cents || !date) continue;
+        const dk = `${ev.store_id}|${r.reference || ''}|${date}|${cents}`;
+        if (seen.has(dk)) continue;
+        seen.add(dk);
+        if (!payoutIdx.has(cents)) payoutIdx.set(cents, []);
+        payoutIdx.get(cents)!.push({ storeId: ev.store_id, date });
+      }
+    }
+  }
 
   // FB funding card → store (only when the card maps to exactly one store)
   const fbCardStores = new Map<string, Set<string>>();
@@ -169,22 +193,35 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
         }
       }
 
-      // 2. store name inside the description (payout INDN/ID fields carry it)
+      // 2. payout ledger match — the strongest signal for payout deposits.
+      // Only accept when every candidate ledger payout agrees on the store.
+      if (!storeId && cls === 'shopify_payout') {
+        const cands = (payoutIdx.get(amt) || []).filter(pmt => daysApart(pmt.date, t.date) <= 3);
+        const storeSet = new Set(cands.map(pmt => pmt.storeId));
+        if (storeSet.size === 1) {
+          storeId = [...storeSet][0]; storeSource = 'payout_ledger';
+          stats.invoiceMatched++;
+        }
+      }
+
+      // 3. store name as a whole word in the description (payout INDN/ID carry it)
       if (!storeId) {
-        const upper = desc.toUpperCase();
-        const hit = storeNameMap.find(s => upper.includes(s.upper));
+        const hit = storeNameMap.find(s => s.re.test(desc));
         if (hit) { storeId = hit.id; storeSource = 'description'; }
       }
 
-      // 3. the account itself belongs to a store — checking accounts only.
-      // Credit cards are shared instruments (one card funds many stores), so a
-      // charge with no invoice/description/FB signal stays unattributed rather
-      // than inheriting whichever store the card row is filed under.
+      // 4. the account itself belongs to a store — checking accounts only,
+      // and only when the ACCOUNT NAME itself names the store (self-evident
+      // ownership like "PUREBITE ··5653"). Shared accounts ("Main payout
+      // account", "STORE CASHFLOW") prove nothing about individual deposits.
       if (!storeId && t.account_store_id && !t.is_global && t.account_type !== 'credit') {
-        storeId = t.account_store_id; storeSource = 'account';
+        const owner = storeNameMap.find(s => s.id === t.account_store_id);
+        if (owner && owner.re.test(String(t.account_name || ''))) {
+          storeId = t.account_store_id; storeSource = 'account';
+        }
       }
 
-      // 4. FB funding-card map, only when unambiguous
+      // 5. FB funding-card map, only when unambiguous
       if (!storeId && cls === 'fb_ads' && t.last_four) {
         const set = fbCardStores.get(t.last_four);
         if (set && set.size === 1) { storeId = [...set][0]; storeSource = 'fb_card'; }
