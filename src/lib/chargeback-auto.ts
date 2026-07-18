@@ -182,6 +182,49 @@ export function buildEvidence(opts: {
   return ev;
 }
 
+/** Build the full evidence pack for one chargeback — used by the auto loop and
+ *  by the dashboard's 📋 Evidence view (manual paste into the Shopify dispute
+ *  form while the dispute_evidences API scope stays ungrantable). */
+export async function buildEvidenceForChargeback(
+  db: DatabaseType.Database,
+  chargebackId: string,
+  policyCache: Map<string, string> = new Map(),
+): Promise<{
+  ok: boolean; error?: string; liveStatus?: string; orderName?: string;
+  fulfilled?: boolean; ageDays?: number; checks?: string[];
+  dws?: ShipmentProof['dws']; evidence?: Record<string, string>;
+}> {
+  const nowMs = Date.now();
+  const cb: any = db.prepare('SELECT cb.*, s.name AS store_name FROM chargebacks cb JOIN stores s ON s.id = cb.store_id WHERE cb.id = ?').get(chargebackId);
+  if (!cb) return { ok: false, error: 'Chargeback not found' };
+  if (cb.source !== 'shopify_api' || !cb.dispute_id) return { ok: false, error: 'Evidence building works only for Shopify Payments disputes' };
+
+  const disputeRes = await shopifyGet(db, cb.store_id, `shopify_payments/disputes/${cb.dispute_id}.json`, nowMs);
+  const dispute = disputeRes?.dispute;
+  if (!dispute) return { ok: false, error: 'Dispute not found on Shopify' };
+
+  let order: any = null;
+  if (dispute.order_id) {
+    const orderRes = await shopifyGet(db, cb.store_id, `orders/${dispute.order_id}.json`, nowMs);
+    order = orderRes?.order || null;
+  }
+  if (!order) return { ok: false, error: 'Order not found for this dispute', liveStatus: dispute.status };
+
+  const proof = await gatherShipmentProof(db, cb.store_id, order);
+  const fulfilledAtMs = Math.max(...(order?.fulfillments || []).map((f: any) => new Date(f.created_at || 0).getTime()), 0);
+  const ageDays = fulfilledAtMs ? (nowMs - fulfilledAtMs) / 86_400_000 : Infinity;
+  const refundPolicy = await getRefundPolicy(db, cb.store_id, policyCache);
+  const evidence = buildEvidence({
+    storeName: cb.store_name, reason: cb.reason || '',
+    amountText: `$${((cb.amount_cents || 0) / 100).toFixed(2)}`,
+    order, proof, refundPolicy,
+  });
+  return {
+    ok: true, liveStatus: dispute.status, orderName: order?.name || cb.order_number || '',
+    fulfilled: proof.fulfilled, ageDays, checks: proof.checks, dws: proof.dws, evidence,
+  };
+}
+
 /** One pass: refresh disputes, decide each actionable one, save evidence drafts. */
 export async function runChargebackAutoResponder(
   db: DatabaseType.Database,
@@ -221,47 +264,33 @@ export async function runChargebackAutoResponder(
       amount: `$${((cb.amount_cents || 0) / 100).toFixed(2)}`, dueBy: cb.evidence_due_by || null,
     };
     try {
-      // Live verify — the local row can lag Shopify by up to a cycle
-      const disputeRes = await shopifyGet(db, cb.store_id, `shopify_payments/disputes/${cb.dispute_id}.json`, nowMs);
-      const dispute = disputeRes?.dispute;
-      if (!dispute || !/needs_response/i.test(dispute.status || '')) {
-        decisions.push({ ...base, action: 'skipped', detail: `live status ${dispute?.status || 'unknown'} — nothing to respond to` });
+      const built = await buildEvidenceForChargeback(db, cb.id, policyCache);
+      if (!built.ok || !/needs_response/i.test(built.liveStatus || '')) {
+        decisions.push({ ...base, action: 'skipped', detail: built.error || `live status ${built.liveStatus || 'unknown'} — nothing to respond to` });
         continue;
       }
 
-      let order: any = null;
-      if (dispute.order_id) {
-        const orderRes = await shopifyGet(db, cb.store_id, `orders/${dispute.order_id}.json`, nowMs);
-        order = orderRes?.order || null;
-      }
-      const proof = await gatherShipmentProof(db, cb.store_id, order);
-
-      if (!proof.fulfilled) {
+      if (!built.fulfilled) {
         decisions.push({ ...base, action: 'unfulfilled', detail: 'order not fulfilled — manual decision (refund is usually smarter than fighting)' });
         note(cb.id, `auto ${new Date(nowMs).toISOString().slice(0, 16)}: order NOT fulfilled — not auto-fighting; decide refund vs fight manually`);
         continue;
       }
 
-      const fulfilledAtMs = Math.max(...(order?.fulfillments || []).map((f: any) => new Date(f.created_at || 0).getTime()), 0);
-      const ageDays = fulfilledAtMs ? (nowMs - fulfilledAtMs) / 86_400_000 : Infinity;
+      const ageDays = built.ageDays ?? Infinity;
       const dueSoon = cb.evidence_due_by &&
         new Date(`${cb.evidence_due_by}T23:59:59Z`).getTime() - nowMs < DUE_SOON_DAYS * 86_400_000;
 
-      if (!proof.dws && ageDays < DWS_WAIT_DAYS && !dueSoon) {
+      if (!built.dws && ageDays < DWS_WAIT_DAYS && !dueSoon) {
         const d = `fulfilled ${ageDays.toFixed(1)}d ago, no DWS scan yet — waiting (scans land ~${DWS_WAIT_DAYS}d; due ${cb.evidence_due_by || '?'})`;
         decisions.push({ ...base, action: 'waiting_dws', detail: d });
         note(cb.id, `auto ${new Date(nowMs).toISOString().slice(0, 16)}: ${d}`);
         continue;
       }
 
-      const refundPolicy = await getRefundPolicy(db, cb.store_id, policyCache);
-      const evidence = buildEvidence({
-        storeName: cb.store_name, reason: cb.reason || '', amountText: base.amount,
-        order, proof, refundPolicy,
-      });
+      const evidence = built.evidence!;
 
       if (dryRun) {
-        decisions.push({ ...base, action: 'drafted', detail: `DRY RUN — would save ${Object.keys(evidence).length} evidence fields (DWS ${proof.dws ? 'yes' : 'no'})` });
+        decisions.push({ ...base, action: 'drafted', detail: `DRY RUN — would save ${Object.keys(evidence).length} evidence fields (DWS ${built.dws ? 'yes' : 'no'})` });
         continue;
       }
 
@@ -277,7 +306,7 @@ export async function runChargebackAutoResponder(
             await shopifyMutate(db, cb.store_id, 'PUT', `shopify_payments/disputes/${cb.dispute_id}/dispute_evidences.json`, { dispute_evidence: evidence }, nowMs);
           } catch (e2: any) {
             if (/404|not found|403|scope/i.test(String(e2?.message || ''))) {
-              const d = 'BLOCKED — store app lacks write_shopify_payments_dispute_evidences scope (enable in Shopify admin app config)';
+              const d = 'API blocked (Shopify does not grant the dispute_evidences scope to custom apps) — evidence pack is PASTE-READY via the 📋 Evidence button';
               decisions.push({ ...base, action: 'blocked', detail: d });
               note(cb.id, `auto ${new Date(nowMs).toISOString().slice(0, 16)}: ${d}`);
               continue;
@@ -287,7 +316,7 @@ export async function runChargebackAutoResponder(
         } else throw e;
       }
 
-      const detail = `evidence saved on dispute (${Object.keys(evidence).length} fields, DWS ${proof.dws ? 'YES — weight/dims/photo' : 'no — tracking evidence'}); Shopify auto-submits at due date ${cb.evidence_due_by || '?'}`;
+      const detail = `evidence saved on dispute (${Object.keys(evidence).length} fields, DWS ${built.dws ? 'YES — weight/dims/photo' : 'no — tracking evidence'}); Shopify auto-submits at due date ${cb.evidence_due_by || '?'}`;
       db.prepare(`UPDATE chargebacks SET workflow_status = 'responding', handled_at = COALESCE(handled_at, datetime('now')),
         response_notes = ?, updated_at = datetime('now') WHERE id = ?`)
         .run(`auto-drafted ${new Date(nowMs).toISOString().slice(0, 16)}: ${detail}`, cb.id);

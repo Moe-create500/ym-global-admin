@@ -475,6 +475,48 @@ export default function ChargebacksPage() {
     r.source === 'shopify_api' && r.shop_domain && r.dispute_id
       ? `https://${r.shop_domain}/admin/payments/disputes/${r.dispute_id}` : null;
 
+  // 📋 Evidence pack viewer — the dispute_evidences API scope is not grantable
+  // to custom apps, so the pack is built server-side and pasted into the
+  // Shopify dispute form by hand.
+  const [evidFor, setEvidFor] = useState<Chargeback | null>(null);
+  const [evidData, setEvidData] = useState<any>(null);
+  const [evidLoading, setEvidLoading] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string>('');
+  const openEvidence = async (r: Chargeback) => {
+    setEvidLoading(r.id); setEvidData(null); setEvidFor(r); setCopied('');
+    try {
+      const res = await fetch(`/api/chargebacks/auto?chargebackId=${r.id}`);
+      const d = await res.json();
+      setEvidData(res.ok ? d : { error: d.error || 'failed to build evidence' });
+    } catch (e: any) {
+      setEvidData({ error: e?.message || 'failed to build evidence' });
+    }
+    setEvidLoading(null);
+  };
+  const copyText = (key: string, text: string) => {
+    void navigator.clipboard.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(c => (c === key ? '' : c)), 1500);
+  };
+  const EVID_LABELS: Record<string, string> = {
+    uncategorized_text: 'Additional evidence (main narrative)',
+    product_description: 'Product description',
+    shipping_tracking_number: 'Tracking number',
+    shipping_carrier: 'Shipping carrier',
+    shipping_date: 'Shipping date',
+    shipping_address: 'Shipping address',
+    billing_address: 'Billing address',
+    customer_email_address: 'Customer email',
+    customer_first_name: 'Customer first name',
+    customer_last_name: 'Customer last name',
+    customer_purchase_ip: 'Customer purchase IP',
+    access_activity_log: 'Activity log',
+    refund_policy_disclosure: 'Refund policy disclosure',
+    refund_refusal_explanation: 'Refund refusal explanation',
+    cancellation_policy_disclosure: 'Cancellation policy disclosure',
+    cancellation_rebuttal: 'Cancellation rebuttal',
+  };
+
   return (
     <div className="p-6 max-w-[1400px]">
       {/* Header */}
@@ -785,6 +827,14 @@ export default function ChargebacksPage() {
                           </td>
                           <td className="px-4 py-3 text-right whitespace-nowrap">
                             <div className="flex items-center justify-end gap-1.5">
+                              {r.source === 'shopify_api' && (
+                                <button onClick={() => openEvidence(r)}
+                                  disabled={evidLoading === r.id}
+                                  title="Build the full evidence pack (order + tracking + DWS warehouse proof) for copy-paste into the Shopify dispute form"
+                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition-colors">
+                                  {evidLoading === r.id ? 'Building…' : '📋 Evidence'}
+                                </button>
+                              )}
                               <button onClick={() => draftEvidence(r)}
                                 disabled={!r.response_workflow_id || drafting === r.id}
                                 title={r.response_workflow_id ? 'Auto-fill the dispute evidence in Shopify from the playbook templates' : 'Pick a playbook first'}
@@ -807,6 +857,53 @@ export default function ChargebacksPage() {
                     })}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          )}
+
+          {/* 📋 Evidence pack modal — copy each field into the Shopify dispute form */}
+          {evidFor && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-6" onClick={() => setEvidFor(null)}>
+              <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-white">📋 Evidence pack — {evidFor.store_name} {evidData?.orderName || evidFor.order_number || ''}</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">Copy each field into the matching box on the Shopify dispute form, then submit there.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {shopifyLink(evidFor) && (
+                      <a href={shopifyLink(evidFor)!} target="_blank" rel="noopener noreferrer"
+                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg">Open dispute ↗</a>
+                    )}
+                    <button onClick={() => setEvidFor(null)} className="text-slate-400 hover:text-white text-sm px-2">✕</button>
+                  </div>
+                </div>
+                <div className="p-5 overflow-y-auto space-y-3">
+                  {!evidData && <p className="text-sm text-slate-400">Building evidence (order + tracking + DWS warehouse scan)…</p>}
+                  {evidData?.error && <p className="text-sm text-red-400">{evidData.error}</p>}
+                  {evidData?.checks && (
+                    <div className="bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2">
+                      {evidData.checks.map((c: string, i: number) => <p key={i} className="text-[11px] text-slate-300">{c}</p>)}
+                      {evidData.dws?.photoUrl && (
+                        <a href={evidData.dws.photoUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] text-emerald-400 hover:underline">
+                          📷 warehouse photo of the sealed package ↗ (download and attach as shipping documentation)
+                        </a>
+                      )}
+                    </div>
+                  )}
+                  {evidData?.evidence && Object.entries(evidData.evidence as Record<string, string>).map(([k, v]) => (
+                    <div key={k} className="border border-slate-800 rounded-lg overflow-hidden">
+                      <div className="flex items-center justify-between px-3 py-1.5 bg-slate-800/60">
+                        <span className="text-[11px] font-medium text-slate-300">{EVID_LABELS[k] || k}</span>
+                        <button onClick={() => copyText(k, v)}
+                          className={`text-[11px] font-semibold px-2 py-0.5 rounded ${copied === k ? 'text-emerald-400' : 'text-blue-400 hover:text-blue-300'}`}>
+                          {copied === k ? '✓ copied' : 'copy'}
+                        </button>
+                      </div>
+                      <pre className="px-3 py-2 text-[11px] text-slate-400 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">{v}</pre>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}
