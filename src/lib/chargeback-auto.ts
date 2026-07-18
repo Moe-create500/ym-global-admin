@@ -1,5 +1,5 @@
 import type DatabaseType from 'better-sqlite3';
-import { shopifyGet, shopifyMutate, syncDisputes } from './shopify-sync';
+import { shopifyGet, shopifyMutate, syncShopifyPayments } from './shopify-sync';
 import { gatherShipmentProof, ShipmentProof } from './chargeback-evidence';
 
 // ── Chargeback auto-responder ────────────────────────────────────────────────
@@ -236,11 +236,13 @@ export async function runChargebackAutoResponder(
   const decisions: AutoDecision[] = [];
   const policyCache = new Map<string, string>();
 
-  // 1) Light dispute refresh for every connected store (statuses go stale fast)
+  // 1) Full payments refresh per connected store — disputes for this loop, and
+  //    it's also what keeps refunds/balances current (nothing else runs it on a
+  //    schedule; before this the data only moved on manual dashboard clicks).
   const connected: any[] = db.prepare('SELECT store_id FROM shopify_credentials').all();
   for (const c of connected) {
-    try { await syncDisputes(db, c.store_id, nowMs); } catch (e) {
-      console.error(`[chargeback-auto] dispute refresh failed for ${c.store_id}:`, e instanceof Error ? e.message.slice(0, 150) : e);
+    try { await syncShopifyPayments(db, c.store_id, nowMs); } catch (e) {
+      console.error(`[chargeback-auto] payments refresh failed for ${c.store_id}:`, e instanceof Error ? e.message.slice(0, 150) : e);
     }
   }
 

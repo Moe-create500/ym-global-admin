@@ -80,6 +80,7 @@ export async function GET(req: NextRequest) {
       SUM(dp.other_costs_cents) as other_costs_cents,
       SUM(dp.chargeback_cents) as chargeback_cents,
       SUM(dp.app_costs_cents) as app_costs_cents,
+      SUM(COALESCE(dp.refunds_cents, 0)) as refunds_cents,
       SUM(dp.net_profit_cents) as net_profit_cents,
       SUM(dp.order_count) as order_count
     FROM daily_pnl dp
@@ -107,6 +108,7 @@ export async function GET(req: NextRequest) {
       SUM(dp.other_costs_cents) as other_costs_cents,
       SUM(dp.chargeback_cents) as chargeback_cents,
       SUM(dp.app_costs_cents) as app_costs_cents,
+      SUM(COALESCE(dp.refunds_cents, 0)) as refunds_cents,
       SUM(dp.net_profit_cents) as net_profit_cents,
       SUM(dp.order_count) as order_count
     FROM daily_pnl dp

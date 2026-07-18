@@ -127,6 +127,11 @@ export function getDb(): Database.Database {
       _db.exec("ALTER TABLE daily_pnl ADD COLUMN fulfillment_est_cents INTEGER DEFAULT 0");
     }
 
+    // Migration: refunds per day (rolled up from Shopify Payments balance txns)
+    if (!dpCols.find((c: any) => c.name === 'refunds_cents')) {
+      _db.exec("ALTER TABLE daily_pnl ADD COLUMN refunds_cents INTEGER DEFAULT 0");
+    }
+
     // Migration: cfo_snapshots table
     _db.exec(`CREATE TABLE IF NOT EXISTS cfo_snapshots (
       id TEXT PRIMARY KEY,

@@ -240,6 +240,41 @@ function isoToUtcSeconds(iso: string): string | null {
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
 }
 
+/** Roll Shopify Payments refund transactions up into daily_pnl.refunds_cents,
+ *  bucketed by Pacific day (P&L days are Pacific). Reads the deduped evidence
+ *  rows, so re-syncs never double-count. Display-only — refunds are already
+ *  netted out of revenue by the Total-sales metric. */
+export function rollUpRefunds(db: Database.Database, storeId: string) {
+  const uploads: any[] = db.prepare(
+    "SELECT rows_json FROM cfo_evidence WHERE store_id = ? AND kind = 'shopify_payments'"
+  ).all(storeId);
+  const byDay = new Map<string, number>();
+  for (const u of uploads) {
+    let rows: any[] = [];
+    try { rows = JSON.parse(u.rows_json) || []; } catch { continue; }
+    for (const r of rows) {
+      if (!/^refund/i.test(r.type || '')) continue; // refund + refund_adjustment
+      const ts = r.ts_utc || r.date;
+      if (!ts) continue;
+      const day = pacificDate(new Date(String(ts).replace(' ', 'T') + (String(ts).length > 10 ? 'Z' : 'T00:00:00Z')));
+      byDay.set(day, (byDay.get(day) || 0) + Math.max(0, -(r.amount_cents || 0)));
+    }
+  }
+  db.transaction(() => {
+    for (const [day, centsVal] of byDay) {
+      const ex: any = db.prepare('SELECT id, refunds_cents FROM daily_pnl WHERE store_id = ? AND date = ?').get(storeId, day);
+      if (ex) {
+        if ((ex.refunds_cents || 0) !== centsVal) {
+          db.prepare("UPDATE daily_pnl SET refunds_cents = ?, updated_at = datetime('now') WHERE id = ?").run(centsVal, ex.id);
+        }
+      } else if (centsVal > 0) {
+        db.prepare('INSERT INTO daily_pnl (id, store_id, date, refunds_cents) VALUES (?, ?, ?, ?)')
+          .run(crypto.randomUUID(), storeId, day, centsVal);
+      }
+    }
+  })();
+}
+
 /** Disputes-only refresh → chargebacks table. Extracted from syncShopifyPayments
  *  so the chargeback auto-responder can refresh dispute statuses without pulling
  *  the full payouts/transactions firehose. Logic unchanged. */
@@ -307,6 +342,9 @@ export async function syncShopifyPayments(db: Database.Database, storeId: string
 
   // 3) Disputes → chargebacks table (book lost/needs_response as costs)
   summary.disputes = await syncDisputes(db, storeId, nowMs);
+
+  // 3b) Refunds → daily_pnl.refunds_cents (dashboard KPI)
+  try { rollUpRefunds(db, storeId); } catch { /* rollup is best-effort */ }
   // 4) Available balance (the ****account behind Shopify Balance)
   try {
     const bal = await shopifyGet(db, storeId, 'shopify_payments/balance.json', nowMs);

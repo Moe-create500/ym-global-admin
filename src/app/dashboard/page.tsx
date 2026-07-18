@@ -39,6 +39,9 @@ interface Totals {
   ad_spend_cents: number;
   shopify_fees_cents: number;
   other_costs_cents: number;
+  chargeback_cents?: number;
+  app_costs_cents?: number;
+  refunds_cents?: number;
   net_profit_cents: number;
   order_count: number;
   margin_pct: number;
@@ -465,6 +468,9 @@ function DashboardContent() {
     { label: 'ROAS', value: `${roas.toFixed(2)}x`, prev: prevRoas, current: roas, color: roas >= 2 ? 'text-emerald-400' : roas >= 1 ? 'text-yellow-400' : 'text-red-400', raw: true },
     { label: 'Margin', value: pct(totals?.margin_pct || 0), prev: prevTotals?.margin_pct || 0, current: totals?.margin_pct || 0, color: (totals?.margin_pct || 0) >= 20 ? 'text-emerald-400' : (totals?.margin_pct || 0) >= 10 ? 'text-yellow-400' : 'text-red-400', raw: true },
     { label: 'Orders', value: (totals?.order_count || 0).toLocaleString(), prev: prevTotals?.order_count || 0, current: totals?.order_count || 0, color: 'text-blue-400' },
+    { label: 'Chargebacks', value: cents(totals?.chargeback_cents || 0), prev: prevTotals?.chargeback_cents || 0, current: totals?.chargeback_cents || 0, color: 'text-red-400', invert: true },
+    { label: 'Refunds', value: cents(totals?.refunds_cents || 0), prev: prevTotals?.refunds_cents || 0, current: totals?.refunds_cents || 0, color: 'text-amber-400', invert: true },
+    { label: 'App Cost', value: cents(totals?.app_costs_cents || 0), prev: prevTotals?.app_costs_cents || 0, current: totals?.app_costs_cents || 0, color: 'text-purple-400', invert: true },
   ];
 
   return (
@@ -554,7 +560,7 @@ function DashboardContent() {
       )}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 2xl:grid-cols-9 gap-3 mb-6">
         {kpis.map((kpi) => (
           <div key={kpi.label} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
             <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{kpi.label}</p>
