@@ -102,6 +102,26 @@ export async function register() {
       setInterval(() => { void runFullSync('Scheduled sync', true); }, SYNC_INTERVAL_MS);
     }, 10_000);
 
+    // Chargeback auto-responder — hourly, independent of the sync lock (its DB
+    // writes are tiny; a slow full sync must never delay a dispute response).
+    let cbRunning = false;
+    const cbTick = async () => {
+      if (cbRunning) return;
+      cbRunning = true;
+      try {
+        const { runChargebackAutoResponder } = await import('@/lib/chargeback-auto');
+        const { getDb } = await import('@/lib/db');
+        const r = await runChargebackAutoResponder(getDb(), { limit: 12 });
+        if (r.decisions.length > 0) console.log(`[chargeback-auto] ${r.summary}`);
+      } catch (e) {
+        console.error('[chargeback-auto] tick error:', e);
+      } finally {
+        cbRunning = false;
+      }
+    };
+    setTimeout(() => { void cbTick(); }, 3 * 60_000); // first pass 3 min after boot
+    setInterval(() => { void cbTick(); }, 60 * 60_000); // then hourly
+
     // Launch schedules ("daily at 12:00 PST" etc.) — checked every 5 minutes,
     // separate from the heavy sync so a slow sync never delays a launch
     let schedRunning = false;

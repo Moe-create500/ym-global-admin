@@ -240,26 +240,10 @@ function isoToUtcSeconds(iso: string): string | null {
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
 }
 
-/** Pull payouts + balance transactions + disputes + balance from Shopify and feed the
- *  pipeline. Returns a per-source summary. */
-export async function syncShopifyPayments(db: Database.Database, storeId: string, nowMs: number): Promise<any> {
-  const summary: any = { payouts: null, transactions: null, disputes: null, balance_cents: null };
-
-  // 1) Payouts (last ~90 days + all scheduled/pending) → shopify_payouts
-  const payouts = await shopifyGetAll(db, storeId, 'shopify_payments/payouts.json?limit=250', 'payouts', nowMs);
-  const payoutDateById = new Map<string, string>();
-  for (const p of payouts) payoutDateById.set(String(p.id), p.date);
-  const payoutRows = normalizePayouts(payouts);
-  const pr = storeEvidenceRows(db, { storeId, kind: 'shopify_payouts', rows: payoutRows, filename: 'shopify-api:payouts' });
-  summary.payouts = { pulled: payouts.length, ...pr };
-
-  // 2) Balance transactions → shopify_payments (exact-second detail)
-  const txns = await shopifyGetAll(db, storeId, 'shopify_payments/balance/transactions.json?limit=250', 'transactions', nowMs);
-  const txnRows = normalizeBalanceTxns(txns, payoutDateById);
-  const tr = storeEvidenceRows(db, { storeId, kind: 'shopify_payments', rows: txnRows, filename: 'shopify-api:transactions' });
-  summary.transactions = { pulled: txns.length, ...tr };
-
-  // 3) Disputes → chargebacks table (book lost/needs_response as costs)
+/** Disputes-only refresh → chargebacks table. Extracted from syncShopifyPayments
+ *  so the chargeback auto-responder can refresh dispute statuses without pulling
+ *  the full payouts/transactions firehose. Logic unchanged. */
+export async function syncDisputes(db: Database.Database, storeId: string, nowMs: number): Promise<{ pulled: number; booked: number }> {
   const disputes = await shopifyGetAll(db, storeId, 'shopify_payments/disputes.json?limit=250', 'disputes', nowMs);
   let dbooked = 0;
   let pnlDirty = false;
@@ -299,8 +283,30 @@ export async function syncShopifyPayments(db: Database.Database, storeId: string
   if (pnlDirty) {
     try { rollUpChargebacks(db, storeId); } catch { /* P&L rollup is best-effort here */ }
   }
-  summary.disputes = { pulled: disputes.length, booked: dbooked };
+  return { pulled: disputes.length, booked: dbooked };
+}
 
+/** Pull payouts + balance transactions + disputes + balance from Shopify and feed the
+ *  pipeline. Returns a per-source summary. */
+export async function syncShopifyPayments(db: Database.Database, storeId: string, nowMs: number): Promise<any> {
+  const summary: any = { payouts: null, transactions: null, disputes: null, balance_cents: null };
+
+  // 1) Payouts (last ~90 days + all scheduled/pending) → shopify_payouts
+  const payouts = await shopifyGetAll(db, storeId, 'shopify_payments/payouts.json?limit=250', 'payouts', nowMs);
+  const payoutDateById = new Map<string, string>();
+  for (const p of payouts) payoutDateById.set(String(p.id), p.date);
+  const payoutRows = normalizePayouts(payouts);
+  const pr = storeEvidenceRows(db, { storeId, kind: 'shopify_payouts', rows: payoutRows, filename: 'shopify-api:payouts' });
+  summary.payouts = { pulled: payouts.length, ...pr };
+
+  // 2) Balance transactions → shopify_payments (exact-second detail)
+  const txns = await shopifyGetAll(db, storeId, 'shopify_payments/balance/transactions.json?limit=250', 'transactions', nowMs);
+  const txnRows = normalizeBalanceTxns(txns, payoutDateById);
+  const tr = storeEvidenceRows(db, { storeId, kind: 'shopify_payments', rows: txnRows, filename: 'shopify-api:transactions' });
+  summary.transactions = { pulled: txns.length, ...tr };
+
+  // 3) Disputes → chargebacks table (book lost/needs_response as costs)
+  summary.disputes = await syncDisputes(db, storeId, nowMs);
   // 4) Available balance (the ****account behind Shopify Balance)
   try {
     const bal = await shopifyGet(db, storeId, 'shopify_payments/balance.json', nowMs);
