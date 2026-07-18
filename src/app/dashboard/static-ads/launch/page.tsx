@@ -184,6 +184,7 @@ export default function LaunchFlowPage() {
   const [editSched, setEditSched] = useState<Schedule | null>(null);
   const [editForm, setEditForm] = useState<any>({});
   const [editPages, setEditPages] = useState<FBPage[]>([]);
+  const [editCampaigns, setEditCampaigns] = useState<{ id: string; name: string; status?: string }[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [schedModal, setSchedModal] = useState(false);
   const [schedName, setSchedName] = useState('');
@@ -552,12 +553,16 @@ export default function LaunchFlowPage() {
       customInstructions: s.config?.customInstructions || '',
       landingUrl: s.config?.landingUrl || '',
       pageId: s.config?.pageId || '',
+      existingCampaignId: s.config?.existingCampaignId || '',
     });
-    // Pages available on this schedule's ad account
+    // Pages + campaigns available on this schedule's ad account
     setEditPages([]);
+    setEditCampaigns([]);
     if (s.config?.profileId) {
       fetch(`/api/static-ads/workflow?profileId=${s.config.profileId}&pages=1`).then(r => r.json())
         .then(d => setEditPages(d.pages || [])).catch(() => {});
+      fetch(`/api/static-ads/workflow?profileId=${s.config.profileId}&campaigns=1`).then(r => r.json())
+        .then(d => setEditCampaigns(d.campaigns || [])).catch(() => {});
     }
   }
 
@@ -577,6 +582,7 @@ export default function LaunchFlowPage() {
           customInstructions: f.customInstructions?.trim() || null,
           landingUrl: f.landingUrl,
           ...(f.pageId ? { pageId: f.pageId } : {}),
+          existingCampaignId: f.existingCampaignId || null,
         },
       }),
     });
@@ -1409,6 +1415,15 @@ export default function LaunchFlowPage() {
                   )}
                   {editPages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select></div>
+              <div><label className={labelCls}>Campaign</label>
+                <select value={editForm.existingCampaignId || ''} onChange={e => setEditForm({ ...editForm, existingCampaignId: e.target.value })} className={inputCls}>
+                  <option value="">🆕 New campaign each run</option>
+                  {editForm.existingCampaignId && !editCampaigns.some(c => c.id === editForm.existingCampaignId) && (
+                    <option value={editForm.existingCampaignId}>{editCampaigns.length ? `campaign ${editForm.existingCampaignId}` : 'loading campaigns…'}</option>
+                  )}
+                  {editCampaigns.map(c => <option key={c.id} value={c.id}>{c.name}{c.status && c.status !== 'ACTIVE' ? ` (${c.status.toLowerCase()})` : ''}</option>)}
+                </select>
+                <p className="text-[10px] text-slate-500 mt-1">Pick an existing campaign → each run adds a fresh ad set inside it (shares its budget). New campaign → a separate dated campaign per run.</p></div>
               <button onClick={() => setEditForm({ ...editForm, autoLive: !editForm.autoLive })}
                 className={`w-full rounded-lg px-3 py-2 text-sm font-medium border ${editForm.autoLive ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
                 {editForm.autoLive ? '⚡ Goes LIVE automatically each run' : 'Each run ends PAUSED (manual go-live)'}
@@ -1442,6 +1457,7 @@ export default function LaunchFlowPage() {
                       <p className="text-[11px] text-slate-400">
                         {s.cadence === 'daily' ? 'Daily' : `Weekly (${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][s.dayOfWeek ?? 1]})`} at {s.timeOfDay} PST
                         · next: {new Date(s.nextRunAt).toLocaleString()}
+                        · {s.config?.existingCampaignId ? '↪ existing campaign' : '🆕 new campaign/run'}
                       </p>
                       {s.lastResult && <p className="text-[11px] text-slate-500 truncate">last: {s.lastResult}</p>}
                     </div>
