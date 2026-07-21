@@ -352,13 +352,16 @@ export function getCardClarity(db: DatabaseType.Database) {
     FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'
   `).all();
 
-  // Pending activity per card, split into holds (charges) vs payments landing
+  // Pending activity per card, split into holds (charges) vs payments landing.
+  // 14-day window: Teller leaves superseded pending rows behind forever (some
+  // date back months) — those are artifacts, not live holds, and counting them
+  // would wildly overstate "to clear".
   const pendingQ = db.prepare(`
     SELECT SUM(CASE WHEN COALESCE(l.class,'') != 'card_payment' THEN ABS(t.amount_cents) ELSE 0 END) holds_cents,
            SUM(CASE WHEN COALESCE(l.class,'') != 'card_payment' THEN 1 ELSE 0 END) holds_n,
            SUM(CASE WHEN l.class = 'card_payment' THEN ABS(t.amount_cents) ELSE 0 END) landing_cents
     FROM bank_transactions t LEFT JOIN txn_links l ON l.txn_id = t.id
-    WHERE t.bank_account_id = ? AND t.status = 'pending'
+    WHERE t.bank_account_id = ? AND t.status = 'pending' AND t.date >= date('now', '-14 days')
   `);
 
   // FB unbilled balances routed to each card via the funding-card last4
