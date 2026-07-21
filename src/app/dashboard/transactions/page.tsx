@@ -29,6 +29,7 @@ export default function TransactionsPage() {
   const [tab, setTab] = useState<'cards' | 'ledger' | 'payments'>('cards');
   const [summary, setSummary] = useState<any>(null);
   const [cards, setCards] = useState<any[]>([]);
+  const [clarity, setClarity] = useState<any>(null);
   const [payments, setPayments] = useState<any[]>([]);
   const [ledger, setLedger] = useState<{ rows: any[]; total: number }>({ rows: [], total: 0 });
   const [scanning, setScanning] = useState(false);
@@ -43,7 +44,7 @@ export default function TransactionsPage() {
   const [assigning, setAssigning] = useState<string | null>(null);
 
   const loadSummary = useCallback(() => fetch('/api/transactions?view=summary').then(r => r.json()).then(setSummary), []);
-  const loadCards = useCallback(() => fetch(`/api/transactions?view=cards&days=${cardDays}`).then(r => r.json()).then(d => setCards(d.cards || [])), [cardDays]);
+  const loadCards = useCallback(() => fetch(`/api/transactions?view=cards&days=${cardDays}`).then(r => r.json()).then(d => { setCards(d.cards || []); setClarity(d.clarity || null); }), [cardDays]);
   const loadPayments = useCallback(() => fetch('/api/transactions?view=payments&days=90').then(r => r.json()).then(d => setPayments(d.payments || [])), []);
   const loadLedger = useCallback(() => {
     const p = new URLSearchParams({ view: 'ledger', days: '90' });
@@ -132,6 +133,41 @@ export default function TransactionsPage() {
 
       {tab === 'cards' && (
         <div>
+          {clarity && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">Cash available to clean</p>
+                <p className="text-lg font-bold text-emerald-400 mt-0.5">{fmt(clarity.cashAvailableCents)}</p>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">Owed to Facebook (unbilled)</p>
+                <p className="text-lg font-bold text-blue-400 mt-0.5">{fmt(clarity.totalFbOwedCents)}</p>
+                <p className="text-[11px] text-slate-500">will hit the funding cards soon</p>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">Payments in flight</p>
+                <p className="text-lg font-bold text-cyan-400 mt-0.5">{fmt(clarity.inFlightCents)}</p>
+                <p className="text-[11px] text-slate-500">left the bank, not landed on a card yet</p>
+              </div>
+              <div className={`rounded-xl p-3 border ${clarity.unmappedFbCents > 0 ? 'bg-amber-500/5 border-amber-700/40' : 'bg-slate-900 border-slate-800'}`}>
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">FB owed on unlinked cards</p>
+                <p className={`text-lg font-bold mt-0.5 ${clarity.unmappedFbCents > 0 ? 'text-amber-400' : 'text-slate-500'}`}>{fmt(clarity.unmappedFbCents)}</p>
+                {clarity.unmappedFbCents > 0 && (
+                  <p className="text-[11px] text-amber-500/80 truncate" title={clarity.unmappedFb.map((p: any) => `${p.name} (${p.store}) ${fmt(p.owedCents)}${p.card_last4 ? ` → ··${p.card_last4}` : ' → no card on FB'}`).join(' · ')}>
+                    {clarity.unmappedFb.slice(0, 2).map((p: any) => `${p.name} ${fmt(p.owedCents)}${p.card_last4 ? ` → ··${p.card_last4} not linked` : ''}`).join(' · ')}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+          {clarity && clarity.inFlight?.length > 0 && (
+            <div className="bg-cyan-500/5 border border-cyan-800/40 rounded-xl px-4 py-2.5 mb-4">
+              <p className="text-[11px] uppercase tracking-wide text-cyan-500 mb-1">In-flight — sent but not landed on any card</p>
+              {clarity.inFlight.slice(0, 5).map((p: any) => (
+                <p key={p.id} className="text-xs text-slate-300">{p.date} · {fmt2(p.cents)} from {p.from_account} ··{p.from_last4} <span className="text-slate-500">— {String(p.description || '').slice(0, 60)}</span></p>
+              ))}
+            </div>
+          )}
           <div className="flex items-center gap-2 mb-3">
             <span className="text-xs text-slate-500">Window:</span>
             {[30, 60, 90].map(d => (
@@ -143,18 +179,44 @@ export default function TransactionsPage() {
             {cards.map(c => {
               const charges = (c.drivers || []).reduce((s: number, r: any) => s + r.cents, 0);
               const paid = (c.payments || []).reduce((s: number, r: any) => s + r.cents, 0);
+              const cl = clarity?.perCard?.[c.id];
               return (
-                <div key={c.id} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <div key={c.id} className={`bg-slate-900 border rounded-xl p-4 ${cl?.declining ? 'border-red-700/60' : 'border-slate-800'}`}>
                   <div className="flex items-start justify-between">
                     <div>
-                      <p className="text-sm font-semibold text-white">{c.institution_name} · {c.account_name} <span className="text-slate-500">··{c.last_four}</span></p>
-                      <p className="text-[11px] text-slate-500 mt-0.5">as of {c.bank_data_as_of || '—'}</p>
+                      <p className="text-sm font-semibold text-white">{c.institution_name} · {c.account_name} <span className="text-slate-500">··{c.last_four}</span>
+                        {cl?.declining && <span className="ml-2 px-1.5 py-0.5 bg-red-500/15 text-red-400 rounded text-[10px] font-semibold">DECLINING ON FB</span>}
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">as of {c.bank_data_as_of || '—'}{cl?.utilizationPct != null ? ` · ${cl.utilizationPct}% utilized` : ''}</p>
                     </div>
                     <div className="text-right">
                       <p className="text-lg font-bold text-white">{fmt(c.balance_ledger_cents)}</p>
                       {c.credit_limit_cents > 0 && <p className="text-[11px] text-slate-500">avail {fmt(c.credit_limit_cents)}</p>}
                     </div>
                   </div>
+                  {cl && (
+                    <div className="mt-3 bg-slate-800/50 border border-slate-700/60 rounded-lg px-3 py-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] uppercase tracking-wide text-slate-500">To clear this card</span>
+                        <span className="text-base font-bold text-white">{fmt2(cl.toClearCents)}</span>
+                      </div>
+                      <div className="mt-1 space-y-0.5 text-[11px] text-slate-400">
+                        <div className="flex justify-between"><span>Posted balance</span><span>{fmt2(cl.postedCents)}</span></div>
+                        {cl.pendingHoldsCents > 0 && <div className="flex justify-between text-amber-400/90"><span>+ pending holds ({cl.pendingHoldsN})</span><span>{fmt2(cl.pendingHoldsCents)}</span></div>}
+                        {cl.fbOwedCents > 0 && <div className="flex justify-between text-blue-400/90"><span>+ FB unbilled incoming</span><span>{fmt2(cl.fbOwedCents)}</span></div>}
+                        {cl.paymentsLandingCents > 0 && <div className="flex justify-between text-emerald-400/90"><span>− payment landing</span><span>{fmt2(cl.paymentsLandingCents)}</span></div>}
+                      </div>
+                      {cl.fbProfiles?.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {cl.fbProfiles.map((p: any) => (
+                            <span key={p.name} className={`px-1.5 py-0.5 rounded text-[10px] ${p.declining ? 'bg-red-500/15 text-red-400' : 'bg-blue-500/10 text-blue-300'}`}>
+                              FB {p.name} · {p.store} owes {fmt(p.owedCents)}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div className="flex gap-4 mt-3 text-xs">
                     <span className="text-amber-400">+{fmt(charges)} charged · {cardDays}d</span>
                     <span className="text-emerald-400">−{fmt(paid)} paid</span>

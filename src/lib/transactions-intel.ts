@@ -339,6 +339,106 @@ export function getCardIntel(db: DatabaseType.Database, days: number) {
   }));
 }
 
+/** Card clarity — the "why is there debt and what clears it" layer.
+ *  Per card: posted debt + pending holds + FB unbilled spend routed to it
+ *  (fb_profiles funding-card mapping) − payments in flight = to clear.
+ *  Globally: FB owed balances NOT mapped to any known card (configuration
+ *  gaps to fix), sent payments that never landed, and cash on hand. */
+export function getCardClarity(db: DatabaseType.Database) {
+  ensureTxnIntelTables(db);
+  const cards: any[] = db.prepare(`
+    SELECT id, institution_name, account_name, last_four, provider,
+           balance_ledger_cents, credit_limit_cents, bank_data_as_of
+    FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'
+  `).all();
+
+  // Pending activity per card, split into holds (charges) vs payments landing
+  const pendingQ = db.prepare(`
+    SELECT SUM(CASE WHEN COALESCE(l.class,'') != 'card_payment' THEN ABS(t.amount_cents) ELSE 0 END) holds_cents,
+           SUM(CASE WHEN COALESCE(l.class,'') != 'card_payment' THEN 1 ELSE 0 END) holds_n,
+           SUM(CASE WHEN l.class = 'card_payment' THEN ABS(t.amount_cents) ELSE 0 END) landing_cents
+    FROM bank_transactions t LEFT JOIN txn_links l ON l.txn_id = t.id
+    WHERE t.bank_account_id = ? AND t.status = 'pending'
+  `);
+
+  // FB unbilled balances routed to each card via the funding-card last4
+  const profiles: any[] = db.prepare(`
+    SELECT p.id, p.profile_name, s.name AS store_name, p.balance_cents,
+           p.primary_card_last4, p.working_card_last4, p.primary_card_declining, p.last_sync_at
+    FROM fb_profiles p JOIN stores s ON s.id = p.store_id
+    WHERE p.is_active = 1 AND (p.balance_cents > 0 OR p.primary_card_declining = 1)
+  `).all();
+  const cardLast4s = new Set(cards.map(c => c.last_four).filter(Boolean));
+  const fbByCard = new Map<string, any[]>();
+  const unmappedFb: any[] = [];
+  for (const p of profiles) {
+    const l4 = p.primary_card_last4 || p.working_card_last4;
+    if (l4 && cardLast4s.has(l4)) {
+      if (!fbByCard.has(l4)) fbByCard.set(l4, []);
+      fbByCard.get(l4)!.push(p);
+    } else if (p.balance_cents > 0) {
+      unmappedFb.push(p); // owed to FB but the funding card isn't a linked bank card
+    }
+  }
+
+  // Payments that left a checking account but never paired with a card credit
+  const inFlight: any[] = db.prepare(`
+    SELECT t.id, t.date, ABS(t.amount_cents) cents, t.description,
+           a.account_name AS from_account, a.last_four AS from_last4
+    FROM bank_transactions t
+    JOIN txn_links l ON l.txn_id = t.id AND l.class = 'card_payment_sent' AND l.pair_txn_id IS NULL
+    JOIN bank_accounts a ON a.id = t.bank_account_id
+    WHERE t.date >= date('now', '-10 days')
+    ORDER BY t.date DESC LIMIT 20
+  `).all();
+
+  // Cash on hand across active checking/savings — what's available to clean with
+  const cash: any = db.prepare(`
+    SELECT SUM(COALESCE(balance_available_cents, balance_ledger_cents, 0)) cents
+    FROM bank_accounts WHERE account_type != 'credit' AND status = 'active' AND COALESCE(cfo_hidden, 0) = 0
+  `).get();
+
+  const perCard = cards.map(c => {
+    const pending: any = pendingQ.get(c.id) || {};
+    const fb = fbByCard.get(c.last_four) || [];
+    const fbOwedCents = fb.reduce((s, p) => s + (p.balance_cents || 0), 0);
+    const declining = fb.some(p => p.primary_card_declining);
+    const posted = Math.abs(c.balance_ledger_cents || 0);
+    const holds = pending.holds_cents || 0;
+    const landing = pending.landing_cents || 0;
+    return {
+      id: c.id,
+      postedCents: posted,
+      pendingHoldsCents: holds,
+      pendingHoldsN: pending.holds_n || 0,
+      paymentsLandingCents: landing,
+      fbOwedCents,
+      fbProfiles: fb.map(p => ({
+        name: p.profile_name, store: p.store_name, owedCents: p.balance_cents || 0,
+        declining: !!p.primary_card_declining, lastSyncAt: p.last_sync_at,
+      })),
+      declining,
+      // what it takes to zero this card once everything lands
+      toClearCents: Math.max(0, posted + holds + fbOwedCents - landing),
+      utilizationPct: c.credit_limit_cents > 0 ? Math.round(100 * (posted + holds) / c.credit_limit_cents) : null,
+    };
+  });
+
+  return {
+    perCard: Object.fromEntries(perCard.map(c => [c.id, c])),
+    unmappedFb: unmappedFb.map(p => ({
+      name: p.profile_name, store: p.store_name, owedCents: p.balance_cents || 0,
+      card_last4: p.primary_card_last4 || p.working_card_last4 || null,
+      declining: !!p.primary_card_declining,
+    })),
+    unmappedFbCents: unmappedFb.reduce((s, p) => s + (p.balance_cents || 0), 0),
+    inFlight,
+    inFlightCents: inFlight.reduce((s: number, p: any) => s + p.cents, 0),
+    cashAvailableCents: cash?.cents || 0,
+    totalFbOwedCents: profiles.reduce((s, p) => s + (p.balance_cents || 0), 0),
+  };
+}
+
 /** All card payments in the window, with the funding account when paired. */
 export function getPaymentsView(db: DatabaseType.Database, days: number) {
   ensureTxnIntelTables(db);

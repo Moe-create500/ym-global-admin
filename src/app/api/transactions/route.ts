@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import {
   ensureTxnIntelTables, runTransactionScan,
-  getLedger, getCardIntel, getPaymentsView, getSummary,
+  getLedger, getCardIntel, getPaymentsView, getSummary, getCardClarity,
 } from '@/lib/transactions-intel';
 
 export const dynamic = 'force-dynamic';
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
     const accounts = db.prepare(`SELECT id, institution_name, account_name, account_type, last_four FROM bank_accounts WHERE status = 'active' ORDER BY account_type, institution_name`).all();
     return NextResponse.json({ ...getSummary(db), stores, accounts });
   }
-  if (view === 'cards') return NextResponse.json({ cards: getCardIntel(db, days || 30) });
+  if (view === 'cards') return NextResponse.json({ cards: getCardIntel(db, days || 30), clarity: getCardClarity(db) });
   if (view === 'payments') return NextResponse.json({ payments: getPaymentsView(db, days || 60) });
   if (view === 'ledger') {
     return NextResponse.json(getLedger(db, {
