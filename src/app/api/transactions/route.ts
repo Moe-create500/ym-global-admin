@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import {
   ensureTxnIntelTables, runTransactionScan,
-  getLedger, getCardIntel, getPaymentsView, getSummary, getCardClarity,
+  getLedger, getCardIntel, getPaymentsView, getSummary, getCardClarity, getTruth,
 } from '@/lib/transactions-intel';
 
 export const dynamic = 'force-dynamic';
@@ -20,6 +20,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ...getSummary(db), stores, accounts });
   }
   if (view === 'cards') return NextResponse.json({ cards: getCardIntel(db, days || 30), clarity: getCardClarity(db) });
+  if (view === 'truth') return NextResponse.json(getTruth(db, days || 90));
   if (view === 'payments') return NextResponse.json({ payments: getPaymentsView(db, days || 60) });
   if (view === 'ledger') {
     return NextResponse.json(getLedger(db, {

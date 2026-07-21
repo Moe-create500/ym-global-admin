@@ -26,7 +26,9 @@ function ClassChip({ cls }: { cls: string | null }) {
 }
 
 export default function TransactionsPage() {
-  const [tab, setTab] = useState<'cards' | 'ledger' | 'payments'>('cards');
+  const [tab, setTab] = useState<'cards' | 'truth' | 'ledger' | 'payments'>('cards');
+  const [truth, setTruth] = useState<any>(null);
+  const [truthDays, setTruthDays] = useState(90);
   const [summary, setSummary] = useState<any>(null);
   const [cards, setCards] = useState<any[]>([]);
   const [clarity, setClarity] = useState<any>(null);
@@ -56,9 +58,12 @@ export default function TransactionsPage() {
     return fetch(`/api/transactions?${p}`).then(r => r.json()).then(d => setLedger({ rows: d.rows || [], total: d.total || 0 }));
   }, [fAccount, fStore, fClass, fQ, fUnattr]);
 
+  const loadTruth = useCallback(() => fetch(`/api/transactions?view=truth&days=${truthDays}`).then(r => r.json()).then(setTruth), [truthDays]);
+
   useEffect(() => { loadSummary(); loadCards(); }, [loadSummary, loadCards]);
   useEffect(() => { if (tab === 'ledger') loadLedger(); }, [tab, loadLedger]);
   useEffect(() => { if (tab === 'payments') loadPayments(); }, [tab, loadPayments]);
+  useEffect(() => { if (tab === 'truth') loadTruth(); }, [tab, loadTruth]);
 
   const runScan = async () => {
     setScanning(true); setScanMsg('');
@@ -123,7 +128,7 @@ export default function TransactionsPage() {
       )}
 
       <div className="flex gap-1 mb-4 border-b border-slate-800">
-        {([['cards', 'Card Intelligence'], ['ledger', 'Ledger'], ['payments', 'Payments']] as const).map(([k, label]) => (
+        {([['cards', 'Card Intelligence'], ['truth', 'Source of Truth'], ['ledger', 'Ledger'], ['payments', 'Payments']] as const).map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${tab === k ? 'border-blue-500 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>
             {label}
@@ -253,6 +258,89 @@ export default function TransactionsPage() {
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {tab === 'truth' && truth && (
+        <div>
+          <div className="flex items-center gap-2 mb-4">
+            <span className="text-xs text-slate-500">Window:</span>
+            {[30, 60, 90, 180].map(dd => (
+              <button key={dd} onClick={() => setTruthDays(dd)}
+                className={`px-2.5 py-1 rounded text-xs ${truthDays === dd ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>{dd}d</button>
+            ))}
+          </div>
+
+          {/* Ad spend lifecycle — accrued → billed → on card → settled */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden mb-6">
+            <div className="px-4 py-3 border-b border-slate-800">
+              <h3 className="text-sm font-semibold text-white">Ad Spend Truth — paid vs not, per store · {truth.windowDays}d</h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">Accrued (what FB delivered) → Billed (FB invoiced) → on a card unpaid → Settled. Gap = accrued − billed − FB unbilled: should be ≈ $0; anything else is a data or config problem.</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead><tr className="text-left text-slate-500 border-b border-slate-800">
+                  <th className="px-3 py-2">Store</th>
+                  <th className="px-3 py-2 text-right">Accrued</th>
+                  <th className="px-3 py-2 text-right">Billed by FB</th>
+                  <th className="px-3 py-2 text-right">FB unbilled (owed)</th>
+                  <th className="px-3 py-2 text-right">Riding unpaid on cards</th>
+                  <th className="px-3 py-2 text-right">Settled ✓</th>
+                  <th className="px-3 py-2 text-right">Billed, not in banking</th>
+                  <th className="px-3 py-2 text-right">Gap</th>
+                </tr></thead>
+                <tbody>
+                  {truth.adTruth.map((r: any) => (
+                    <tr key={r.store} className="border-b border-slate-800/50">
+                      <td className="px-3 py-1.5 text-slate-200 font-medium">{r.store}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-200">{fmt2(r.accruedCents)}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-300">{fmt2(r.billedCents)}</td>
+                      <td className="px-3 py-1.5 text-right text-blue-400">{r.unbilledCents ? fmt2(r.unbilledCents) : '—'}</td>
+                      <td className="px-3 py-1.5 text-right text-amber-400">{r.ridingUnpaidCents ? fmt2(r.ridingUnpaidCents) : '—'}</td>
+                      <td className="px-3 py-1.5 text-right text-emerald-400">{r.settledCents ? fmt2(r.settledCents) : '—'}</td>
+                      <td className="px-3 py-1.5 text-right">{r.billedNotSeenCents > 100 ? <span className="text-amber-500">{fmt2(r.billedNotSeenCents)} ⚠</span> : <span className="text-slate-600">—</span>}</td>
+                      <td className="px-3 py-1.5 text-right">
+                        {Math.abs(r.gapCents) <= Math.max(2000, r.accruedCents * 0.03)
+                          ? <span className="text-emerald-500">✓ ties</span>
+                          : <span className="text-red-400">{r.gapCents > 0 ? '+' : '−'}{fmt2(Math.abs(r.gapCents))}</span>}
+                      </td>
+                    </tr>
+                  ))}
+                  {!truth.adTruth.length && <tr><td colSpan={8} className="px-3 py-8 text-center text-slate-500">No ad spend in window</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Card balance composition — what each total is held of */}
+          <h3 className="text-sm font-semibold text-white mb-2">What each card balance is made of</h3>
+          <p className="text-[11px] text-slate-500 mb-3">Charges newest-first until they add up to the posted balance — the exact unpaid charges behind each total. &quot;Unexplained&quot; = balance the transaction history can&apos;t account for (pre-history debt, interest capitalization).</p>
+          <div className="grid lg:grid-cols-2 gap-4">
+            {truth.composition.filter((c: any) => c.postedCents > 0).map((c: any) => (
+              <div key={c.id} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <div className="flex items-start justify-between">
+                  <p className="text-sm font-semibold text-white">{c.institution} · {c.name} <span className="text-slate-500">··{c.last4}</span></p>
+                  <p className="text-base font-bold text-white">{fmt2(c.postedCents)}</p>
+                </div>
+                <p className="text-[11px] text-slate-500 mb-2">{c.explainedPct}% explained by charges since {c.oldestUnpaidDate || '—'}</p>
+                <div className="space-y-1">
+                  {c.groups.slice(0, 8).map((g: any) => (
+                    <div key={`${g.class}|${g.store}`} className="flex items-center justify-between text-xs">
+                      <span className="flex items-center gap-1.5"><ClassChip cls={g.class} /><span className="text-slate-400">{g.store}</span><span className="text-slate-600">×{g.n}</span></span>
+                      <span className="text-slate-200 font-medium">{fmt2(g.cents)}</span>
+                    </div>
+                  ))}
+                  {c.groups.length > 8 && <p className="text-[11px] text-slate-500">+ {c.groups.length - 8} more groups</p>}
+                  {c.unexplainedCents > 0 && (
+                    <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-800">
+                      <span className="text-red-400/90">Unexplained (pre-history / interest)</span>
+                      <span className="text-red-400 font-medium">{fmt2(c.unexplainedCents)}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}

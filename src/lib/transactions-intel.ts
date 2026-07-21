@@ -442,6 +442,135 @@ export function getCardClarity(db: DatabaseType.Database) {
   };
 }
 
+/** Strict source-of-truth decomposition.
+ *  A) Card balance composition: charges newest-first until they sum to the
+ *     posted balance — the exact unpaid charges behind each total, grouped by
+ *     class and store, with any un-coverable remainder shown as a gap (data
+ *     honesty: history that can't explain a balance says so).
+ *  B) Ad spend lifecycle per store: accrued (Insights) → billed (Meta
+ *     invoices) → riding unpaid on a card → settled, plus FB's own unbilled
+ *     balance and the accrued-vs-billed reconciliation gap. */
+export function getTruth(db: DatabaseType.Database, days: number) {
+  ensureTxnIntelTables(db);
+  const d = `-${Math.min(Math.max(days || 90, 30), 365)} days`;
+
+  const cards: any[] = db.prepare(`
+    SELECT id, institution_name, account_name, last_four, balance_ledger_cents, bank_data_as_of
+    FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'
+    ORDER BY ABS(balance_ledger_cents) DESC
+  `).all();
+
+  const chargesQ = db.prepare(`
+    SELECT t.id, t.date, t.description, ABS(t.amount_cents) cents,
+           COALESCE(l.class, 'other') class, l.store_id, s.name AS store_name
+    FROM bank_transactions t
+    LEFT JOIN txn_links l ON l.txn_id = t.id
+    LEFT JOIN stores s ON s.id = l.store_id
+    WHERE t.bank_account_id = ? AND t.status != 'pending'
+      AND COALESCE(l.class, 'other') NOT IN ('card_payment')
+      AND t.date >= date('now', '-540 days')
+    ORDER BY t.date DESC, t.id DESC
+  `);
+
+  // FB charges that are part of an unpaid balance, per store — filled in below
+  const fbUnpaidByStore = new Map<string, number>();
+
+  const composition = cards.map(c => {
+    const posted = Math.abs(c.balance_ledger_cents || 0);
+    const rows: any[] = chargesQ.all(c.id);
+    const included: any[] = [];
+    let acc = 0;
+    for (const r of rows) {
+      if (acc >= posted) break;
+      // Partial inclusion for the oldest charge that crosses the boundary —
+      // strictness over neatness: only the still-unpaid portion counts.
+      const take = Math.min(r.cents, posted - acc);
+      acc += take;
+      included.push({ ...r, unpaidCents: take });
+      if (r.class === 'fb_ads') {
+        const key = r.store_name || '(unattributed)';
+        fbUnpaidByStore.set(key, (fbUnpaidByStore.get(key) || 0) + take);
+      }
+    }
+    const remainder = Math.max(0, posted - acc); // balance history can't explain
+    const byGroup = new Map<string, { class: string; store: string; cents: number; n: number }>();
+    for (const r of included) {
+      const store = r.store_name || '(unattributed)';
+      const k = `${r.class}|${store}`;
+      if (!byGroup.has(k)) byGroup.set(k, { class: r.class, store, cents: 0, n: 0 });
+      const g = byGroup.get(k)!;
+      g.cents += r.unpaidCents; g.n++;
+    }
+    return {
+      id: c.id, institution: c.institution_name, name: c.account_name, last4: c.last_four,
+      asOf: c.bank_data_as_of, postedCents: posted,
+      groups: [...byGroup.values()].sort((a, b) => b.cents - a.cents),
+      oldestUnpaidDate: included.length ? included[included.length - 1].date : null,
+      unexplainedCents: remainder,
+      explainedPct: posted > 0 ? Math.round(100 * acc / posted) : 100,
+    };
+  });
+
+  // B) Ad spend lifecycle per store (facebook)
+  const accrued: any[] = db.prepare(`
+    SELECT a.store_id, s.name AS store, SUM(a.spend_cents) cents
+    FROM ad_spend a JOIN stores s ON s.id = a.store_id
+    WHERE a.platform = 'facebook' AND a.date >= date('now', ?)
+    GROUP BY a.store_id
+  `).all(d);
+  const billed: any[] = db.prepare(`
+    SELECT p.store_id, s.name AS store, SUM(p.amount_cents) cents, COUNT(*) n
+    FROM ad_payments p JOIN stores s ON s.id = p.store_id
+    WHERE p.platform = 'facebook' AND p.date >= date('now', ?)
+    GROUP BY p.store_id
+  `).all(d);
+  const bankSeen: any[] = db.prepare(`
+    SELECT COALESCE(s.name, '(unattributed)') store, SUM(ABS(t.amount_cents)) cents
+    FROM bank_transactions t
+    JOIN txn_links l ON l.txn_id = t.id AND l.class = 'fb_ads'
+    LEFT JOIN stores s ON s.id = l.store_id
+    WHERE t.date >= date('now', ?)
+    GROUP BY s.name
+  `).all(d);
+  const unbilled: any[] = db.prepare(`
+    SELECT s.name AS store, SUM(p.balance_cents) cents
+    FROM fb_profiles p JOIN stores s ON s.id = p.store_id
+    WHERE p.is_active = 1 AND p.balance_cents > 0
+    GROUP BY s.name
+  `).all();
+
+  const storeNames = new Set<string>([
+    ...accrued.map(r => r.store), ...billed.map(r => r.store),
+    ...bankSeen.map(r => r.store), ...unbilled.map(r => r.store),
+    ...fbUnpaidByStore.keys(),
+  ]);
+  const idx = (rows: any[]) => new Map(rows.map(r => [r.store, r.cents || 0]));
+  const accIdx = idx(accrued), billIdx = idx(billed), bankIdx = idx(bankSeen), unbIdx = idx(unbilled);
+
+  const adTruth = [...storeNames].map(store => {
+    const acc = accIdx.get(store) || 0;
+    const bill = billIdx.get(store) || 0;
+    const bank = bankIdx.get(store) || 0;
+    const unb = unbIdx.get(store) || 0;
+    const ridingUnpaid = fbUnpaidByStore.get(store) || 0;
+    return {
+      store,
+      accruedCents: acc,            // spend that happened (Insights)
+      billedCents: bill,            // Meta invoiced it
+      bankSeenCents: bank,          // the charge is visible on a linked card/bank
+      unbilledCents: unb,           // FB is still going to charge this
+      ridingUnpaidCents: ridingUnpaid, // billed, on a card, card not paid down past it
+      settledCents: Math.max(0, bank - ridingUnpaid), // on a card AND covered by payments
+      // accrued should ≈ billed + unbilled; anything else is a data/config gap
+      gapCents: acc - bill - unb,
+      billedNotSeenCents: Math.max(0, bill - bank), // invoiced but invisible in banking → unlinked card
+    };
+  }).filter(r => r.accruedCents || r.billedCents || r.bankSeenCents || r.unbilledCents)
+    .sort((a, b) => b.accruedCents - a.accruedCents);
+
+  return { composition, adTruth, windowDays: Math.min(Math.max(days || 90, 30), 365) };
+}
+
 /** All card payments in the window, with the funding account when paired. */
 export function getPaymentsView(db: DatabaseType.Database, days: number) {
   ensureTxnIntelTables(db);
