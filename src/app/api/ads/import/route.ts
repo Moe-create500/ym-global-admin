@@ -520,9 +520,22 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ payments, cardSummary, platformSummary, monthlyTotals, pendingCents, totalPendingCents, hiddenCards });
 }
 
-// PATCH: Toggle card visibility
+// PATCH: reassign an invoice to another store (wrong-box fix), or toggle card visibility
 export async function PATCH(req: NextRequest) {
-  const { storeId, cardLast4, platform = 'facebook', action } = await req.json();
+  const body = await req.json();
+
+  // Reassign a single imported invoice to a different store
+  if (body.paymentId && body.newStoreId) {
+    const db = getDb();
+    const row: any = db.prepare('SELECT id, store_id FROM ad_payments WHERE id = ?').get(body.paymentId);
+    if (!row) return NextResponse.json({ error: 'Payment not found' }, { status: 404 });
+    const store: any = db.prepare('SELECT id, name FROM stores WHERE id = ?').get(body.newStoreId);
+    if (!store) return NextResponse.json({ error: 'Store not found' }, { status: 404 });
+    db.prepare('UPDATE ad_payments SET store_id = ? WHERE id = ?').run(body.newStoreId, body.paymentId);
+    return NextResponse.json({ success: true, movedTo: store.name });
+  }
+
+  const { storeId, cardLast4, platform = 'facebook', action } = body;
   if (!storeId || !cardLast4) {
     return NextResponse.json({ error: 'storeId and cardLast4 required' }, { status: 400 });
   }
@@ -535,5 +548,17 @@ export async function PATCH(req: NextRequest) {
     db.prepare(`INSERT OR IGNORE INTO hidden_invoice_cards (id, store_id, card_last4, platform) VALUES (?, ?, ?, ?)`).run(id, storeId, cardLast4, platform);
   }
 
+  return NextResponse.json({ success: true });
+}
+
+// DELETE: remove one imported invoice (undo a wrong-box upload).
+// The transaction_id is freed, so re-importing the same CSV recreates it cleanly.
+export async function DELETE(req: NextRequest) {
+  const paymentId = req.nextUrl.searchParams.get('paymentId');
+  if (!paymentId) return NextResponse.json({ error: 'paymentId required' }, { status: 400 });
+  const db = getDb();
+  const row: any = db.prepare('SELECT id FROM ad_payments WHERE id = ?').get(paymentId);
+  if (!row) return NextResponse.json({ error: 'Payment not found' }, { status: 404 });
+  db.prepare('DELETE FROM ad_payments WHERE id = ?').run(paymentId);
   return NextResponse.json({ success: true });
 }

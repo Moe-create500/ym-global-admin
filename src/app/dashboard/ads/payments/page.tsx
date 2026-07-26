@@ -115,6 +115,28 @@ function InvoiceDashboardContent() {
     }
   }, [storeFilter]);
 
+  // Wrong-box fixes: reassign an invoice to another store, or delete it
+  const [reassigning, setReassigning] = useState<string | null>(null);
+  const [fixMsg, setFixMsg] = useState('');
+  async function reassignCharge(paymentId: string, newStoreId: string) {
+    if (!newStoreId) { setReassigning(null); return; }
+    const res = await fetch('/api/ads/import', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paymentId, newStoreId }),
+    });
+    const d = await res.json();
+    setFixMsg(res.ok ? `✓ moved to ${d.movedTo}` : `✗ ${d.error}`);
+    setReassigning(null);
+    loadData();
+  }
+  async function deleteCharge(paymentId: string) {
+    if (!confirm('Delete this invoice? Re-importing the same CSV will recreate it.')) return;
+    const res = await fetch(`/api/ads/import?paymentId=${paymentId}`, { method: 'DELETE' });
+    const d = await res.json();
+    setFixMsg(res.ok ? '✓ invoice deleted' : `✗ ${d.error}`);
+    loadData();
+  }
+
   async function loadData() {
     setLoading(true);
     const params = new URLSearchParams();
@@ -622,27 +644,46 @@ function InvoiceDashboardContent() {
               <h2 className="text-sm font-semibold text-white">
                 Ad Charges {cardFilter && <span className="text-blue-400 font-normal ml-2">····{cardFilter}</span>}
               </h2>
-              {cardFilter && <button onClick={() => setCardFilter('')} className="text-xs text-slate-400 hover:text-white">Clear</button>}
+              <div className="flex items-center gap-3">
+                {fixMsg && <span className={`text-xs ${fixMsg.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>{fixMsg}</span>}
+                {cardFilter && <button onClick={() => setCardFilter('')} className="text-xs text-slate-400 hover:text-white">Clear</button>}
+              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
                     <th className="text-left px-5 py-3">Date</th>
+                    <th className="text-left px-5 py-3">Store</th>
                     <th className="text-left px-5 py-3">Platform</th>
                     <th className="text-left px-5 py-3">Card</th>
                     <th className="text-right px-5 py-3">Amount</th>
                     <th className="text-left px-5 py-3">Transaction ID</th>
+                    <th className="px-5 py-3"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {adPayments.map(p => (
                     <tr key={p.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                       <td className="px-5 py-3 text-slate-300">{p.date}</td>
+                      <td className="px-5 py-3">
+                        {reassigning === p.id ? (
+                          <select autoFocus defaultValue={p.store_id} onChange={e => reassignCharge(p.id, e.target.value)} onBlur={() => setReassigning(null)}
+                            className="bg-slate-800 border border-slate-600 rounded px-1.5 py-1 text-xs text-white">
+                            {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                          </select>
+                        ) : (
+                          <button onClick={() => setReassigning(p.id)} title="Click to move this invoice to another store"
+                            className="text-slate-300 hover:text-blue-400 text-xs border-b border-dotted border-slate-600">{p.store_name}</button>
+                        )}
+                      </td>
                       <td className="px-5 py-3"><span className={`text-xs px-2 py-0.5 rounded-full ${p.platform === 'facebook' ? 'bg-blue-900/30 text-blue-400' : p.platform === 'shopify' ? 'bg-emerald-900/30 text-emerald-400' : 'bg-green-900/30 text-green-400'}`}>{p.platform}</span></td>
                       <td className="px-5 py-3 text-slate-400">····{p.card_last4}</td>
                       <td className="px-5 py-3 text-right text-white font-medium">{cents(p.amount_cents)}</td>
                       <td className="px-5 py-3 text-slate-500 text-xs font-mono truncate max-w-[200px]">{p.transaction_id}</td>
+                      <td className="px-5 py-3 text-right">
+                        <button onClick={() => deleteCharge(p.id)} className="text-xs text-red-500/70 hover:text-red-400">✕</button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
