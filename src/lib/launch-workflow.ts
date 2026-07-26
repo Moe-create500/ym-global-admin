@@ -4,16 +4,18 @@
 // One launch per language: ad copy + image text generated in the language,
 // FB locale targeting on the ad set, preset country lists per market. Run the
 // flow once per market attached to the same CBO campaign → one ad set each.
+// fbLocales verified against Graph API search?type=adlocale (2026-07-25):
+// Spanish (All)=1002, Arabic=28, French (All)=1003, German=5, Portuguese (All)=1005
 export const LAUNCH_LANGUAGES: Record<string, { label: string; fbLocales: number[]; instruction: string; presetCountries: string[] }> = {
-  es: { label: 'Spanish', fbLocales: [23, 7], presetCountries: ['MX', 'ES', 'CO', 'AR', 'CL', 'PE'],
+  es: { label: 'Spanish', fbLocales: [1002], presetCountries: ['MX', 'ES', 'CO', 'AR', 'CL', 'PE'],
     instruction: 'Write ALL text in Spanish (neutral, Latin-American friendly). Absolutely no English anywhere.' },
   ar: { label: 'Arabic', fbLocales: [28], presetCountries: ['AE', 'SA', 'KW', 'QA', 'BH', 'OM'],
     instruction: 'Write ALL text in Modern Standard Arabic. Absolutely no English anywhere. Arabic reads right-to-left — lay out text accordingly.' },
-  fr: { label: 'French', fbLocales: [9], presetCountries: ['FR', 'BE', 'CH', 'CA'],
+  fr: { label: 'French', fbLocales: [1003], presetCountries: ['FR', 'BE', 'CH', 'CA'],
     instruction: 'Write ALL text in French. Absolutely no English anywhere.' },
-  de: { label: 'German', fbLocales: [10], presetCountries: ['DE', 'AT', 'CH'],
+  de: { label: 'German', fbLocales: [5], presetCountries: ['DE', 'AT', 'CH'],
     instruction: 'Write ALL text in German. Absolutely no English anywhere.' },
-  pt: { label: 'Portuguese', fbLocales: [16, 31], presetCountries: ['BR', 'PT'],
+  pt: { label: 'Portuguese', fbLocales: [1005], presetCountries: ['BR', 'PT'],
     instruction: 'Write ALL text in Portuguese (Brazilian-friendly). Absolutely no English anywhere.' },
 };
 const langInstruction = (cfg: any): string | undefined =>
@@ -566,7 +568,9 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
           if (tpl.promoted_object?.pixel_id) pixelId = tpl.promoted_object.pixel_id;
           if (tpl.optimization_goal) optimizationGoal = tpl.optimization_goal;
           if (tpl.billing_event) billingEvent = tpl.billing_event;
-          if (tpl.targeting?.geo_locations?.countries?.length) countries = tpl.targeting.geo_locations.countries;
+          // Language launches keep their OWN market countries — inheriting the
+          // template's (usually English US/GB) would gut the localized ad set.
+          if (!cfg.language && tpl.targeting?.geo_locations?.countries?.length) countries = tpl.targeting.geo_locations.countries;
           basedOn = ` — settings based on "${tpl.name}"`;
         }
       } catch { /* fall back to profile defaults */ }
