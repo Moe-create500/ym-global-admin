@@ -16,7 +16,7 @@ export interface AdCopy {
  *  this is fast and the layout is pixel-consistent across products. */
 export async function generateLanderHtml(product: {
   brandName: string; productName: string; priceCents: number; brief: string;
-}): Promise<{ html: string; copy: import('@/lib/lander-template').LanderCopy }> {
+}, languageInstruction?: string): Promise<{ html: string; copy: import('@/lib/lander-template').LanderCopy }> {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not configured');
   const { renderLander } = await import('@/lib/lander-template');
   const client = new Anthropic();
@@ -29,7 +29,7 @@ export async function generateLanderHtml(product: {
     system: 'You are a world-class DTC landing-page copywriter. You respond with valid JSON only — no markdown, no explanation.',
     messages: [{
       role: 'user',
-      content: `Write high-converting Shopify lander copy for this product. Compliant (no medical claims), no fabricated statistics or review counts, spell everything correctly.
+      content: `Write high-converting Shopify lander copy for this product. Compliant (no medical claims), no fabricated statistics or review counts, spell everything correctly.${languageInstruction ? `\n\nLANGUAGE — ABSOLUTE RULE: ${languageInstruction} Every value in the JSON (headline, benefits, outcomes, journey, quotes, guarantee — everything customer-facing) must be in that language. Keep the JSON keys in English.` : ''}
 
 BRAND: ${product.brandName}
 PRODUCT: ${product.productName}

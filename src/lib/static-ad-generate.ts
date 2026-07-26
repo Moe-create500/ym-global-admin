@@ -36,6 +36,7 @@ export async function generateStaticAd(db: Database.Database, opts: {
   audienceId: string;
   templateId: string;
   customInstructions?: string;
+  languageInstruction?: string;
   selectedImageUrl?: string;
 }): Promise<{ id: string; imageUrl: string; template: string; audience: string }> {
   const productRow: any = db.prepare('SELECT * FROM products WHERE id = ?').get(opts.productId);
@@ -72,7 +73,7 @@ export async function generateStaticAd(db: Database.Database, opts: {
     reference_description: tplData.reference_description || '',
   };
 
-  let prompt = buildImagePrompt({ product, audience, template, copy: {} });
+  let prompt = buildImagePrompt({ product, audience, template, copy: {}, languageInstruction: opts.languageInstruction });
   if (opts.customInstructions) {
     prompt += `\n\nADDITIONAL INSTRUCTIONS: ${opts.customInstructions}`;
   }

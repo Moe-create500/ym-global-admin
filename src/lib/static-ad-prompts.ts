@@ -151,8 +151,9 @@ export function buildImagePrompt(params: {
   audience: AudienceProfile;
   template: ImageTemplate;
   copy: GeneratedCopy;
+  languageInstruction?: string;
 }): string {
-  const { product, audience, template, copy } = params;
+  const { product, audience, template, copy, languageInstruction } = params;
 
   const textOverlays = template.zones
     .filter(z => z.type === 'text' && copy[z.id])
@@ -215,7 +216,10 @@ ${anglesText ? `Creative angles that convert for her: ${anglesText}` : ''}
 
 THE COPY — YOU WRITE IT:
 You are a direct-response copywriter writing for this specific woman. Not a general audience. HER.
-
+${languageInstruction ? `
+RULE ZERO — LANGUAGE (overrides every example below): ${languageInstruction}
+Every single word rendered on this image — headline, benefits, CTA button, reviews, badge text, prices context — must be in that language. The English phrases in the rules below demonstrate STYLE and tone only; reproducing them in English is a failure. Translate the spirit, write natively.
+` : ''}
 Rules for every word you put on this image:
 1. HEADLINE (biggest text): Name her exact situation or desire. Not "Stronger Hair" — instead "The hair length I prayed for since going natural." Not "Weight Loss Solution" — instead "Fit in the dress you wore before the baby." Make her feel SEEN.
 2. BENEFITS/BULLETS: Short. 3-6 words each. Specific outcomes, not features. Not "Contains Biotin" — instead "Edges visibly thicker in 4 weeks."

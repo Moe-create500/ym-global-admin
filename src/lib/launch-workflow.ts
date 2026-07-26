@@ -391,7 +391,8 @@ export async function advanceWorkflow(db: Database.Database, id: string, opts?: 
             storeId: wf.storeId, productId: wf.productId, audienceId: result.audienceId,
             templateId: result.templateIds[idx % result.templateIds.length],
             selectedImageUrl: wf.config.selectedImageUrl || undefined,
-            customInstructions: [wf.config.customInstructions, langInstruction(wf.config)].filter(Boolean).join(' — ') || undefined,
+            customInstructions: wf.config.customInstructions || undefined,
+            languageInstruction: langInstruction(wf.config),
           });
           result.creatives[idx] = { id: creative.id, imageUrl: creative.imageUrl, template: creative.template };
           mine.status = 'done'; mine.detail = creative.template;
@@ -507,7 +508,8 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     const creative = await generateStaticAd(db, {
       storeId: wf.storeId, productId: wf.productId, audienceId: result.audienceId, templateId,
       selectedImageUrl: cfg.selectedImageUrl || undefined,
-      customInstructions: [cfg.customInstructions, langInstruction(cfg)].filter(Boolean).join(' — ') || undefined,
+      customInstructions: cfg.customInstructions || undefined,
+      languageInstruction: langInstruction(cfg),
     });
     result.creatives = result.creatives || [];
     result.creatives[idx] = { id: creative.id, imageUrl: creative.imageUrl, template: creative.template };
@@ -884,7 +886,7 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
 
     const lander = await generateLanderHtml({
       brandName: np.brandName, productName: np.productName, priceCents: np.priceCents, brief: np.brief,
-    });
+    }, langInstruction(cfg));
     let html = lander.html;
     // The lander copy doubles as the FB ad copy — no separate audience/copy
     // steps needed for new products (the kalo videos are the creative)
@@ -952,6 +954,7 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
         existingCampaignId: result.campaignId,
         dailyBudgetCents: 1500, minSpendTargetCents: 1500,
         targeting: cfg.targeting || { countries: ['US'] },
+        language: cfg.language || null, // Spanish launch → Spanish daily top-ups
         launchStatus: 'ACTIVE',
         newProduct: null, videoBatchId: undefined, audienceId: null, creativeIds: undefined,
       },
