@@ -1,4 +1,23 @@
 // Launch-workflow engine — product in, live FB campaign out.
+
+// ── Multi-market launches ────────────────────────────────────────────────────
+// One launch per language: ad copy + image text generated in the language,
+// FB locale targeting on the ad set, preset country lists per market. Run the
+// flow once per market attached to the same CBO campaign → one ad set each.
+export const LAUNCH_LANGUAGES: Record<string, { label: string; fbLocales: number[]; instruction: string; presetCountries: string[] }> = {
+  es: { label: 'Spanish', fbLocales: [23, 7], presetCountries: ['MX', 'ES', 'CO', 'AR', 'CL', 'PE'],
+    instruction: 'Write ALL text in Spanish (neutral, Latin-American friendly). Absolutely no English anywhere.' },
+  ar: { label: 'Arabic', fbLocales: [28], presetCountries: ['AE', 'SA', 'KW', 'QA', 'BH', 'OM'],
+    instruction: 'Write ALL text in Modern Standard Arabic. Absolutely no English anywhere. Arabic reads right-to-left — lay out text accordingly.' },
+  fr: { label: 'French', fbLocales: [9], presetCountries: ['FR', 'BE', 'CH', 'CA'],
+    instruction: 'Write ALL text in French. Absolutely no English anywhere.' },
+  de: { label: 'German', fbLocales: [10], presetCountries: ['DE', 'AT', 'CH'],
+    instruction: 'Write ALL text in German. Absolutely no English anywhere.' },
+  pt: { label: 'Portuguese', fbLocales: [16, 31], presetCountries: ['BR', 'PT'],
+    instruction: 'Write ALL text in Portuguese (Brazilian-friendly). Absolutely no English anywhere.' },
+};
+const langInstruction = (cfg: any): string | undefined =>
+  cfg?.language && LAUNCH_LANGUAGES[cfg.language] ? LAUNCH_LANGUAGES[cfg.language].instruction : undefined;
 //
 // Extracted from the API route so BOTH the browser-driven flow and the
 // background scheduler (lib/launch-scheduler) can run workflows. One step per
@@ -211,6 +230,7 @@ export function createLaunchWorkflow(db: Database.Database, storeId: string, pro
       audienceId: config.audienceId || null,
       selectedImageUrl: config.selectedImageUrl || null,
       customInstructions: typeof config.customInstructions === 'string' && config.customInstructions.trim() ? config.customInstructions.trim().slice(0, 500) : null,
+      language: LAUNCH_LANGUAGES[config.language] ? config.language : null,
       campaignName: config.campaignName || `${productTitle.slice(0, 40)} | Launch ${new Date().toISOString().slice(0, 10)}`,
       targeting: {
         countries: Array.isArray(config.targeting?.countries) && config.targeting.countries.length
@@ -369,7 +389,7 @@ export async function advanceWorkflow(db: Database.Database, id: string, opts?: 
             storeId: wf.storeId, productId: wf.productId, audienceId: result.audienceId,
             templateId: result.templateIds[idx % result.templateIds.length],
             selectedImageUrl: wf.config.selectedImageUrl || undefined,
-            customInstructions: wf.config.customInstructions || undefined,
+            customInstructions: [wf.config.customInstructions, langInstruction(wf.config)].filter(Boolean).join(' — ') || undefined,
           });
           result.creatives[idx] = { id: creative.id, imageUrl: creative.imageUrl, template: creative.template };
           mine.status = 'done'; mine.detail = creative.template;
@@ -472,7 +492,7 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     const product: any = db.prepare('SELECT title, description, price_cents FROM products WHERE id = ?').get(wf.productId);
     const audience = loadAudience(db, result.audienceId);
     if (!audience) throw new Error('Audience missing — rerun the audience step');
-    result.copy = await generateAdCopy(product, audience);
+    result.copy = await generateAdCopy(product, audience, langInstruction(cfg));
     return { detail: result.copy.headline, result };
   }
 
@@ -485,6 +505,7 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     const creative = await generateStaticAd(db, {
       storeId: wf.storeId, productId: wf.productId, audienceId: result.audienceId, templateId,
       selectedImageUrl: cfg.selectedImageUrl || undefined,
+      customInstructions: [cfg.customInstructions, langInstruction(cfg)].filter(Boolean).join(' — ') || undefined,
     });
     result.creatives = result.creatives || [];
     result.creatives[idx] = { id: creative.id, imageUrl: creative.imageUrl, template: creative.template };
@@ -556,7 +577,7 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
     // Naming convention: 07/12/2026 - M.O - Auto Launch (LA date at execution)
     const laDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: '2-digit', day: '2-digit', year: 'numeric' });
     const adsetOptions: any = {
-      name: `${laDate} - M.O - Auto Launch`,
+      name: `${laDate} - M.O - Auto Launch${cfg.language ? ` - ${String(cfg.language).toUpperCase()}` : ''}`,
       campaignId: result.campaignId,
       dailyBudgetCents: cfg.dailyBudgetCents,
       cbo: isCbo, // CBO campaign owns the budget — ad set carries none
@@ -575,6 +596,8 @@ async function runStep(db: any, wf: any, step: Step): Promise<{ detail: string; 
         age_min: 18,
         age_max: 65,
         targeting_automation: { advantage_audience: 0 },
+        // Language market: only reach people whose FB is set to the language
+        ...(cfg.language && LAUNCH_LANGUAGES[cfg.language] ? { locales: LAUNCH_LANGUAGES[cfg.language].fbLocales } : {}),
       },
       // Optional expiry when configured; default = runs until turned off
       ...(() => {

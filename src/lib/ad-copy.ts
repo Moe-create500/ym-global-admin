@@ -70,6 +70,7 @@ Return EXACTLY this JSON shape:
 export async function generateAdCopy(
   product: { title: string; description?: string | null; price_cents?: number | null },
   audience: AudienceProfile,
+  languageInstruction?: string,
 ): Promise<AdCopy> {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not configured');
   const client = new Anthropic();
@@ -95,7 +96,7 @@ Desires: ${audience.desires.join('; ')}
 Objections: ${audience.objections.join('; ')}
 Mindset: ${audience.mindset || 'N/A'}
 
-Write the Facebook ad copy for this product aimed at this audience. Scroll-stopping, specific, compliant (no medical claims, no before/after promises, no "you" statements about personal attributes).
+Write the Facebook ad copy for this product aimed at this audience. Scroll-stopping, specific, compliant (no medical claims, no before/after promises, no "you" statements about personal attributes).${languageInstruction ? `\n\nLANGUAGE: ${languageInstruction} The primaryText, headline and description must ALL be in that language.` : ''}
 
 Return exactly:
 {

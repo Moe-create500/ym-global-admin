@@ -105,6 +105,20 @@ export default function LaunchFlowPage() {
   const [dailyBudget, setDailyBudget] = useState('10');
   const [goLive, setGoLive] = useState(true);
   const [countries, setCountries] = useState('US');
+  // Multi-market launch: language drives copy + image text + FB locale targeting
+  const LANGS: Record<string, { label: string; preset: string }> = {
+    '': { label: '🇺🇸 English (default)', preset: 'US' },
+    es: { label: '🇪🇸 Spanish', preset: 'MX, ES, CO, AR, CL, PE' },
+    ar: { label: '🇸🇦 Arabic', preset: 'AE, SA, KW, QA, BH, OM' },
+    fr: { label: '🇫🇷 French', preset: 'FR, BE, CH, CA' },
+    de: { label: '🇩🇪 German', preset: 'DE, AT, CH' },
+    pt: { label: '🇧🇷 Portuguese', preset: 'BR, PT' },
+  };
+  const [language, setLanguage] = useState('');
+  const pickLanguage = (lang: string) => {
+    setLanguage(lang);
+    setCountries(LANGS[lang]?.preset || 'US'); // preset the market — editable after
+  };
   const [minSpendTarget, setMinSpendTarget] = useState('');
   const [customInstructions, setCustomInstructions] = useState('');
   // No end date — ads live in the campaign and run until turned off
@@ -410,6 +424,7 @@ export default function LaunchFlowPage() {
         : Math.round(parseFloat(dailyBudget || '10') * 100),
       minSpendTargetCents: adSetSpendCents,
       customInstructions: customInstructions.trim() || undefined,
+      language: language || undefined,
       launchStatus: goLive ? 'ACTIVE' : 'PAUSED',
       targeting: { countries: countries.split(',').map(c => c.trim()).filter(Boolean) },
       selectedImageUrl: selectedImageUrl || undefined,
@@ -550,6 +565,7 @@ export default function LaunchFlowPage() {
       dailyBudget: ((s.config?.dailyBudgetCents ?? 1000) / 100).toString(),
       minSpend: s.config?.minSpendTargetCents ? (s.config.minSpendTargetCents / 100).toString() : '',
       countries: (s.config?.targeting?.countries || ['US']).join(', '),
+      language: s.config?.language || '',
       customInstructions: s.config?.customInstructions || '',
       landingUrl: s.config?.landingUrl || '',
       pageId: s.config?.pageId || '',
@@ -579,6 +595,7 @@ export default function LaunchFlowPage() {
           dailyBudgetCents: Math.round(parseFloat(f.dailyBudget || '10') * 100),
           minSpendTargetCents: f.minSpend ? Math.round(parseFloat(f.minSpend) * 100) : null,
           targeting: { countries: String(f.countries).split(',').map((c: string) => c.trim()).filter(Boolean) },
+          language: f.language || null,
           customInstructions: f.customInstructions?.trim() || null,
           landingUrl: f.landingUrl,
           ...(f.pageId ? { pageId: f.pageId } : {}),
@@ -1176,6 +1193,12 @@ export default function LaunchFlowPage() {
                       placeholder="optional" className={inputCls} />
                     <p className="text-[9px] text-slate-500 mt-0.5">daily_min_spend_target</p></div>
                 </div>
+                <div><label className={labelCls}>Market language</label>
+                  <select value={language} onChange={e => pickLanguage(e.target.value)} className={inputCls}>
+                    {Object.entries(LANGS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                  </select>
+                  {language && <p className="text-[9px] text-blue-400 mt-0.5">Ad copy + image text in {LANGS[language].label.split(' ')[1]} · ad set only reaches people using FB in that language</p>}
+                </div>
                 <div><label className={labelCls}>Countries (comma-separated)</label>
                   <input value={countries} onChange={e => setCountries(e.target.value)} placeholder="US, CA, GB" className={inputCls} /></div>
                 <p className="text-[11px] text-slate-400">
@@ -1185,7 +1208,7 @@ export default function LaunchFlowPage() {
             )
           ) : (
             <p className="text-xs text-slate-300">
-              {(wf.config.targeting?.countries || ['US']).join(', ')} · ${(wf.config.dailyBudgetCents / 100).toFixed(2)}/day
+              {(wf.config.targeting?.countries || ['US']).join(', ')}{wf.config.language ? ` · ${String(wf.config.language).toUpperCase()} market` : ''} · ${(wf.config.dailyBudgetCents / 100).toFixed(2)}/day
               {' · runs until turned off'}
             </p>
           )}
@@ -1402,8 +1425,14 @@ export default function LaunchFlowPage() {
                 <div><label className={labelCls}>Min spend $</label>
                   <input type="number" min={0} value={editForm.minSpend} onChange={e => setEditForm({ ...editForm, minSpend: e.target.value })} placeholder="—" className={inputCls} /></div>
               </div>
-              <div><label className={labelCls}>Countries</label>
-                <input value={editForm.countries} onChange={e => setEditForm({ ...editForm, countries: e.target.value })} className={inputCls} /></div>
+              <div className="grid grid-cols-2 gap-2">
+                <div><label className={labelCls}>Countries</label>
+                  <input value={editForm.countries} onChange={e => setEditForm({ ...editForm, countries: e.target.value })} className={inputCls} /></div>
+                <div><label className={labelCls}>Market language</label>
+                  <select value={editForm.language || ''} onChange={e => setEditForm({ ...editForm, language: e.target.value })} className={inputCls}>
+                    {Object.entries(LANGS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                  </select></div>
+              </div>
               <div><label className={labelCls}>Custom details (every image)</label>
                 <textarea rows={2} value={editForm.customInstructions} onChange={e => setEditForm({ ...editForm, customInstructions: e.target.value })} className={inputCls} /></div>
               <div><label className={labelCls}>Landing page URL</label>
