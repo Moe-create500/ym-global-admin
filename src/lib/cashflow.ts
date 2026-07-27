@@ -58,7 +58,20 @@ export interface CashflowProjection {
   // EVERY Shopify store, unfiltered — the connections panel must list stores
   // that have no data yet (that's exactly what connecting them is for)
   all_stores: { store_id: string; store_name: string }[];
-  calendar: { date: string; confirmed_cents: number; cumulative_cents: number; events: CashEvent[] }[];
+  calendar: { date: string; confirmed_cents: number; cumulative_cents: number; position_cents: number; events: CashEvent[] }[];
+  // The decision math: what you have, what's coming, what you owe, and what
+  // that nets out to — so the page answers "can I pay X today?" by itself.
+  position: {
+    cash_available_cents: number;      // checking/savings available right now
+    fb_unbilled_cents: number;         // Meta will charge this soon
+    cards_owed_cents: number;          // manual card obligations
+    ad_burn_daily_cents: number;       // measured 7d average accrual
+    incoming_7d_cents: number;         // landing within 7 days (committed + projected)
+    net_7d_cents: number;              // cash + incoming(7d) − burn×7
+    after_obligations_7d_cents: number;// net_7d − cards − fb (the real verdict)
+    safe_to_pay_today_cents: number;   // cash − 7-day ad-burn buffer
+    clear_date: string | null;         // first day position covers cards+fb, null = not in horizon
+  };
   totals: {
     landed_today_cents: number;
     in_transit_cents: number;
@@ -132,6 +145,11 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
   const today = todayPacific();
   const horizonEnd = addDays(today, horizonDays);
   const dataGaps: string[] = [];
+  // Unmatched-payout findings aggregate per store — one line each, not one
+  // per payout (Areya alone had 200+ historical ones = a useless wall).
+  // Only the last 14 days stay individual: those are actionable ("where's
+  // my money"), history is a bank-feed coverage note.
+  const unmatchedAgg = new Map<string, { n: number; cents: number; min: string; max: string }>();
 
   const stores: any[] = db.prepare(
     `SELECT id, name FROM stores WHERE platform = 'shopify' ${storeIdFilter ? 'AND id = ?' : ''} ORDER BY name`
@@ -248,7 +266,15 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
         continue; // older confirmed landings are bank history, not incoming
       }
       if (bankMaxDate && bankMaxDate >= addDays(expectedLand, 2)) {
-        dataGaps.push(`${store.name}: payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} of $${(p.amount_cents / 100).toFixed(2)} is marked PAID but has no matching bank landing even though the bank data covers that period — verify with Shopify/bank.`);
+        if (p.pdate >= addDays(today, -14)) {
+          dataGaps.push(`${store.name}: payout ${p.pdate}${p.reference ? ` ref ${p.reference}` : ''} of $${(p.amount_cents / 100).toFixed(2)} is marked PAID but has no matching bank landing — verify with Shopify/bank.`);
+        } else {
+          const agg = unmatchedAgg.get(store.name) || { n: 0, cents: 0, min: p.pdate, max: p.pdate };
+          agg.n++; agg.cents += p.amount_cents;
+          if (p.pdate < agg.min) agg.min = p.pdate;
+          if (p.pdate > agg.max) agg.max = p.pdate;
+          unmatchedAgg.set(store.name, agg);
+        }
         continue; // not on the rail — it's missing until proven otherwise
       }
       if (today > rollToBusinessDay(addDays(expectedLand, 1))) continue; // grace elapsed — treat as arrived
@@ -448,17 +474,40 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     if (hasEvidence || cards.length > 0) storeResults.push(sc);
   }
 
+  // Flush aggregated historical unmatched-payout findings — one line per store
+  for (const [storeName, a] of unmatchedAgg) {
+    dataGaps.push(`${storeName}: ${a.n} older paid payouts totaling $${(a.cents / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })} (${a.min} → ${a.max}) have no matched bank landing — the bank feed for that period is likely partial. History note, not incoming money.`);
+  }
+
+  // ── The position math ──
+  const cashRow: any = db.prepare(`
+    SELECT SUM(COALESCE(balance_available_cents, balance_ledger_cents, 0)) cents
+    FROM bank_accounts WHERE account_type != 'credit' AND status = 'active' AND COALESCE(cfo_hidden, 0) = 0
+  `).get();
+  const fbRow: any = db.prepare(`SELECT SUM(balance_cents) cents FROM fb_profiles WHERE is_active = 1 AND balance_cents > 0`).get();
+  const cashAvailable = cashRow?.cents || 0;
+  const fbUnbilled = fbRow?.cents || 0;
+  const adBurnDaily = storeResults.reduce((s, x) => s + x.avg_daily_ad_burn_cents, 0);
+  const cardsOwed = storeResults.reduce((s, x) => s + x.cards.reduce((c, y) => c + y.owed_cents, 0), 0);
+
   // ── Merge into a per-date calendar (every dollar traces to an export row) ──
   const allEvents = storeResults.flatMap(s => s.events);
   const calendar: CashflowProjection['calendar'] = [];
   let cumulative = 0;
+  let clearDate: string | null = null;
   for (let i = 0; i <= horizonDays; i++) {
     const date = addDays(today, i);
     const dayEvents = allEvents.filter(e => e.date === date).sort((a, b) => b.amount_cents - a.amount_cents);
     const confirmed = dayEvents.reduce((s, e) => s + e.amount_cents, 0);
     cumulative += confirmed;
-    calendar.push({ date, confirmed_cents: confirmed, cumulative_cents: cumulative, events: dayEvents });
+    // Projected bank position: cash now + everything landed by this day − ad
+    // spend accruing at the measured daily rate. The number Moe actually needs.
+    const position = cashAvailable + cumulative - adBurnDaily * i;
+    if (clearDate === null && position >= cardsOwed + fbUnbilled) clearDate = date;
+    calendar.push({ date, confirmed_cents: confirmed, cumulative_cents: cumulative, position_cents: position, events: dayEvents });
   }
+  const incoming7d = calendar.filter((_, i) => i <= 7).reduce((s, d) => s + d.confirmed_cents, 0);
+  const net7d = cashAvailable + incoming7d - adBurnDaily * 7;
 
   return {
     generated_at_date: today,
@@ -468,6 +517,17 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     all_stores: (db.prepare("SELECT id, name FROM stores WHERE platform = 'shopify' ORDER BY name").all() as any[])
       .map((s: any) => ({ store_id: s.id, store_name: s.name })),
     calendar,
+    position: {
+      cash_available_cents: cashAvailable,
+      fb_unbilled_cents: fbUnbilled,
+      cards_owed_cents: cardsOwed,
+      ad_burn_daily_cents: adBurnDaily,
+      incoming_7d_cents: incoming7d,
+      net_7d_cents: net7d,
+      after_obligations_7d_cents: net7d - cardsOwed - fbUnbilled,
+      safe_to_pay_today_cents: Math.max(0, cashAvailable - adBurnDaily * 7),
+      clear_date: clearDate,
+    },
     totals: {
       landed_today_cents: storeResults.reduce((s, x) => s + x.landed_today_cents, 0),
       in_transit_cents: storeResults.reduce((s, x) => s + x.in_transit_cents, 0),

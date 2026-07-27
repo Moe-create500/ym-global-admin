@@ -21,6 +21,7 @@ const KIND_STYLE: Record<string, { chip: string; label: string }> = {
 export default function CashflowPage() {
   const [projection, setProjection] = useState<any>(null);
   const [storeId, setStoreId] = useState<string>('');
+  const [gapsOpen, setGapsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set());
   const [plan, setPlan] = useState<any>(null);
@@ -232,6 +233,53 @@ export default function CashflowPage() {
 
       {!loading && projection && (
         <>
+          {/* THE MATH — position, obligations, verdict */}
+          {projection.position && (() => {
+            const p = projection.position;
+            const healthy = p.after_obligations_7d_cents >= 0;
+            return (
+              <div className={`mb-4 rounded-xl border px-4 py-3 ${healthy ? 'bg-emerald-950/20 border-emerald-800/40' : 'bg-rose-950/20 border-rose-800/50'}`}>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-x-6 gap-y-2">
+                  <div>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">Cash now</p>
+                    <p className="text-lg font-bold text-white">{cents(p.cash_available_cents)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">+ Incoming 7d</p>
+                    <p className="text-lg font-bold text-emerald-400">{cents(p.incoming_7d_cents)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">− Ad burn × 7d</p>
+                    <p className="text-lg font-bold text-orange-400">{cents(p.ad_burn_daily_cents * 7)}</p>
+                    <p className="text-[10px] text-slate-500">{cents(p.ad_burn_daily_cents)}/day</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">− Owed (cards + FB)</p>
+                    <p className="text-lg font-bold text-amber-400">{cents(p.cards_owed_cents + p.fb_unbilled_cents)}</p>
+                    <p className="text-[10px] text-slate-500">{cents(p.cards_owed_cents)} cards · {cents(p.fb_unbilled_cents)} FB unbilled</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">= Net in 7 days</p>
+                    <p className={`text-lg font-bold ${healthy ? 'text-emerald-400' : 'text-rose-400'}`}>{p.after_obligations_7d_cents < 0 ? '−' : ''}{cents(Math.abs(p.after_obligations_7d_cents))}</p>
+                    <p className="text-[10px] text-slate-500">after everything owed</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">Safe to pay today</p>
+                    <p className="text-lg font-bold text-blue-300">{cents(p.safe_to_pay_today_cents)}</p>
+                    <p className="text-[10px] text-slate-500">keeps 7 days of ad spend</p>
+                  </div>
+                </div>
+                <p className="text-[11px] mt-2 text-slate-400">
+                  {healthy
+                    ? `✓ Covered — cash + this week's landings clear all obligations${p.clear_date ? ` by ${dayLabel(p.clear_date)}` : ''} while funding ads.`
+                    : p.clear_date
+                      ? `⚠ Short this week — obligations are fully covered by ${dayLabel(p.clear_date)} as landings arrive. Pay cards in steps, not all at once.`
+                      : `⚠ Obligations exceed cash + the entire ${projection.horizon_days}-day horizon of landings — money must come from outside this projection.`}
+                </p>
+              </div>
+            );
+          })()}
+
           {/* Total incoming headline */}
           <div className="mb-4 bg-gradient-to-r from-emerald-950/40 to-slate-900 border border-emerald-800/40 rounded-xl px-4 py-3 flex items-center justify-between">
             <div>
@@ -278,12 +326,21 @@ export default function CashflowPage() {
             </div>
           </div>
 
-          {/* Data gaps */}
+          {/* Data notes — collapsed by default; the math above is the signal */}
           {projection.data_gaps.length > 0 && (
-            <div className="mb-4 bg-amber-950/20 border border-amber-900/40 rounded-lg px-4 py-2">
-              {projection.data_gaps.map((g: string, i: number) => (
-                <p key={i} className="text-[11px] text-amber-300">⚠ {g}</p>
-              ))}
+            <div className="mb-4 bg-slate-900/60 border border-slate-800 rounded-lg">
+              <button onClick={() => setGapsOpen(v => !v)}
+                className="w-full flex items-center justify-between px-4 py-2 text-left">
+                <span className="text-[11px] text-amber-400/90">⚠ {projection.data_gaps.length} data note{projection.data_gaps.length === 1 ? '' : 's'} <span className="text-slate-500">— coverage &amp; verification, not incoming money</span></span>
+                <span className="text-slate-500 text-xs">{gapsOpen ? '▾ hide' : '▸ show'}</span>
+              </button>
+              {gapsOpen && (
+                <div className="px-4 pb-3 max-h-56 overflow-y-auto">
+                  {projection.data_gaps.map((g: string, i: number) => (
+                    <p key={i} className="text-[11px] text-amber-300/80 mt-0.5">⚠ {g}</p>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -299,7 +356,8 @@ export default function CashflowPage() {
                   <tr className="text-[10px] text-slate-500 uppercase">
                     <th className="text-left px-4 py-2">Date</th>
                     <th className="text-right px-2 py-2">Landing</th>
-                    <th className="text-right px-4 py-2">Cumulative</th>
+                    <th className="text-right px-2 py-2">Cumulative</th>
+                    <th className="text-right px-4 py-2" title="cash now + landings through this day − daily ad burn">Position</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -315,12 +373,15 @@ export default function CashflowPage() {
                         <td className={`px-2 py-2 text-right font-mono ${day.confirmed_cents > 0 ? 'text-emerald-400 font-bold' : 'text-slate-600'}`}>
                           {day.confirmed_cents !== 0 ? cents(day.confirmed_cents) : '—'}
                         </td>
-                        <td className="px-4 py-2 text-right font-mono text-slate-300">{cents(day.cumulative_cents)}</td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-400">{cents(day.cumulative_cents)}</td>
+                        <td className={`px-4 py-2 text-right font-mono ${day.position_cents >= 0 ? 'text-slate-200' : 'text-rose-400 font-bold'}`}>
+                          {day.position_cents != null ? cents(day.position_cents) : '—'}
+                        </td>
                       </tr>
                       {expandedDates.has(day.date) && day.events.map((e: any, i: number) => (
                         <tr key={`${day.date}-${i}`} className="bg-slate-800/30">
                           <td className="px-4 py-1 pl-8 text-slate-400">{e.store_name}</td>
-                          <td className="px-2 py-1 text-slate-500">
+                          <td className="px-2 py-1 text-slate-500" colSpan={2}>
                             <span className={`text-[9px] px-1.5 py-0.5 rounded mr-1.5 ${(KIND_STYLE[e.kind] || KIND_STYLE.scheduled).chip}`}>{(KIND_STYLE[e.kind] || KIND_STYLE.scheduled).label}</span>
                             {e.source}
                           </td>
