@@ -74,9 +74,14 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Fee/service line items are not purchasable stock — keep them out of a
+    // purchasing view entirely.
+    const SERVICE_RE = /shipping protection|priority handling|skip the line|ships first|route package|order protection|insurance|tip\b|gift wrap/i;
+
     const skus = [...merged.values()]
       // ignore junk skus the warehouse has never heard of with almost no sales
       .filter(p => p.stockQty != null || p.units30 >= 3)
+      .filter(p => !SERVICE_RE.test(p.name || ''))
       .map(p => {
         const v7 = p.units7 / 7;
         const v30 = p.units30 / 30;
