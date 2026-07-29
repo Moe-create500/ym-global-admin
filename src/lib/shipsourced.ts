@@ -322,3 +322,25 @@ export async function getAllDwsScans(clientId: string, since?: string): Promise<
   }
   return all;
 }
+
+// ── Inventory + demand feed (for the Inventory Flow tab) ────────────────────
+
+export interface SSInventoryProduct {
+  sku: string;
+  name: string;
+  imageUrl: string | null;
+  stockQty: number | null;   // null = sku unknown to the warehouse
+  homeWarehouse: string | null;
+  unitCostCents: number;
+  packSize: number;
+  isActive: boolean;
+  units7: number;
+  units30: number;
+  units180: number;
+  inboundUnits: number;
+}
+
+/** Stock + demand velocity + inbound PO units for one ShipSourced client. */
+export function getClientInventory(clientId: string): Promise<{ products: SSInventoryProduct[] }> {
+  return apiFetch<{ products: SSInventoryProduct[] }>(`/api/integration/inventory?clientId=${clientId}`);
+}
