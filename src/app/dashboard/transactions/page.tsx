@@ -315,6 +315,7 @@ export default function TransactionsPage() {
                         {c.verdict === 'not_covered' && <p className="text-base font-bold text-red-400">NOT COVERED IN 14d</p>}
                         <p className="text-[11px] text-slate-500">
                           {c.verdict === 'pay_full' ? 'covered by today’s safe envelope'
+                            : c.fullyPayableDate === payPlan.generatedAt ? 'payable today — but only by dipping into the 7-day ad buffer'
                             : c.fullyPayableDate ? `fully payable ${dayLabel(c.fullyPayableDate)} as landings arrive`
                             : 'needs money from outside the 14-day horizon'}
                         </p>
