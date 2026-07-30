@@ -677,6 +677,105 @@ export function getPaymentsView(db: DatabaseType.Database, days: number) {
   `).all(d);
 }
 
+/** Pay Cards decision engine — WHICH cards can be paid, funded by WHAT.
+ *  Combines three truths:
+ *   · card debt + who built it (balance composition by store, from getTruth)
+ *   · live cashflow per store (landed / in-transit / scheduled, from the
+ *     Shopify payout projection) + global cash and the ad-burn safety buffer
+ *   · card priority (FB-declining first — ads die without it — then
+ *     utilization, then size)
+ *  Output per card: PAY NOW $X (from today's safe envelope), the date the
+ *  rest becomes payable as landings arrive, and whether the stores that OWE
+ *  the card have the cashflow to cover their share. */
+export function getPayPlan(db: DatabaseType.Database) {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { buildCashflowProjection } = require('./cashflow');
+  const projection = buildCashflowProjection(db);
+  const clarity = getCardClarity(db);
+  const truth = getTruth(db, 90);
+
+  // Per-store near-term cashflow: money that is real (landed today, paid out,
+  // or date-committed by Shopify). Projected shown separately — softer.
+  const storeFlow = new Map<string, { committed: number; projected: number }>();
+  for (const s of projection.stores) {
+    storeFlow.set(s.store_name, {
+      committed: (s.landed_today_cents || 0) + s.in_transit_cents + s.scheduled_cents,
+      projected: s.projected_cents || 0,
+    });
+  }
+
+  // Card debt composition by store (from the truth walk)
+  const compByCardId = new Map(truth.composition.map((c: any) => [c.id, c]));
+
+  const cardsMeta: any[] = db.prepare(`
+    SELECT id, institution_name, account_name, last_four
+    FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'
+  `).all();
+
+  const cards = cardsMeta.map(meta => {
+    const cl = clarity.perCard[meta.id];
+    const comp: any = compByCardId.get(meta.id);
+    if (!cl || cl.toClearCents <= 0) return null;
+    // Store shares of this card's unpaid balance
+    const shares = new Map<string, number>();
+    for (const g of comp?.groups || []) shares.set(g.store, (shares.get(g.store) || 0) + g.cents);
+    const owners = [...shares.entries()]
+      .map(([store, cents]) => {
+        const flow = storeFlow.get(store);
+        return {
+          store, owesCents: cents,
+          storeCommittedCents: flow?.committed ?? null,   // null = store not in payout projection
+          storeProjectedCents: flow?.projected ?? null,
+          covered: flow ? flow.committed >= cents : null, // that store's real cashflow covers its share
+        };
+      })
+      .sort((a, b) => b.owesCents - a.owesCents);
+    const utilization = cl.utilizationPct ?? 0;
+    return {
+      id: meta.id,
+      name: `${meta.institution_name} ${meta.account_name}`,
+      last4: meta.last_four,
+      postedCents: cl.postedCents,
+      toClearCents: cl.toClearCents,
+      fbOwedCents: cl.fbOwedCents,
+      declining: cl.declining,
+      utilization,
+      owners,
+      unexplainedCents: comp?.unexplainedCents || 0,
+      // priority: a declining funding card starves the ad engine — always first
+      priority: (cl.declining ? 0 : 1) * 1000 + (100 - Math.min(utilization, 100)),
+    };
+  }).filter(Boolean) as any[];
+
+  cards.sort((a, b) => a.priority - b.priority || b.toClearCents - a.toClearCents);
+
+  // Greedy allocation of today's safe envelope, priority order; then walk the
+  // landing calendar to date when each card's remainder becomes payable.
+  const envelope = projection.position.safe_to_pay_today_cents;
+  let remainingEnvelope = envelope;
+  let cumulativeNeed = 0;
+  for (const c of cards) {
+    c.payNowCents = Math.min(c.postedCents, remainingEnvelope);
+    remainingEnvelope -= c.payNowCents;
+    cumulativeNeed += c.postedCents;
+    // First calendar day whose projected position covers everything up to and
+    // including this card (cash + landings − ad burn, cumulative priority)
+    const day = projection.calendar.find((d: any) => d.position_cents >= cumulativeNeed);
+    c.fullyPayableDate = day ? day.date : null; // null = beyond the horizon
+    c.verdict = c.payNowCents >= c.postedCents ? 'pay_full'
+      : c.payNowCents > 0 ? 'pay_partial'
+      : c.fullyPayableDate ? 'wait' : 'not_covered';
+  }
+
+  return {
+    generatedAt: projection.generated_at_date,
+    position: projection.position,
+    envelopeCents: envelope,
+    allocatedCents: envelope - remainingEnvelope,
+    cards,
+  };
+}
+
 export function getSummary(db: DatabaseType.Database) {
   ensureTxnIntelTables(db);
   const debt: any = db.prepare(`SELECT SUM(balance_ledger_cents) cents FROM bank_accounts WHERE account_type = 'credit' AND status = 'active' AND provider = 'plaid'`).get();

@@ -26,9 +26,11 @@ function ClassChip({ cls }: { cls: string | null }) {
 }
 
 export default function TransactionsPage() {
-  const [tab, setTab] = useState<'cards' | 'truth' | 'ledger' | 'payments'>('cards');
+  const [tab, setTab] = useState<'cards' | 'payplan' | 'truth' | 'ledger' | 'payments'>('cards');
   const [truth, setTruth] = useState<any>(null);
   const [truthDays, setTruthDays] = useState(90);
+  const [payPlan, setPayPlan] = useState<any>(null);
+  const [payPlanLoading, setPayPlanLoading] = useState(false);
   const [summary, setSummary] = useState<any>(null);
   const [cards, setCards] = useState<any[]>([]);
   const [clarity, setClarity] = useState<any>(null);
@@ -59,11 +61,16 @@ export default function TransactionsPage() {
   }, [fAccount, fStore, fClass, fQ, fUnattr]);
 
   const loadTruth = useCallback(() => fetch(`/api/transactions?view=truth&days=${truthDays}`).then(r => r.json()).then(setTruth), [truthDays]);
+  const loadPayPlan = useCallback(() => {
+    setPayPlanLoading(true);
+    fetch('/api/transactions?view=payplan', { cache: 'no-store' }).then(r => r.json()).then(setPayPlan).finally(() => setPayPlanLoading(false));
+  }, []);
 
   useEffect(() => { loadSummary(); loadCards(); }, [loadSummary, loadCards]);
   useEffect(() => { if (tab === 'ledger') loadLedger(); }, [tab, loadLedger]);
   useEffect(() => { if (tab === 'payments') loadPayments(); }, [tab, loadPayments]);
   useEffect(() => { if (tab === 'truth') loadTruth(); }, [tab, loadTruth]);
+  useEffect(() => { if (tab === 'payplan') loadPayPlan(); }, [tab, loadPayPlan]);
 
   const runScan = async () => {
     setScanning(true); setScanMsg('');
@@ -128,7 +135,7 @@ export default function TransactionsPage() {
       )}
 
       <div className="flex gap-1 mb-4 border-b border-slate-800">
-        {([['cards', 'Card Intelligence'], ['truth', 'Source of Truth'], ['ledger', 'Ledger'], ['payments', 'Payments']] as const).map(([k, label]) => (
+        {([['cards', 'Card Intelligence'], ['payplan', '💸 Pay Cards'], ['truth', 'Source of Truth'], ['ledger', 'Ledger'], ['payments', 'Payments']] as const).map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${tab === k ? 'border-blue-500 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>
             {label}
@@ -259,6 +266,90 @@ export default function TransactionsPage() {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {tab === 'payplan' && (
+        <div>
+          {payPlanLoading && <p className="text-sm text-slate-500 animate-pulse">Combining card debts, store cashflow, and the landing calendar…</p>}
+          {payPlan && !payPlanLoading && (
+            <>
+              {/* Funding envelope */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+                  <p className="text-[10px] uppercase tracking-wide text-slate-500">Cash now</p>
+                  <p className="text-lg font-bold text-white">{fmt2(payPlan.position.cash_available_cents)}</p>
+                </div>
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+                  <p className="text-[10px] uppercase tracking-wide text-slate-500">Incoming 7d</p>
+                  <p className="text-lg font-bold text-emerald-400">{fmt2(payPlan.position.incoming_7d_cents)}</p>
+                </div>
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+                  <p className="text-[10px] uppercase tracking-wide text-slate-500">Ad-burn buffer (7d)</p>
+                  <p className="text-lg font-bold text-orange-400">{fmt2(payPlan.position.ad_burn_daily_cents * 7)}</p>
+                </div>
+                <div className="bg-emerald-950/20 border border-emerald-800/40 rounded-xl p-3">
+                  <p className="text-[10px] uppercase tracking-wide text-emerald-500">Safe to pay today</p>
+                  <p className="text-lg font-bold text-emerald-400">{fmt2(payPlan.envelopeCents)}</p>
+                  <p className="text-[10px] text-slate-500">{fmt2(payPlan.allocatedCents)} allocated below</p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {payPlan.cards.map((c: any, idx: number) => (
+                  <div key={c.id} className={`bg-slate-900 border rounded-xl p-4 ${c.declining ? 'border-red-700/60' : 'border-slate-800'}`}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-white">
+                          <span className="text-slate-500 mr-1.5">#{idx + 1}</span>
+                          {c.name} <span className="text-slate-500">··{c.last4}</span>
+                          {c.declining && <span className="ml-2 px-1.5 py-0.5 bg-red-500/15 text-red-400 rounded text-[10px] font-semibold">DECLINING ON FB — PAY FIRST</span>}
+                        </p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">balance {fmt2(c.postedCents)}{c.fbOwedCents > 0 ? ` · +${fmt2(c.fbOwedCents)} FB incoming` : ''}{c.utilization != null ? ` · ${c.utilization}% utilized` : ''}</p>
+                      </div>
+                      <div className="text-right">
+                        {c.verdict === 'pay_full' && <p className="text-base font-bold text-emerald-400">✓ PAY IN FULL — {fmt2(c.payNowCents)}</p>}
+                        {c.verdict === 'pay_partial' && <p className="text-base font-bold text-amber-400">PAY {fmt2(c.payNowCents)} NOW</p>}
+                        {c.verdict === 'wait' && <p className="text-base font-bold text-blue-400">WAIT</p>}
+                        {c.verdict === 'not_covered' && <p className="text-base font-bold text-red-400">NOT COVERED IN 14d</p>}
+                        <p className="text-[11px] text-slate-500">
+                          {c.verdict === 'pay_full' ? 'covered by today’s safe envelope'
+                            : c.fullyPayableDate ? `fully payable ${dayLabel(c.fullyPayableDate)} as landings arrive`
+                            : 'needs money from outside the 14-day horizon'}
+                        </p>
+                      </div>
+                    </div>
+                    {/* Who owes this card + their cashflow */}
+                    {c.owners.length > 0 && (
+                      <div className="mt-3 border-t border-slate-800 pt-2 grid md:grid-cols-2 gap-1.5">
+                        {c.owners.map((o: any) => (
+                          <div key={o.store} className="flex items-center justify-between text-[11px] bg-slate-800/40 rounded px-2 py-1.5">
+                            <span className="text-slate-300">{o.store} owes <span className="text-white font-medium">{fmt2(o.owesCents)}</span></span>
+                            {o.storeCommittedCents == null
+                              ? <span className="text-slate-600">no payout feed</span>
+                              : <span className={o.covered ? 'text-emerald-400' : 'text-amber-400'}>
+                                  {o.covered ? '✓' : '⚠'} {fmt2(o.storeCommittedCents)} landing
+                                  {!o.covered && o.storeProjectedCents ? ` (+${fmt2(o.storeProjectedCents)} proj)` : ''}
+                                </span>}
+                          </div>
+                        ))}
+                        {c.unexplainedCents > 0 && (
+                          <div className="flex items-center justify-between text-[11px] bg-slate-800/40 rounded px-2 py-1.5">
+                            <span className="text-slate-500">pre-history / unattributed</span>
+                            <span className="text-slate-500">{fmt2(c.unexplainedCents)}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {!payPlan.cards.length && <p className="text-sm text-slate-500 py-8 text-center">No cards with a balance to pay.</p>}
+              </div>
+              <p className="text-[10px] text-slate-600 mt-3">
+                Order = priority: FB-declining cards first (ads die without them), then highest utilization. &quot;Safe to pay today&quot; = cash minus 7 days of ad burn. &quot;Fully payable&quot; dates walk the landing calendar — cash + committed Shopify payouts − daily ad burn, allocated to cards in priority order. Store rows show who built the debt (from the balance decomposition) vs that store&apos;s own committed landings.
+              </p>
+            </>
+          )}
         </div>
       )}
 
