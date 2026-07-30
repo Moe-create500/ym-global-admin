@@ -32,6 +32,7 @@ export default function TransactionsPage() {
   const [truthDays, setTruthDays] = useState(90);
   const [payPlan, setPayPlan] = useState<any>(null);
   const [payPlanLoading, setPayPlanLoading] = useState(false);
+  const [openCard, setOpenCard] = useState<string | null>(null);
   const [summary, setSummary] = useState<any>(null);
   const [cards, setCards] = useState<any[]>([]);
   const [clarity, setClarity] = useState<any>(null);
@@ -271,135 +272,113 @@ export default function TransactionsPage() {
       )}
 
       {tab === 'payplan' && (
-        <div>
-          {payPlanLoading && <p className="text-sm text-slate-500 animate-pulse">Combining card debts, store cashflow, and the landing calendar…</p>}
+        <div className="max-w-[820px] mx-auto">
+          {payPlanLoading && <p className="text-sm text-slate-500 animate-pulse text-center py-10">Working out which card to pay…</p>}
           {payPlan && !payPlanLoading && (() => {
-            const totalDebt = payPlan.cards.reduce((s: number, c: any) => s + c.postedCents, 0);
-            const payableNow = payPlan.cards.filter((c: any) => c.payNowCents > 0).length;
-            const notCovered = payPlan.cards.filter((c: any) => c.verdict === 'not_covered').length;
+            const first = payPlan.cards[0];
+            const rest = payPlan.cards.slice(1);
+            const whyCard = first
+              ? first.declining ? 'its Facebook funding card is declining — ads stop if it isn’t paid'
+                : (first.utilization || 0) >= 100 ? `it’s over its limit (${first.utilization}% used) — the most urgent card`
+                : `it has the highest utilization (${first.utilization || 0}%)`
+              : '';
+            const detail = (c: any) => {
+              const traced = c.owners.filter((o: any) => o.store !== '(unattributed)');
+              const unattr = (c.owners.find((o: any) => o.store === '(unattributed)')?.owesCents || 0) + c.unexplainedCents;
+              return (
+                <div className="mt-3 pt-3 border-t border-slate-800 space-y-2 text-[12px]">
+                  <p className="text-slate-400">
+                    {c.verdict === 'not_covered'
+                      ? 'The next 14 days of Shopify landings don’t reach this card — it needs outside money or lower ad spend.'
+                      : c.fullyPayableDate === payPlan.generatedAt
+                        ? 'Could be paid today, but only by spending the money reserved for the next 7 days of ads.'
+                        : c.fullyPayableDate ? `Covered once landings arrive — fully payable ${dayLabel(c.fullyPayableDate)}.` : ''}
+                    {c.fbOwedCents > 0 && <> Facebook is about to bill another <span className="text-blue-300">{fmt2(c.fbOwedCents)}</span> to this card.</>}
+                  </p>
+                  {(traced.length > 0 || unattr > 0) && (
+                    <div className="grid grid-cols-[1fr_auto_auto] gap-x-6 gap-y-1">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-600">who owes it</span>
+                      <span className="text-[10px] uppercase tracking-wide text-slate-600 text-right">amount</span>
+                      <span className="text-[10px] uppercase tracking-wide text-slate-600 text-right">their landings</span>
+                      {traced.map((o: any) => (
+                        <Fragment key={o.store}>
+                          <span className="text-slate-300">{o.store}</span>
+                          <span className="text-right text-white tabular-nums">{fmt2(o.owesCents)}</span>
+                          <span className={`text-right tabular-nums ${o.storeCommittedCents == null ? 'text-slate-600' : o.covered ? 'text-emerald-400' : 'text-amber-400'}`}>
+                            {o.storeCommittedCents == null ? '—' : `${fmt2(o.storeCommittedCents)} ${o.covered ? '✓' : '⚠'}`}
+                          </span>
+                        </Fragment>
+                      ))}
+                      {unattr > 0 && (
+                        <>
+                          <span className="text-slate-600">not yet traced to a store</span>
+                          <span className="text-right text-slate-500 tabular-nums">{fmt2(unattr)}</span>
+                          <span className="text-right text-slate-600">—</span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            };
             return (
               <>
-                {/* ── THE MATH — one equation ── */}
-                <div className="bg-slate-900 border border-slate-800 rounded-2xl px-6 py-5 mb-3">
-                  <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-3 text-center">
-                    <div>
-                      <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-1">Cash in bank</p>
-                      <p className="text-2xl font-bold text-white tabular-nums">{fmt2(payPlan.position.cash_available_cents)}</p>
-                    </div>
-                    <span className="text-2xl text-slate-600 font-light">−</span>
-                    <div>
-                      <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-1">7 days of ad spend <span className="text-slate-600">(protected)</span></p>
-                      <p className="text-2xl font-bold text-orange-400 tabular-nums">{fmt2(payPlan.position.ad_burn_daily_cents * 7)}</p>
-                    </div>
-                    <span className="text-2xl text-slate-600 font-light">=</span>
-                    <div className="bg-emerald-500/10 border border-emerald-700/50 rounded-xl px-5 py-2">
-                      <p className="text-[10px] uppercase tracking-widest text-emerald-500 mb-1">Safe to send to cards today</p>
-                      <p className="text-2xl font-bold text-emerald-400 tabular-nums">{fmt2(payPlan.envelopeCents)}</p>
+                {/* ── THE ANSWER ── */}
+                {first && first.payNowCents > 0 ? (
+                  <div className="bg-emerald-950/25 border border-emerald-700/50 rounded-2xl px-7 py-6 mb-6 text-center">
+                    <p className="text-[11px] uppercase tracking-widest text-emerald-500 mb-2">Today&apos;s move</p>
+                    <p className="text-3xl font-bold text-white tabular-nums">
+                      Pay {fmt2(first.payNowCents)}
+                    </p>
+                    <p className="text-lg text-emerald-300 font-semibold mt-1">→ {first.name} ··{first.last4}</p>
+                    <div className="text-[12.5px] text-slate-400 mt-4 space-y-1 max-w-md mx-auto text-left">
+                      <p><span className="text-slate-500">Why this card:</span> {whyCard}.</p>
+                      <p><span className="text-slate-500">Why this amount:</span> all your cash ({fmt2(payPlan.position.cash_available_cents)}) minus 7 days of ad spend kept safe ({fmt2(payPlan.position.ad_burn_daily_cents * 7)}).</p>
                     </div>
                   </div>
-                  <p className="text-center text-[11px] text-slate-500 mt-3">
-                    Plus <span className="text-emerald-400">{fmt2(payPlan.position.incoming_7d_cents)}</span> landing from Shopify over the next 7 days — that money dates when the rest of each card becomes payable.
-                  </p>
-                </div>
+                ) : (
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl px-7 py-6 mb-6 text-center">
+                    <p className="text-[11px] uppercase tracking-widest text-slate-500 mb-2">Today&apos;s move</p>
+                    <p className="text-2xl font-bold text-white">Pay nothing today</p>
+                    <p className="text-[12.5px] text-slate-400 mt-2">Cash minus the 7-day ad reserve leaves no safe room. Wait for landings.</p>
+                  </div>
+                )}
 
-                {/* ── One-sentence bottom line ── */}
-                <div className="bg-slate-800/40 border border-slate-800 rounded-xl px-4 py-3 mb-5">
-                  <p className="text-sm text-slate-200">
-                    <span className="font-semibold text-white">Bottom line:</span>{' '}
-                    Total card debt is <span className="font-semibold text-white">{fmt2(totalDebt)}</span>.
-                    Today you can safely send <span className="font-semibold text-emerald-400">{fmt2(payPlan.allocatedCents)}</span>
-                    {payableNow > 0 ? <> — all of it to <span className="font-semibold text-white">card #1 below</span></> : ''}.
-                    {notCovered > 0 && <> <span className="text-slate-400">{notCovered} card{notCovered > 1 ? 's' : ''} can&apos;t be covered by the next 14 days of landings — they need outside money or lower ad spend.</span></>}
-                  </p>
-                </div>
-
-                {/* ── Legend ── */}
-                <div className="flex items-center gap-4 mb-3 text-[11px] text-slate-500">
-                  <span className="text-slate-400 font-medium">Payment queue</span>
-                  <span className="text-slate-600">·</span>
-                  <span><span className="inline-block w-2.5 h-2.5 rounded-sm bg-emerald-500 mr-1.5 align-middle" />pay today</span>
-                  <span><span className="inline-block w-2.5 h-2.5 rounded-sm bg-blue-500/70 mr-1.5 align-middle" />covered by landings</span>
-                  <span><span className="inline-block w-2.5 h-2.5 rounded-sm bg-slate-700 mr-1.5 align-middle" />not covered yet</span>
-                  <span className="ml-auto text-slate-600">order: declining cards first, then highest utilization</span>
-                </div>
-
-                {/* ── The queue ── */}
-                <div className="space-y-3">
-                  {payPlan.cards.map((c: any, idx: number) => {
-                    const later = c.fullyPayableDate ? c.postedCents - c.payNowCents : 0;
-                    const uncov = Math.max(0, c.postedCents - c.payNowCents - later);
-                    const pct = (n: number) => c.postedCents > 0 ? Math.round(100 * n / c.postedCents) : 0;
-                    const V: Record<string, { text: string; cls: string; sub: string }> = {
-                      pay_full: { text: `PAY IN FULL · ${fmt2(c.payNowCents)}`, cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-700/60', sub: 'covered by today’s safe envelope' },
-                      pay_partial: { text: `PAY ${fmt2(c.payNowCents)} TODAY`, cls: 'bg-amber-500/15 text-amber-300 border-amber-700/60', sub: c.fullyPayableDate ? `rest covered by landings ${c.fullyPayableDate === payPlan.generatedAt ? 'today (uses ad buffer)' : `by ${dayLabel(c.fullyPayableDate)}`}` : 'rest not covered in 14 days' },
-                      wait: { text: 'WAIT', cls: 'bg-blue-500/10 text-blue-300 border-blue-800/60', sub: c.fullyPayableDate === payPlan.generatedAt ? 'payable today only by dipping into the ad buffer' : `payable ${c.fullyPayableDate ? dayLabel(c.fullyPayableDate) : ''} as landings arrive` },
-                      not_covered: { text: 'NOT COVERED', cls: 'bg-slate-800 text-slate-400 border-slate-700', sub: 'beyond the next 14 days of landings — needs outside money' },
-                    };
-                    const v = V[c.verdict] || V.wait;
+                {/* ── Everything else — one quiet line each ── */}
+                <p className="text-[11px] uppercase tracking-widest text-slate-600 mb-2 px-1">After that — nothing else is payable today</p>
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl divide-y divide-slate-800/70">
+                  {(first && first.payNowCents < first.postedCents ? [{ ...first, _cont: true }] : []).concat(rest).map((c: any) => {
+                    const open = openCard === c.id;
+                    const status = c._cont
+                      ? { text: `remaining ${fmt2(c.postedCents - c.payNowCents)}`, cls: 'text-amber-400', when: c.fullyPayableDate ? (c.fullyPayableDate === payPlan.generatedAt ? 'covered — but only via the ad reserve' : `covered ${dayLabel(c.fullyPayableDate)}`) : 'not covered in 14 days' }
+                      : c.verdict === 'wait'
+                        ? { text: 'wait', cls: 'text-blue-300', when: c.fullyPayableDate === payPlan.generatedAt ? 'payable only via the ad reserve' : `payable ${c.fullyPayableDate ? dayLabel(c.fullyPayableDate) : 'later'}` }
+                        : { text: 'not covered', cls: 'text-slate-500', when: 'needs outside money' };
                     return (
-                      <div key={c.id} className={`bg-slate-900 border rounded-2xl p-5 ${c.declining ? 'border-red-700/70' : 'border-slate-800'}`}>
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <span className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-sm font-bold text-slate-300 flex-shrink-0">{idx + 1}</span>
-                            <div className="min-w-0">
-                              <p className="text-sm font-semibold text-white truncate">
-                                {c.name} <span className="text-slate-500 font-normal">··{c.last4}</span>
-                              </p>
-                              <p className="text-[11px] text-slate-500 tabular-nums">
-                                owes <span className="text-slate-300 font-medium">{fmt2(c.postedCents)}</span>
-                                {c.fbOwedCents > 0 && <> · <span className="text-blue-400">+{fmt2(c.fbOwedCents)} FB about to bill</span></>}
-                                {c.utilization != null && c.utilization > 0 && <> · {c.utilization}% of limit used</>}
-                              </p>
-                            </div>
-                            {c.declining && <span className="px-2 py-1 bg-red-500/15 text-red-400 rounded-lg text-[10px] font-bold whitespace-nowrap">DECLINING ON FB — PAY FIRST</span>}
+                      <div key={c.id + (c._cont ? '-cont' : '')} className="px-5 py-3.5 cursor-pointer hover:bg-slate-800/30" onClick={() => setOpenCard(open ? null : c.id)}>
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="min-w-0 flex items-center gap-2">
+                            {c.declining && <span className="text-red-400 text-xs" title="declining on Facebook">⛔</span>}
+                            <p className="text-[13px] text-slate-200 truncate">{c.name} <span className="text-slate-500">··{c.last4}</span></p>
                           </div>
-                          <div className="text-right">
-                            <span className={`inline-block px-3 py-1.5 rounded-lg border text-sm font-bold tabular-nums ${v.cls}`}>{v.text}</span>
-                            <p className="text-[11px] text-slate-500 mt-1">{v.sub}</p>
+                          <div className="flex items-center gap-5 whitespace-nowrap">
+                            <span className="text-[13px] text-slate-400 tabular-nums">owes {fmt2(c.postedCents)}</span>
+                            <span className={`text-[13px] font-semibold ${status.cls}`}>{status.text}</span>
+                            <span className="text-[12px] text-slate-500 w-56 text-right hidden sm:inline">{status.when}</span>
+                            <span className="text-slate-600 text-xs">{open ? '▾' : '▸'}</span>
                           </div>
                         </div>
-
-                        {/* Coverage bar */}
-                        <div className="mt-3.5 flex h-2 rounded-full overflow-hidden bg-slate-800">
-                          {c.payNowCents > 0 && <div className="bg-emerald-500" style={{ width: `${pct(c.payNowCents)}%` }} />}
-                          {later > 0 && <div className="bg-blue-500/70" style={{ width: `${pct(later)}%` }} />}
-                          {uncov > 0 && <div className="bg-slate-700" style={{ width: `${pct(uncov)}%` }} />}
-                        </div>
-
-                        {/* Who owes it vs their cashflow */}
-                        {(c.owners.length > 0 || c.unexplainedCents > 0) && (
-                          <div className="mt-3.5">
-                            <div className="grid grid-cols-[1fr_auto_auto] gap-x-6 gap-y-1 text-[11px]">
-                              <span className="text-[10px] uppercase tracking-wide text-slate-600">Who put it on this card</span>
-                              <span className="text-[10px] uppercase tracking-wide text-slate-600 text-right">owes</span>
-                              <span className="text-[10px] uppercase tracking-wide text-slate-600 text-right">their money landing</span>
-                              {c.owners.filter((o: any) => o.store !== '(unattributed)').map((o: any) => (
-                                <Fragment key={o.store}>
-                                  <span className="text-slate-300">{o.store}</span>
-                                  <span className="text-right font-medium text-white tabular-nums">{fmt2(o.owesCents)}</span>
-                                  <span className={`text-right tabular-nums ${o.storeCommittedCents == null ? 'text-slate-600' : o.covered ? 'text-emerald-400' : 'text-amber-400'}`}>
-                                    {o.storeCommittedCents == null ? 'no payout feed' : `${fmt2(o.storeCommittedCents)} ${o.covered ? '✓ covers it' : '⚠ short'}`}
-                                  </span>
-                                </Fragment>
-                              ))}
-                              {(() => {
-                                const unattr = (c.owners.find((o: any) => o.store === '(unattributed)')?.owesCents || 0) + c.unexplainedCents;
-                                return unattr > 0 ? (
-                                  <>
-                                    <span className="text-slate-600">not yet traced to a store</span>
-                                    <span className="text-right text-slate-500 tabular-nums">{fmt2(unattr)}</span>
-                                    <span className="text-right text-slate-600">link FB cards to trace</span>
-                                  </>
-                                ) : null;
-                              })()}
-                            </div>
-                          </div>
-                        )}
+                        {open && detail(c)}
                       </div>
                     );
                   })}
-                  {!payPlan.cards.length && <p className="text-sm text-slate-500 py-8 text-center">No cards with a balance to pay. 🎉</p>}
+                  {!rest.length && (!first || first.payNowCents >= first.postedCents) && (
+                    <p className="px-5 py-4 text-sm text-slate-500 text-center">Nothing else owed. 🎉</p>
+                  )}
                 </div>
+                <p className="text-center text-[11px] text-slate-600 mt-4">
+                  {fmt2(payPlan.position.incoming_7d_cents)} landing from Shopify this week · click any card for the why
+                </p>
               </>
             );
           })()}
