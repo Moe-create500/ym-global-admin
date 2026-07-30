@@ -196,15 +196,17 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
   /** Score one invoice candidate against a bank txn: date-lag typicality is
    *  the dominant signal, card last-4 confirms or kills, exact amount is the
    *  entry ticket (already filtered). Returns 0..1. */
-  const scoreCandidate = (cls: string, txn: any, inv: any): { score: number; lag: number } => {
+  const scoreCandidate = (cls: string, txn: any, inv: any): { score: number; lag: number; cardMatch: boolean } => {
     const lag = Math.round((new Date(txn.date + 'T12:00:00Z').getTime() - new Date(inv.date + 'T12:00:00Z').getTime()) / 86400000);
-    if (lag < -2 || lag > 8) return { score: 0, lag }; // outside any plausible settlement window
-    const ls = lagScore(lagCurves, cls, lag);
+    if (lag < -2 || lag > 8) return { score: 0, lag, cardMatch: false }; // outside any plausible settlement window
+    // Lag typicality, floored inside the normal settlement band: an unusual-
+    // but-plausible lag lowers confidence, it doesn't disqualify.
+    const ls = Math.max(lagScore(lagCurves, cls, lag), lag >= -1 && lag <= 5 ? 0.3 : 0.1);
     let cardScore: number;
     if (inv.card_last4 && txn.last_four) cardScore = inv.card_last4 === txn.last_four ? 1 : -1; // mismatch = hard kill
     else cardScore = 0.5; // one side unknown — neutral
-    if (cardScore < 0) return { score: 0, lag };
-    return { score: 0.65 * ls + 0.35 * cardScore, lag };
+    if (cardScore < 0) return { score: 0, lag, cardMatch: false };
+    return { score: 0.65 * ls + 0.35 * cardScore, lag, cardMatch: cardScore === 1 };
   };
 
   const cardPayments: any[] = [];   // received on a credit card
@@ -253,6 +255,10 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
           const best = scored[0];
           const second = scored[1];
           const margin = second ? best.score - second.score : 1;
+          // Uniqueness is itself evidence: ONE candidate at this exact amount
+          // with the card confirmed = there is nothing else it could be.
+          if (scored.length === 1 && best.cardMatch) best.score = Math.max(best.score, 0.85);
+          else if (scored.length === 1 && best.score > 0) best.score = Math.max(best.score, 0.55);
           const evidence = {
             invoiceDate: best.inv.date, txnDate: t.date, lagDays: best.lag,
             card: best.inv.card_last4 && t.last_four ? (best.inv.card_last4 === t.last_four ? 'match' : 'unknown') : 'partial',
