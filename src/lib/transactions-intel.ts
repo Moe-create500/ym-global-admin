@@ -32,6 +32,49 @@ export function ensureTxnIntelTables(db: DatabaseType.Database) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_links_store ON txn_links(store_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_txn_date ON bank_transactions(date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_txn_acct_date ON bank_transactions(bank_account_id, date)`);
+  // Match confidence: score (0..1), and the evidence JSON explaining WHY the
+  // match was made (dates, lag, card, candidate count) — the audit trail of
+  // every likelihood decision.
+  const cols: any[] = db.prepare('PRAGMA table_info(txn_links)').all();
+  if (!cols.find((c: any) => c.name === 'match_score')) db.exec('ALTER TABLE txn_links ADD COLUMN match_score REAL');
+  if (!cols.find((c: any) => c.name === 'match_evidence')) db.exec('ALTER TABLE txn_links ADD COLUMN match_evidence TEXT');
+}
+
+// ── Learned lag model ────────────────────────────────────────────────────────
+// The system learns how many days an invoice typically takes to post on the
+// card FROM ITS OWN CONFIRMED MATCHES, per platform. Dates rarely line up to
+// the dot (FB bills 08/10, Amex posts 08/11-08/12) — so date proximity is a
+// scored curve, not a hard cutoff. Laplace-smoothed over a sane prior.
+const PRIOR_LAG: Record<number, number> = { 0: 8, 1: 6, 2: 4, 3: 2, [-1]: 2, 4: 1, 5: 1 };
+
+function learnLagCurves(db: DatabaseType.Database): Map<string, Map<number, number>> {
+  const rows: any[] = db.prepare(`
+    SELECT l.class, CAST(julianday(t.date) - julianday(ap.date) AS INTEGER) AS lag
+    FROM txn_links l
+    JOIN bank_transactions t ON t.id = l.txn_id
+    JOIN ad_payments ap ON ap.id = l.entity_id
+    WHERE l.entity_type = 'ad_payment' AND l.entity_id IS NOT NULL
+  `).all();
+  const curves = new Map<string, Map<number, number>>();
+  for (const r of rows) {
+    if (!curves.has(r.class)) curves.set(r.class, new Map());
+    const c = curves.get(r.class)!;
+    c.set(r.lag, (c.get(r.lag) || 0) + 1);
+  }
+  return curves;
+}
+
+/** 0..1 — how typical this lag is for this platform, from learned history. */
+function lagScore(curves: Map<string, Map<number, number>>, cls: string, lagDays: number): number {
+  const learned = curves.get(cls);
+  const counts = new Map<number, number>(Object.entries(PRIOR_LAG).map(([k, v]) => [Number(k), v]));
+  if (learned) for (const [lag, n] of learned) counts.set(lag, (counts.get(lag) || 0) + n);
+  const total = [...counts.values()].reduce((s, n) => s + n, 0);
+  const at = counts.get(lagDays) || 0;
+  const peak = Math.max(...counts.values());
+  if (!total || !peak) return 0;
+  // Normalize against the modal lag so "the most typical delay" scores 1.0
+  return at / peak;
 }
 
 // Ordered: first match wins. Card-payment rules come before merchant rules so
@@ -140,11 +183,29 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
   }
   const daysApart = (a: string, b: string) => Math.abs((new Date(a + 'T12:00:00Z').getTime() - new Date(b + 'T12:00:00Z').getTime()) / 86400000);
 
-  const upsert = db.prepare(`INSERT INTO txn_links (txn_id, class, store_id, store_source, entity_type, entity_id, pair_txn_id, confidence, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  const upsert = db.prepare(`INSERT INTO txn_links (txn_id, class, store_id, store_source, entity_type, entity_id, pair_txn_id, confidence, match_score, match_evidence, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(txn_id) DO UPDATE SET class = excluded.class, store_id = excluded.store_id, store_source = excluded.store_source,
       entity_type = excluded.entity_type, entity_id = excluded.entity_id,
-      pair_txn_id = COALESCE(excluded.pair_txn_id, txn_links.pair_txn_id), confidence = excluded.confidence, updated_at = datetime('now')`);
+      pair_txn_id = COALESCE(excluded.pair_txn_id, txn_links.pair_txn_id), confidence = excluded.confidence,
+      match_score = excluded.match_score, match_evidence = excluded.match_evidence, updated_at = datetime('now')`);
+
+  // Likelihood curves learned from this system's own confirmed matches
+  const lagCurves = learnLagCurves(db);
+
+  /** Score one invoice candidate against a bank txn: date-lag typicality is
+   *  the dominant signal, card last-4 confirms or kills, exact amount is the
+   *  entry ticket (already filtered). Returns 0..1. */
+  const scoreCandidate = (cls: string, txn: any, inv: any): { score: number; lag: number } => {
+    const lag = Math.round((new Date(txn.date + 'T12:00:00Z').getTime() - new Date(inv.date + 'T12:00:00Z').getTime()) / 86400000);
+    if (lag < -2 || lag > 8) return { score: 0, lag }; // outside any plausible settlement window
+    const ls = lagScore(lagCurves, cls, lag);
+    let cardScore: number;
+    if (inv.card_last4 && txn.last_four) cardScore = inv.card_last4 === txn.last_four ? 1 : -1; // mismatch = hard kill
+    else cardScore = 0.5; // one side unknown — neutral
+    if (cardScore < 0) return { score: 0, lag };
+    return { score: 0.65 * ls + 0.35 * cardScore, lag };
+  };
 
   const cardPayments: any[] = [];   // received on a credit card
   const paymentsSent: any[] = [];   // sent from a checking account
@@ -169,27 +230,47 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
       let storeSource: string | null = null;
       let entityType: string | null = null;
       let entityId: string | null = null;
+      let matchScore: number | null = null;
+      let matchEvidence: string | null = null;
       const amt = Math.abs(t.amount_cents);
 
-      // 1. exact invoice match (ads then shopify) — gives store + entity
-      if (cls === 'fb_ads' || cls === 'google_ads') {
+      // 1. Invoice match — LIKELIHOOD-SCORED, not binary. Exact amount is the
+      // entry ticket; then candidates are ranked by how typical the date lag
+      // is (learned from confirmed history) + card last-4 agreement. The best
+      // wins if it clearly beats the runner-up; a true tie is recorded as
+      // 'review' with the evidence, instead of a silent abstain.
+      if (cls === 'fb_ads' || cls === 'google_ads' || cls === 'shopify_app') {
+        const isAd = cls !== 'shopify_app';
         const platform = cls === 'fb_ads' ? 'facebook' : 'google';
-        const cands = (adIdx.get(`${amt}`) || []).filter(i =>
-          i.platform === platform && daysApart(i.date, t.date) <= 3 &&
-          (!i.card_last4 || !t.last_four || i.card_last4 === t.last_four));
-        if (cands.length === 1) {
-          storeId = cands[0].store_id; storeSource = 'invoice';
-          entityType = 'ad_payment'; entityId = cands[0].id;
-          stats.invoiceMatched++;
-        }
-      } else if (cls === 'shopify_app') {
-        const cands = (shopIdx.get(`${amt}`) || []).filter(i =>
-          daysApart(i.date, t.date) <= 5 &&
-          (!i.card_last4 || !t.last_four || i.card_last4 === t.last_four));
-        if (cands.length === 1) {
-          storeId = cands[0].store_id; storeSource = 'invoice';
-          entityType = 'shopify_invoice'; entityId = cands[0].id;
-          stats.invoiceMatched++;
+        const pool = isAd
+          ? (adIdx.get(`${amt}`) || []).filter(i => i.platform === platform)
+          : (shopIdx.get(`${amt}`) || []);
+        const scored = pool
+          .map(inv => ({ inv, ...scoreCandidate(cls, t, inv) }))
+          .filter(x => x.score > 0)
+          .sort((a, b) => b.score - a.score);
+        if (scored.length) {
+          const best = scored[0];
+          const second = scored[1];
+          const margin = second ? best.score - second.score : 1;
+          const evidence = {
+            invoiceDate: best.inv.date, txnDate: t.date, lagDays: best.lag,
+            card: best.inv.card_last4 && t.last_four ? (best.inv.card_last4 === t.last_four ? 'match' : 'unknown') : 'partial',
+            candidates: scored.length, score: Math.round(best.score * 100) / 100,
+          };
+          // Accept: confident score AND clear separation from the runner-up
+          if (best.score >= 0.4 && (scored.length === 1 || margin >= 0.12)) {
+            storeId = best.inv.store_id; storeSource = 'invoice';
+            entityType = isAd ? 'ad_payment' : 'shopify_invoice';
+            entityId = best.inv.id;
+            matchScore = best.score;
+            matchEvidence = JSON.stringify(evidence);
+            stats.invoiceMatched++;
+          } else {
+            // Genuine ambiguity — surface it for a human instead of guessing
+            matchScore = best.score;
+            matchEvidence = JSON.stringify({ ...evidence, review: true, runnerUpScore: second ? Math.round(second.score * 100) / 100 : null });
+          }
         }
       }
 
@@ -228,7 +309,7 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
       }
 
       if (storeId) stats.storeAttributed++;
-      upsert.run(t.id, cls, storeId, storeSource, entityType, entityId, null, 'auto');
+      upsert.run(t.id, cls, storeId, storeSource, entityType, entityId, null, 'auto', matchScore, matchEvidence);
 
       if (cls === 'card_payment') cardPayments.push(t);
       if (cls === 'card_payment_sent') paymentsSent.push(t);
@@ -277,6 +358,7 @@ export function getLedger(db: DatabaseType.Database, f: {
     SELECT t.id, t.date, t.description, t.amount_cents, t.bank_account_id,
            a.institution_name, a.account_name, a.account_type, a.last_four,
            l.class, l.store_id, l.store_source, l.entity_type, l.pair_txn_id, l.confidence,
+           l.match_score, l.match_evidence,
            s.name AS store_name
     FROM bank_transactions t
     JOIN bank_accounts a ON a.id = t.bank_account_id

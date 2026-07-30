@@ -379,7 +379,18 @@ export default function TransactionsPage() {
                     <td className="px-3 py-1.5 text-slate-400 whitespace-nowrap">{r.date}</td>
                     <td className="px-3 py-1.5 text-slate-400 whitespace-nowrap">{r.account_type === 'credit' ? '💳' : '🏦'} ··{r.last_four}</td>
                     <td className="px-3 py-1.5 text-slate-300 max-w-[360px] truncate" title={r.description}>{r.description}</td>
-                    <td className="px-3 py-1.5"><ClassChip cls={r.class} /></td>
+                    <td className="px-3 py-1.5 whitespace-nowrap">
+                      <ClassChip cls={r.class} />
+                      {r.match_score != null && (() => {
+                        let ev: any = {};
+                        try { ev = JSON.parse(r.match_evidence || '{}'); } catch {}
+                        const pct = Math.round(r.match_score * 100);
+                        const tip = `invoice ${ev.invoiceDate || '?'} → posted ${ev.txnDate || '?'} (+${ev.lagDays ?? '?'}d) · card ${ev.card || '?'} · ${ev.candidates || 1} candidate${(ev.candidates || 1) > 1 ? 's' : ''}${ev.review ? ` · runner-up ${Math.round((ev.runnerUpScore || 0) * 100)}% — too close to call` : ''}`;
+                        return ev.review
+                          ? <span title={tip} className="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/15 text-amber-400 cursor-help">review?</span>
+                          : <span title={tip} className={`ml-1 px-1.5 py-0.5 rounded text-[10px] cursor-help ${pct >= 70 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-slate-500/15 text-slate-400'}`}>{pct}%</span>;
+                      })()}
+                    </td>
                     <td className="px-3 py-1.5">
                       {assigning === r.id ? (
                         <select autoFocus defaultValue={r.store_id || ''} onChange={e => assignStore(r.id, e.target.value)} onBlur={() => setAssigning(null)}
