@@ -21,6 +21,37 @@ const CLASS_COLORS: Record<string, string> = {
   personal: 'bg-pink-500/15 text-pink-400', other: 'bg-slate-600/20 text-slate-500',
 };
 
+function StatementEditor({ card, onSaved }: { card: any; onSaved: () => void }) {
+  const [bal, setBal] = useState(card.stmtBalanceCents != null ? String(card.stmtBalanceCents / 100) : '');
+  const [due, setDue] = useState(card.dueDate || '');
+  const [minPay, setMinPay] = useState(card.minPaymentCents != null ? String(card.minPaymentCents / 100) : '');
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    await fetch('/api/transactions', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'statement', accountId: card.id,
+        statementBalanceCents: bal ? Math.round(parseFloat(bal) * 100) : null,
+        dueDate: due || null,
+        minPaymentCents: minPay ? Math.round(parseFloat(minPay) * 100) : null,
+      }),
+    });
+    setSaving(false);
+    onSaved();
+  };
+  return (
+    <div className="flex flex-wrap items-end gap-3 text-[11px]">
+      <span className="text-slate-400 font-medium">Statement for ··{card.last4}:</span>
+      <label className="text-slate-500">balance $<input type="number" step="0.01" value={bal} onChange={e => setBal(e.target.value)} className="ml-1 w-24 bg-slate-900 border border-slate-600 rounded px-1.5 py-1 text-white" /></label>
+      <label className="text-slate-500">due <input type="date" value={due} onChange={e => setDue(e.target.value)} className="ml-1 bg-slate-900 border border-slate-600 rounded px-1.5 py-1 text-white" /></label>
+      <label className="text-slate-500">min $<input type="number" step="0.01" value={minPay} onChange={e => setMinPay(e.target.value)} placeholder="opt" className="ml-1 w-20 bg-slate-900 border border-slate-600 rounded px-1.5 py-1 text-white" /></label>
+      <button onClick={save} disabled={saving} className="px-3 py-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded font-semibold">{saving ? 'saving…' : 'save'}</button>
+      <span className="text-slate-600">from the card&apos;s latest statement — drives the PAY amount and due-date urgency</span>
+    </div>
+  );
+}
+
 function ClassChip({ cls }: { cls: string | null }) {
   const c = cls || 'other';
   return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${CLASS_COLORS[c] || CLASS_COLORS.other}`}>{CLASS_LABELS[c] || c}</span>;
@@ -283,11 +314,13 @@ export default function TransactionsPage() {
               no_cashflow: { t: 'NO FLOW', c: 'text-red-400' },
               no_feed: { t: 'NO FEED', c: 'text-slate-500' },
             };
-            const cAction = (c: any) =>
-              c.declining ? { t: 'PAY FIRST — DECLINING', c: 'text-red-400 font-bold' }
-              : c.payNowCents > 0 ? { t: `PAY ${fmt2(c.payNowCents)}`, c: 'text-emerald-400 font-bold' }
-              : c.fullyPayableDate ? { t: `WAIT → ${dayLabel(c.fullyPayableDate)}`, c: 'text-blue-300' }
-              : { t: 'NOT COVERED', c: 'text-slate-500' };
+            const cAction = (c: any) => {
+              const fundStr = (c.funding || []).map((f: any) => `${f.source} ${fmt2(f.cents)}`).join(' + ');
+              if (c.verdict === 'no_statement') return { t: 'ENTER STATEMENT →', c: 'text-slate-500', tip: 'no statement balance/due date entered — amount due unknown' };
+              if (c.verdict === 'pay_full') return { t: `PAY ${fmt2(c.payNowCents)}`, c: c.daysToDue != null && c.daysToDue <= 3 ? 'text-red-400 font-bold' : 'text-emerald-400 font-bold', tip: `funded by: ${fundStr}` };
+              if (c.verdict === 'pay_partial') return { t: `PAY ${fmt2(c.payNowCents)} · SHORT ${fmt2(c.shortCents)}`, c: c.minCovered === false ? 'text-red-400 font-bold' : 'text-amber-400 font-bold', tip: `funded by: ${fundStr}${c.minCovered === false ? ' — DOES NOT COVER MIN PAYMENT' : ''}` };
+              return { t: 'NOT FUNDED', c: 'text-red-400', tip: 'no owner-store cashflow and no company cash left' };
+            };
             const thCls = 'text-left text-[9px] uppercase tracking-wider text-slate-600 px-3 py-1.5 font-semibold';
             const thR = thCls + ' text-right';
             const td = 'px-3 py-[7px] tabular-nums';
@@ -309,29 +342,50 @@ export default function TransactionsPage() {
                   <table className="w-full text-[12px]">
                     <thead><tr className="border-b border-slate-800">
                       <th className={thCls}>CARD</th>
-                      <th className={thR}>BALANCE</th>
-                      <th className={thR}>HOLDS</th>
+                      <th className={thR}>STMT BAL</th>
+                      <th className={thR}>DUE</th>
+                      <th className={thR}>LIVE BAL</th>
                       <th className={thR}>FB INC</th>
-                      <th className={thR}>TO CLEAR</th>
                       <th className={thR}>UTIL</th>
                       <th className={thCls}>OWED BY</th>
-                      <th className={thR}>ACTION</th>
+                      <th className={thR}>PAY (FUNDED BY)</th>
                     </tr></thead>
                     <tbody>
                       {payPlan.cards.map((c: any) => {
                         const a = cAction(c);
                         const owners = c.owners.filter((o: any) => o.store !== '(unattributed)').map((o: any) => o.store).join(', ');
+                        const editing = openCard === c.id;
                         return (
-                          <tr key={c.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                            <td className={`${td} text-slate-200 whitespace-nowrap`}>{c.declining && <span className="text-red-400 mr-1">⛔</span>}{c.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ').slice(0, 34)} <span className="text-slate-600">·{c.last4}</span></td>
-                            <td className={`${td} text-right text-white font-medium`}>{fmt2(c.postedCents)}</td>
-                            <td className={`${td} text-right ${c.pendingHoldsCents > 0 ? 'text-amber-400' : 'text-slate-700'}`}>{c.pendingHoldsCents > 0 ? fmt2(c.pendingHoldsCents) : '—'}</td>
-                            <td className={`${td} text-right ${c.fbOwedCents > 0 ? 'text-blue-300' : 'text-slate-700'}`}>{c.fbOwedCents > 0 ? fmt2(c.fbOwedCents) : '—'}</td>
-                            <td className={`${td} text-right text-slate-200 font-medium`}>{fmt2(c.toClearCents)}</td>
-                            <td className={`${td} text-right ${(c.utilization || 0) >= 100 ? 'text-red-400 font-bold' : (c.utilization || 0) >= 70 ? 'text-amber-400' : 'text-slate-400'}`}>{c.utilization != null ? `${c.utilization}%` : '—'}</td>
-                            <td className={`${td} text-slate-400 max-w-[150px] truncate`} title={owners}>{owners || <span className="text-slate-600">untraced</span>}</td>
-                            <td className={`${td} text-right whitespace-nowrap ${a.c}`}>{a.t}</td>
-                          </tr>
+                          <Fragment key={c.id}>
+                            <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                              <td className={`${td} text-slate-200 whitespace-nowrap`}>{c.declining && <span className="text-red-400 mr-1">⛔</span>}{c.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ').slice(0, 30)} <span className="text-slate-600">·{c.last4}</span></td>
+                              <td className={`${td} text-right`}>
+                                <button onClick={() => setOpenCard(editing ? null : c.id)} className={c.stmtBalanceCents != null ? 'text-white font-medium hover:text-blue-300' : 'text-slate-500 hover:text-blue-300 underline decoration-dotted'}>
+                                  {c.stmtBalanceCents != null ? fmt2(c.stmtBalanceCents) : 'set'}
+                                </button>
+                              </td>
+                              <td className={`${td} text-right whitespace-nowrap ${c.daysToDue == null ? 'text-slate-600' : c.daysToDue <= 3 ? 'text-red-400 font-bold' : c.daysToDue <= 7 ? 'text-amber-400' : 'text-slate-300'}`}>
+                                {c.dueDate ? `${dayLabel(c.dueDate).replace(/^\w+, /, '')} (${c.daysToDue}d)` : '—'}
+                              </td>
+                              <td className={`${td} text-right text-slate-300`}>{fmt2(c.postedCents)}</td>
+                              <td className={`${td} text-right ${c.fbOwedCents > 0 ? 'text-blue-300' : 'text-slate-700'}`}>{c.fbOwedCents > 0 ? fmt2(c.fbOwedCents) : '—'}</td>
+                              <td className={`${td} text-right ${(c.utilization || 0) >= 100 ? 'text-red-400 font-bold' : (c.utilization || 0) >= 70 ? 'text-amber-400' : 'text-slate-400'}`}>{c.utilization != null ? `${c.utilization}%` : '—'}</td>
+                              <td className={`${td} text-slate-400 max-w-[130px] truncate`} title={owners}>{owners || <span className="text-slate-600">untraced</span>}</td>
+                              <td className={`${td} text-right whitespace-nowrap ${a.c}`} title={a.tip}>
+                                {a.t}
+                                {c.funding?.length > 0 && c.payNowCents > 0 && (
+                                  <span className="block text-[10px] font-normal text-slate-500">← {(c.funding || []).map((f: any) => `${f.source} ${fmt2(f.cents)}`).join(' + ')}</span>
+                                )}
+                              </td>
+                            </tr>
+                            {editing && (
+                              <tr className="bg-slate-800/40">
+                                <td colSpan={8} className="px-3 py-2">
+                                  <StatementEditor card={c} onSaved={() => { setOpenCard(null); loadPayPlan(); }} />
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
                         );
                       })}
                     </tbody>

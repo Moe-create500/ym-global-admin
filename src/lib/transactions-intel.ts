@@ -687,12 +687,27 @@ export function getPaymentsView(db: DatabaseType.Database, days: number) {
  *  Output per card: PAY NOW $X (from today's safe envelope), the date the
  *  rest becomes payable as landings arrive, and whether the stores that OWE
  *  the card have the cashflow to cover their share. */
+export function ensureCardStatements(db: DatabaseType.Database) {
+  db.exec(`CREATE TABLE IF NOT EXISTS card_statements (
+    bank_account_id TEXT PRIMARY KEY,
+    statement_balance_cents INTEGER,
+    statement_date TEXT,
+    due_date TEXT,
+    min_payment_cents INTEGER,
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`);
+}
+
 export function getPayPlan(db: DatabaseType.Database) {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { buildCashflowProjection } = require('./cashflow');
+  ensureCardStatements(db);
   const projection = buildCashflowProjection(db);
   const clarity = getCardClarity(db);
   const truth = getTruth(db, 90);
+  const statements = new Map<string, any>(
+    (db.prepare('SELECT * FROM card_statements').all() as any[]).map(s => [s.bank_account_id, s])
+  );
 
   // Per-store near-term cashflow: money that is real (landed today, paid out,
   // or date-committed by Shopify). Projected shown separately — softer.
@@ -731,6 +746,11 @@ export function getPayPlan(db: DatabaseType.Database) {
       })
       .sort((a, b) => b.owesCents - a.owesCents);
     const utilization = cl.utilizationPct ?? 0;
+    const stmt = statements.get(meta.id);
+    const dueDate = stmt?.due_date || null;
+    const daysToDue = dueDate
+      ? Math.round((new Date(dueDate + 'T12:00:00Z').getTime() - new Date(projection.generated_at_date + 'T12:00:00Z').getTime()) / 86400000)
+      : null;
     return {
       id: meta.id,
       name: `${meta.institution_name} ${meta.account_name}`,
@@ -744,29 +764,69 @@ export function getPayPlan(db: DatabaseType.Database) {
       utilization,
       owners,
       unexplainedCents: comp?.unexplainedCents || 0,
-      // priority: a declining funding card starves the ad engine — always first
-      priority: (cl.declining ? 0 : 1) * 1000 + (100 - Math.min(utilization, 100)),
+      // Statement reality — what must actually be paid, and by when. No
+      // statement entered = the need is unknown; the UI asks for it rather
+      // than inventing a number.
+      stmtBalanceCents: stmt?.statement_balance_cents ?? null,
+      stmtDate: stmt?.statement_date || null,
+      dueDate,
+      daysToDue,
+      minPaymentCents: stmt?.min_payment_cents ?? null,
     };
   }).filter(Boolean) as any[];
 
-  cards.sort((a, b) => a.priority - b.priority || b.toClearCents - a.toClearCents);
+  // Order of operations: declining first (ads die), then earliest due date
+  // (undated cards after dated ones), then highest utilization.
+  cards.sort((a, b) =>
+    (a.declining ? 0 : 1) - (b.declining ? 0 : 1)
+    || (a.daysToDue ?? 9999) - (b.daysToDue ?? 9999)
+    || (b.utilization || 0) - (a.utilization || 0));
 
-  // Greedy allocation of today's safe envelope, priority order; then walk the
-  // landing calendar to date when each card's remainder becomes payable.
-  const envelope = projection.position.safe_to_pay_today_cents;
-  let remainingEnvelope = envelope;
-  let cumulativeNeed = 0;
+  // ── FUNDING — every recommended dollar has an identified owner ──
+  // 1. Stores that put the debt on the card pay first, from their own free
+  //    cashflow (committed landings − 7d of their own ads), capped at their share.
+  // 2. Only the untraced remainder draws from company shared cash (cash − 7d
+  //    total ad burn). No blind pooling.
+  const burnPerStore = new Map<string, number>(projection.stores.map((s: any) => [s.store_name, s.avg_daily_ad_burn_cents || 0]));
+  const storeFreePool = new Map<string, number>();
+  for (const [name, flow] of storeFlow) {
+    storeFreePool.set(name, Math.max(0, flow.committed - (burnPerStore.get(name) || 0) * 7));
+  }
+  let companyPool = projection.position.safe_to_pay_today_cents;
+
   for (const c of cards) {
-    c.payNowCents = Math.min(c.postedCents, remainingEnvelope);
-    remainingEnvelope -= c.payNowCents;
-    cumulativeNeed += c.postedCents;
-    // First calendar day whose projected position covers everything up to and
-    // including this card (cash + landings − ad burn, cumulative priority)
-    const day = projection.calendar.find((d: any) => d.position_cents >= cumulativeNeed);
-    c.fullyPayableDate = day ? day.date : null; // null = beyond the horizon
-    c.verdict = c.payNowCents >= c.postedCents ? 'pay_full'
+    const hasStatement = c.stmtBalanceCents != null;
+    // The number that matters is the statement balance; posted balance is only
+    // a fallback reference, never presented as "the amount due".
+    const need = hasStatement ? c.stmtBalanceCents : c.postedCents;
+    let remaining = need;
+    const funding: { source: string; cents: number }[] = [];
+    for (const o of c.owners) {
+      if (o.store === '(unattributed)' || remaining <= 0) continue;
+      const pool = storeFreePool.get(o.store) || 0;
+      const take = Math.min(pool, o.owesCents, remaining);
+      if (take > 0) {
+        funding.push({ source: o.store, cents: take });
+        storeFreePool.set(o.store, pool - take);
+        remaining -= take;
+      }
+    }
+    if (remaining > 0 && companyPool > 0) {
+      const take = Math.min(companyPool, remaining);
+      funding.push({ source: 'company', cents: take });
+      companyPool -= take;
+      remaining -= take;
+    }
+    c.hasStatement = hasStatement;
+    c.needCents = need;
+    c.payNowCents = need - remaining;
+    c.funding = funding;
+    c.shortCents = remaining;
+    c.minCovered = c.minPaymentCents != null ? c.payNowCents >= c.minPaymentCents : null;
+    c.verdict = !hasStatement ? 'no_statement'
+      : c.payNowCents >= need ? 'pay_full'
       : c.payNowCents > 0 ? 'pay_partial'
-      : c.fullyPayableDate ? 'wait' : 'not_covered';
+      : 'not_funded';
   }
 
   // ── STORE-FIRST VIEW — each store owns its balances and pays them from its
