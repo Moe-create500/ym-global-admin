@@ -27,7 +27,7 @@ function ClassChip({ cls }: { cls: string | null }) {
 }
 
 export default function TransactionsPage() {
-  const [tab, setTab] = useState<'cards' | 'payplan' | 'truth' | 'ledger' | 'payments'>('cards');
+  const [tab, setTab] = useState<'cards' | 'payplan' | 'truth' | 'ledger' | 'payments'>('payplan');
   const [truth, setTruth] = useState<any>(null);
   const [truthDays, setTruthDays] = useState(90);
   const [payPlan, setPayPlan] = useState<any>(null);
@@ -137,7 +137,7 @@ export default function TransactionsPage() {
       )}
 
       <div className="flex gap-1 mb-4 border-b border-slate-800">
-        {([['cards', 'Card Intelligence'], ['payplan', '💸 Pay Cards'], ['truth', 'Source of Truth'], ['ledger', 'Ledger'], ['payments', 'Payments']] as const).map(([k, label]) => (
+        {([['payplan', '⚡ Operations'], ['cards', 'Card Intelligence'], ['truth', 'Source of Truth'], ['ledger', 'Ledger'], ['payments', 'Payments']] as const).map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${tab === k ? 'border-blue-500 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>
             {label}
@@ -272,96 +272,120 @@ export default function TransactionsPage() {
       )}
 
       {tab === 'payplan' && (
-        <div className="max-w-[860px] mx-auto">
-          {payPlanLoading && <p className="text-sm text-slate-500 animate-pulse text-center py-10">Working out each store&apos;s position…</p>}
+        <div>
+          {payPlanLoading && <p className="text-sm text-slate-500 animate-pulse py-6">Loading operations…</p>}
           {payPlan && !payPlanLoading && (() => {
-            const V: Record<string, { label: string; cls: string; box: string }> = {
-              covers: { label: 'CAN PAY ITS CARDS', cls: 'text-emerald-400', box: 'border-emerald-800/50' },
-              partial: { label: 'CAN PAY PART', cls: 'text-amber-400', box: 'border-amber-800/50' },
-              ads_eat_it: { label: 'ADS EAT ITS CASHFLOW', cls: 'text-orange-400', box: 'border-slate-800' },
-              no_cashflow: { label: 'NO CASHFLOW', cls: 'text-red-400', box: 'border-slate-800' },
-              no_feed: { label: 'NO PAYOUT FEED', cls: 'text-slate-500', box: 'border-slate-800' },
+            const p = payPlan.position;
+            const sVerdict: Record<string, { t: string; c: string }> = {
+              covers: { t: 'PAY ALL', c: 'text-emerald-400' },
+              partial: { t: 'PAY PART', c: 'text-amber-400' },
+              ads_eat_it: { t: 'ADS FIRST', c: 'text-orange-400' },
+              no_cashflow: { t: 'NO FLOW', c: 'text-red-400' },
+              no_feed: { t: 'NO FEED', c: 'text-slate-500' },
             };
+            const cAction = (c: any) =>
+              c.declining ? { t: 'PAY FIRST — DECLINING', c: 'text-red-400 font-bold' }
+              : c.payNowCents > 0 ? { t: `PAY ${fmt2(c.payNowCents)}`, c: 'text-emerald-400 font-bold' }
+              : c.fullyPayableDate ? { t: `WAIT → ${dayLabel(c.fullyPayableDate)}`, c: 'text-blue-300' }
+              : { t: 'NOT COVERED', c: 'text-slate-500' };
+            const thCls = 'text-left text-[9px] uppercase tracking-wider text-slate-600 px-3 py-1.5 font-semibold';
+            const thR = thCls + ' text-right';
+            const td = 'px-3 py-[7px] tabular-nums';
             return (
               <>
-                {/* Each store: its debts, its money, its verdict */}
-                <div className="space-y-4">
-                  {payPlan.storePlans.map((s: any) => {
-                    const v = V[s.verdict] || V.no_feed;
-                    const open = openCard === s.store;
-                    return (
-                      <div key={s.store} className={`bg-slate-900 border rounded-2xl ${v.box}`}>
-                        <div className="px-5 py-4 cursor-pointer" onClick={() => setOpenCard(open ? null : s.store)}>
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div>
-                              <p className="text-base font-bold text-white">{s.store}</p>
-                              <p className="text-[12px] text-slate-500 tabular-nums mt-0.5">
-                                owes <span className="text-slate-200 font-medium">{fmt2(s.owedTotal)}</span> on {s.owed.length} card{s.owed.length > 1 ? 's' : ''}
-                              </p>
-                            </div>
-                            <div className="text-right">
-                              <p className={`text-sm font-bold ${v.cls}`}>
-                                {s.verdict === 'covers' && <>✓ PAY {fmt2(s.owedTotal)} — fully covered</>}
-                                {s.verdict === 'partial' && <>PAY {fmt2(s.canPayCents)} — short {fmt2(s.shortCents)}</>}
-                                {s.verdict === 'ads_eat_it' && <>CAN&apos;T PAY — its ads need the cashflow</>}
-                                {s.verdict === 'no_cashflow' && <>CAN&apos;T PAY — nothing landing</>}
-                                {s.verdict === 'no_feed' && <>NO PAYOUT FEED — connect it</>}
-                              </p>
-                              <p className="text-[11px] text-slate-500 tabular-nums mt-0.5">
-                                {s.hasFeed
-                                  ? <>{fmt2(s.committedCents)} landing this week − {fmt2(s.burn7Cents)} its ads = {fmt2(Math.max(0, s.committedCents - s.burn7Cents))} free</>
-                                  : 'cashflow unknown'}
-                              </p>
-                            </div>
-                            <span className="text-slate-600 text-xs">{open ? '▾' : '▸'}</span>
-                          </div>
-                        </div>
-                        {open && (
-                          <div className="px-5 pb-4 border-t border-slate-800/70 pt-3">
-                            <div className="grid grid-cols-[1fr_auto] gap-x-6 gap-y-1.5 text-[12px]">
-                              <span className="text-[10px] uppercase tracking-wide text-slate-600">on which card</span>
-                              <span className="text-[10px] uppercase tracking-wide text-slate-600 text-right">this store&apos;s share</span>
-                              {s.owed.map((o: any) => (
-                                <Fragment key={o.last4 + o.cents}>
-                                  <span className="text-slate-300">
-                                    {o.declining && <span className="text-red-400 mr-1" title="declining on Facebook">⛔</span>}
-                                    {o.cardName} <span className="text-slate-500">··{o.last4}</span>
-                                  </span>
-                                  <span className="text-right text-white tabular-nums">{fmt2(o.cents)}</span>
-                                </Fragment>
-                              ))}
-                            </div>
-                            <p className="text-[11px] text-slate-500 mt-3">
-                              This store&apos;s week: {fmt2(s.committedCents)} committed landings{s.projectedCents > 0 ? ` (+${fmt2(s.projectedCents)} projected)` : ''} · its ads burn {fmt2(s.burn7Cents / 7)}/day.
-                              {s.verdict === 'partial' && ` It can cover ${fmt2(s.canPayCents)} of its debt this week after funding its own ads.`}
-                              {s.verdict === 'ads_eat_it' && ' Everything it has landing is needed to keep its own ads running.'}
-                            </p>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                {/* ── STATUS BAR ── */}
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-1 bg-slate-900 border border-slate-800 rounded-lg px-4 py-2 mb-3 text-[12px] tabular-nums">
+                  <span className="text-slate-500">CASH <span className="text-white font-bold">{fmt2(p.cash_available_cents)}</span></span>
+                  <span className="text-slate-500">SAFE TODAY <span className="text-emerald-400 font-bold">{fmt2(p.safe_to_pay_today_cents)}</span></span>
+                  <span className="text-slate-500">LANDING 7D <span className="text-emerald-300 font-bold">{fmt2(p.incoming_7d_cents)}</span></span>
+                  <span className="text-slate-500">AD BURN <span className="text-orange-400 font-bold">{fmt2(p.ad_burn_daily_cents)}/d</span></span>
+                  <span className="text-slate-500">DEBT <span className="text-white font-bold">{fmt2(payPlan.company.debtTotalCents)}</span></span>
+                  <span className="text-slate-500">FB UNBILLED <span className="text-blue-300 font-bold">{fmt2(p.fb_unbilled_cents)}</span></span>
+                  <span className="ml-auto text-slate-600">{payPlan.generatedAt}</span>
                 </div>
 
-                {/* Company-level: debt no store can be charged with */}
-                {payPlan.company.untracedCents > 0 && (
-                  <div className="mt-5 bg-slate-900/60 border border-slate-800 rounded-2xl px-5 py-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-bold text-slate-300">Company (not traced to a store)</p>
-                        <p className="text-[12px] text-slate-500 tabular-nums mt-0.5">
-                          {fmt2(payPlan.company.untracedCents)} of {fmt2(payPlan.company.debtTotalCents)} total card debt has no store owner yet
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-sm font-bold text-slate-300 tabular-nums">shared cash can cover {fmt2(Math.min(payPlan.company.safeTodayCents, payPlan.company.untracedCents))} today</p>
-                        <p className="text-[11px] text-slate-500 tabular-nums">{fmt2(payPlan.company.cashCents)} cash − 7d ads reserve = {fmt2(payPlan.company.safeTodayCents)} safe</p>
-                      </div>
-                    </div>
-                    <p className="text-[11px] text-amber-500/80 mt-2">Link the FB funding cards in Banking → this debt gets traced to its stores and moves into their rows above.</p>
-                  </div>
-                )}
-                <p className="text-center text-[11px] text-slate-600 mt-4">Each store pays its own cards from its own cashflow · click a store for its cards</p>
+                {/* ── CARDS TABLE ── */}
+                <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mb-3">
+                  <table className="w-full text-[12px]">
+                    <thead><tr className="border-b border-slate-800">
+                      <th className={thCls}>CARD</th>
+                      <th className={thR}>BALANCE</th>
+                      <th className={thR}>HOLDS</th>
+                      <th className={thR}>FB INC</th>
+                      <th className={thR}>TO CLEAR</th>
+                      <th className={thR}>UTIL</th>
+                      <th className={thCls}>OWED BY</th>
+                      <th className={thR}>ACTION</th>
+                    </tr></thead>
+                    <tbody>
+                      {payPlan.cards.map((c: any) => {
+                        const a = cAction(c);
+                        const owners = c.owners.filter((o: any) => o.store !== '(unattributed)').map((o: any) => o.store).join(', ');
+                        return (
+                          <tr key={c.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                            <td className={`${td} text-slate-200 whitespace-nowrap`}>{c.declining && <span className="text-red-400 mr-1">⛔</span>}{c.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ').slice(0, 34)} <span className="text-slate-600">·{c.last4}</span></td>
+                            <td className={`${td} text-right text-white font-medium`}>{fmt2(c.postedCents)}</td>
+                            <td className={`${td} text-right ${c.pendingHoldsCents > 0 ? 'text-amber-400' : 'text-slate-700'}`}>{c.pendingHoldsCents > 0 ? fmt2(c.pendingHoldsCents) : '—'}</td>
+                            <td className={`${td} text-right ${c.fbOwedCents > 0 ? 'text-blue-300' : 'text-slate-700'}`}>{c.fbOwedCents > 0 ? fmt2(c.fbOwedCents) : '—'}</td>
+                            <td className={`${td} text-right text-slate-200 font-medium`}>{fmt2(c.toClearCents)}</td>
+                            <td className={`${td} text-right ${(c.utilization || 0) >= 100 ? 'text-red-400 font-bold' : (c.utilization || 0) >= 70 ? 'text-amber-400' : 'text-slate-400'}`}>{c.utilization != null ? `${c.utilization}%` : '—'}</td>
+                            <td className={`${td} text-slate-400 max-w-[150px] truncate`} title={owners}>{owners || <span className="text-slate-600">untraced</span>}</td>
+                            <td className={`${td} text-right whitespace-nowrap ${a.c}`}>{a.t}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* ── STORES TABLE ── */}
+                <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mb-3">
+                  <table className="w-full text-[12px]">
+                    <thead><tr className="border-b border-slate-800">
+                      <th className={thCls}>STORE</th>
+                      <th className={thR}>OWES</th>
+                      <th className={thCls}>ON CARDS</th>
+                      <th className={thR}>LANDING 7D</th>
+                      <th className={thR}>ITS ADS 7D</th>
+                      <th className={thR}>FREE</th>
+                      <th className={thR}>CAN PAY</th>
+                      <th className={thR}>STATUS</th>
+                    </tr></thead>
+                    <tbody>
+                      {payPlan.storePlans.map((s: any) => {
+                        const v = sVerdict[s.verdict] || sVerdict.no_feed;
+                        const free = Math.max(0, s.committedCents - s.burn7Cents);
+                        return (
+                          <tr key={s.store} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                            <td className={`${td} text-white font-medium`}>{s.store}</td>
+                            <td className={`${td} text-right text-white`}>{fmt2(s.owedTotal)}</td>
+                            <td className={`${td} text-slate-400`}>{s.owed.map((o: any) => `·${o.last4}`).join(' ')}</td>
+                            <td className={`${td} text-right text-emerald-300`}>{s.hasFeed ? fmt2(s.committedCents) : '—'}</td>
+                            <td className={`${td} text-right text-orange-400`}>{fmt2(s.burn7Cents)}</td>
+                            <td className={`${td} text-right ${free > 0 ? 'text-emerald-400 font-medium' : 'text-slate-600'}`}>{fmt2(free)}</td>
+                            <td className={`${td} text-right font-bold ${s.canPayCents > 0 ? 'text-emerald-400' : 'text-slate-600'}`}>{s.canPayCents > 0 ? fmt2(s.canPayCents) : '—'}</td>
+                            <td className={`${td} text-right font-bold ${v.c}`}>{v.t}</td>
+                          </tr>
+                        );
+                      })}
+                      {/* Company row — untraced debt against shared cash */}
+                      <tr className="bg-slate-800/20">
+                        <td className={`${td} text-slate-400 font-medium`}>COMPANY <span className="text-slate-600 font-normal">(untraced — link FB cards)</span></td>
+                        <td className={`${td} text-right text-slate-300`}>{fmt2(payPlan.company.untracedCents)}</td>
+                        <td className={`${td} text-slate-600`}>all</td>
+                        <td className={`${td} text-right text-slate-600`}>—</td>
+                        <td className={`${td} text-right text-slate-600`}>—</td>
+                        <td className={`${td} text-right text-emerald-400`}>{fmt2(payPlan.company.safeTodayCents)}</td>
+                        <td className={`${td} text-right font-bold text-emerald-400`}>{fmt2(Math.min(payPlan.company.safeTodayCents, payPlan.company.untracedCents))}</td>
+                        <td className={`${td} text-right font-bold text-amber-400`}>SHARED CASH</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <p className="text-[10px] text-slate-600">
+                  CAN PAY = store&apos;s committed landings − 7d of its own ad burn, applied to its card shares. SAFE TODAY = cash − 7d total ad burn. Cards: TO CLEAR = balance + holds + FB incoming − payments landing. Full drill-down: Card Intelligence · Source of Truth · Ledger tabs.
+                </p>
               </>
             );
           })()}

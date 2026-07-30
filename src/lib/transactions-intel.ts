@@ -737,6 +737,8 @@ export function getPayPlan(db: DatabaseType.Database) {
       last4: meta.last_four,
       postedCents: cl.postedCents,
       toClearCents: cl.toClearCents,
+      pendingHoldsCents: cl.pendingHoldsCents,
+      paymentsLandingCents: cl.paymentsLandingCents,
       fbOwedCents: cl.fbOwedCents,
       declining: cl.declining,
       utilization,
