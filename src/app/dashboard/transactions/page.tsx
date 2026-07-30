@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 
 const fmt = (cents: number) => '$' + (Math.abs(cents || 0) / 100).toLocaleString('en-US', { maximumFractionDigits: 0 });
+const dayLabel = (dateStr: string) => new Date(dateStr + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
 const fmt2 = (cents: number) => '$' + (Math.abs(cents || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const CLASS_LABELS: Record<string, string> = {
