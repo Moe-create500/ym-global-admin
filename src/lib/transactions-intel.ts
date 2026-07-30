@@ -796,9 +796,20 @@ export function getPayPlan(db: DatabaseType.Database) {
 
   for (const c of cards) {
     const hasStatement = c.stmtBalanceCents != null;
-    // The number that matters is the statement balance; posted balance is only
-    // a fallback reference, never presented as "the amount due".
-    const need = hasStatement ? c.stmtBalanceCents : c.postedCents;
+    // No statement = the amount due is UNKNOWN. The card draws nothing from
+    // anyone's pool until the statement is entered — money is never allocated
+    // against an invented number.
+    if (!hasStatement) {
+      c.hasStatement = false;
+      c.needCents = null;
+      c.payNowCents = 0;
+      c.funding = [];
+      c.shortCents = 0;
+      c.minCovered = null;
+      c.verdict = 'no_statement';
+      continue;
+    }
+    const need = c.stmtBalanceCents;
     let remaining = need;
     const funding: { source: string; cents: number }[] = [];
     for (const o of c.owners) {
