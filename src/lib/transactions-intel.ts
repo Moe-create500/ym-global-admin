@@ -767,12 +767,66 @@ export function getPayPlan(db: DatabaseType.Database) {
       : c.fullyPayableDate ? 'wait' : 'not_covered';
   }
 
+  // ── STORE-FIRST VIEW — each store owns its balances and pays them from its
+  // own cashflow. Per store: what it owes on which cards, its committed
+  // landings this week, its own ad burn to protect, and the verdict.
+  const storeAgg = new Map<string, { owed: { cardName: string; last4: string; cents: number; declining: boolean }[]; owedTotal: number }>();
+  for (const c of cards) {
+    for (const o of c.owners) {
+      if (o.store === '(unattributed)') continue;
+      if (!storeAgg.has(o.store)) storeAgg.set(o.store, { owed: [], owedTotal: 0 });
+      const agg = storeAgg.get(o.store)!;
+      agg.owed.push({ cardName: c.name, last4: c.last4, cents: o.owesCents, declining: c.declining });
+      agg.owedTotal += o.owesCents;
+    }
+  }
+  const burnByStore = new Map<string, number>(projection.stores.map((s: any) => [s.store_name, s.avg_daily_ad_burn_cents || 0]));
+
+  const storePlans = [...storeAgg.entries()].map(([store, agg]) => {
+    const flow = storeFlow.get(store);
+    const committed = flow?.committed ?? 0;
+    const projected = flow?.projected ?? 0;
+    const burn7 = (burnByStore.get(store) || 0) * 7;
+    // The store's own payable envelope: its committed landings minus a week of
+    // its own ad spend. Its money, its ads, its debts.
+    const envelopeStore = Math.max(0, committed - burn7);
+    const canPay = Math.min(agg.owedTotal, envelopeStore);
+    const short = agg.owedTotal - canPay;
+    return {
+      store,
+      owed: agg.owed.sort((a, b) => (a.declining ? -1 : 0) - (b.declining ? -1 : 0) || b.cents - a.cents),
+      owedTotal: agg.owedTotal,
+      committedCents: committed,
+      projectedCents: projected,
+      burn7Cents: burn7,
+      hasFeed: !!flow,
+      canPayCents: canPay,
+      shortCents: short,
+      verdict: !flow ? 'no_feed'
+        : canPay >= agg.owedTotal ? 'covers'
+        : canPay > 0 ? 'partial'
+        : committed > 0 ? 'ads_eat_it' : 'no_cashflow',
+    };
+  }).sort((a, b) => b.owedTotal - a.owedTotal);
+
+  // Debt no store can be charged with (unattributed + pre-history) — the
+  // company carries it from the shared cash pool.
+  const tracedTotal = storePlans.reduce((s, x) => s + x.owedTotal, 0);
+  const debtTotal = cards.reduce((s, c) => s + c.postedCents, 0);
+
   return {
     generatedAt: projection.generated_at_date,
     position: projection.position,
     envelopeCents: envelope,
     allocatedCents: envelope - remainingEnvelope,
     cards,
+    storePlans,
+    company: {
+      untracedCents: Math.max(0, debtTotal - tracedTotal),
+      cashCents: projection.position.cash_available_cents,
+      safeTodayCents: projection.position.safe_to_pay_today_cents,
+      debtTotalCents: debtTotal,
+    },
   };
 }
 

@@ -272,113 +272,96 @@ export default function TransactionsPage() {
       )}
 
       {tab === 'payplan' && (
-        <div className="max-w-[820px] mx-auto">
-          {payPlanLoading && <p className="text-sm text-slate-500 animate-pulse text-center py-10">Working out which card to pay…</p>}
+        <div className="max-w-[860px] mx-auto">
+          {payPlanLoading && <p className="text-sm text-slate-500 animate-pulse text-center py-10">Working out each store&apos;s position…</p>}
           {payPlan && !payPlanLoading && (() => {
-            const first = payPlan.cards[0];
-            const rest = payPlan.cards.slice(1);
-            const whyCard = first
-              ? first.declining ? 'its Facebook funding card is declining — ads stop if it isn’t paid'
-                : (first.utilization || 0) >= 100 ? `it’s over its limit (${first.utilization}% used) — the most urgent card`
-                : `it has the highest utilization (${first.utilization || 0}%)`
-              : '';
-            const detail = (c: any) => {
-              const traced = c.owners.filter((o: any) => o.store !== '(unattributed)');
-              const unattr = (c.owners.find((o: any) => o.store === '(unattributed)')?.owesCents || 0) + c.unexplainedCents;
-              return (
-                <div className="mt-3 pt-3 border-t border-slate-800 space-y-2 text-[12px]">
-                  <p className="text-slate-400">
-                    {c.verdict === 'not_covered'
-                      ? 'The next 14 days of Shopify landings don’t reach this card — it needs outside money or lower ad spend.'
-                      : c.fullyPayableDate === payPlan.generatedAt
-                        ? 'Could be paid today, but only by spending the money reserved for the next 7 days of ads.'
-                        : c.fullyPayableDate ? `Covered once landings arrive — fully payable ${dayLabel(c.fullyPayableDate)}.` : ''}
-                    {c.fbOwedCents > 0 && <> Facebook is about to bill another <span className="text-blue-300">{fmt2(c.fbOwedCents)}</span> to this card.</>}
-                  </p>
-                  {(traced.length > 0 || unattr > 0) && (
-                    <div className="grid grid-cols-[1fr_auto_auto] gap-x-6 gap-y-1">
-                      <span className="text-[10px] uppercase tracking-wide text-slate-600">who owes it</span>
-                      <span className="text-[10px] uppercase tracking-wide text-slate-600 text-right">amount</span>
-                      <span className="text-[10px] uppercase tracking-wide text-slate-600 text-right">their landings</span>
-                      {traced.map((o: any) => (
-                        <Fragment key={o.store}>
-                          <span className="text-slate-300">{o.store}</span>
-                          <span className="text-right text-white tabular-nums">{fmt2(o.owesCents)}</span>
-                          <span className={`text-right tabular-nums ${o.storeCommittedCents == null ? 'text-slate-600' : o.covered ? 'text-emerald-400' : 'text-amber-400'}`}>
-                            {o.storeCommittedCents == null ? '—' : `${fmt2(o.storeCommittedCents)} ${o.covered ? '✓' : '⚠'}`}
-                          </span>
-                        </Fragment>
-                      ))}
-                      {unattr > 0 && (
-                        <>
-                          <span className="text-slate-600">not yet traced to a store</span>
-                          <span className="text-right text-slate-500 tabular-nums">{fmt2(unattr)}</span>
-                          <span className="text-right text-slate-600">—</span>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
+            const V: Record<string, { label: string; cls: string; box: string }> = {
+              covers: { label: 'CAN PAY ITS CARDS', cls: 'text-emerald-400', box: 'border-emerald-800/50' },
+              partial: { label: 'CAN PAY PART', cls: 'text-amber-400', box: 'border-amber-800/50' },
+              ads_eat_it: { label: 'ADS EAT ITS CASHFLOW', cls: 'text-orange-400', box: 'border-slate-800' },
+              no_cashflow: { label: 'NO CASHFLOW', cls: 'text-red-400', box: 'border-slate-800' },
+              no_feed: { label: 'NO PAYOUT FEED', cls: 'text-slate-500', box: 'border-slate-800' },
             };
             return (
               <>
-                {/* ── THE ANSWER ── */}
-                {first && first.payNowCents > 0 ? (
-                  <div className="bg-emerald-950/25 border border-emerald-700/50 rounded-2xl px-7 py-6 mb-6 text-center">
-                    <p className="text-[11px] uppercase tracking-widest text-emerald-500 mb-2">Today&apos;s move</p>
-                    <p className="text-3xl font-bold text-white tabular-nums">
-                      Pay {fmt2(first.payNowCents)}
-                    </p>
-                    <p className="text-lg text-emerald-300 font-semibold mt-1">→ {first.name} ··{first.last4}</p>
-                    <div className="text-[12.5px] text-slate-400 mt-4 space-y-1 max-w-md mx-auto text-left">
-                      <p><span className="text-slate-500">Why this card:</span> {whyCard}.</p>
-                      <p><span className="text-slate-500">Why this amount:</span> all your cash ({fmt2(payPlan.position.cash_available_cents)}) minus 7 days of ad spend kept safe ({fmt2(payPlan.position.ad_burn_daily_cents * 7)}).</p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="bg-slate-900 border border-slate-800 rounded-2xl px-7 py-6 mb-6 text-center">
-                    <p className="text-[11px] uppercase tracking-widest text-slate-500 mb-2">Today&apos;s move</p>
-                    <p className="text-2xl font-bold text-white">Pay nothing today</p>
-                    <p className="text-[12.5px] text-slate-400 mt-2">Cash minus the 7-day ad reserve leaves no safe room. Wait for landings.</p>
-                  </div>
-                )}
-
-                {/* ── Everything else — one quiet line each ── */}
-                <p className="text-[11px] uppercase tracking-widest text-slate-600 mb-2 px-1">After that — nothing else is payable today</p>
-                <div className="bg-slate-900 border border-slate-800 rounded-2xl divide-y divide-slate-800/70">
-                  {(first && first.payNowCents < first.postedCents ? [{ ...first, _cont: true }] : []).concat(rest).map((c: any) => {
-                    const open = openCard === c.id;
-                    const status = c._cont
-                      ? { text: `remaining ${fmt2(c.postedCents - c.payNowCents)}`, cls: 'text-amber-400', when: c.fullyPayableDate ? (c.fullyPayableDate === payPlan.generatedAt ? 'covered — but only via the ad reserve' : `covered ${dayLabel(c.fullyPayableDate)}`) : 'not covered in 14 days' }
-                      : c.verdict === 'wait'
-                        ? { text: 'wait', cls: 'text-blue-300', when: c.fullyPayableDate === payPlan.generatedAt ? 'payable only via the ad reserve' : `payable ${c.fullyPayableDate ? dayLabel(c.fullyPayableDate) : 'later'}` }
-                        : { text: 'not covered', cls: 'text-slate-500', when: 'needs outside money' };
+                {/* Each store: its debts, its money, its verdict */}
+                <div className="space-y-4">
+                  {payPlan.storePlans.map((s: any) => {
+                    const v = V[s.verdict] || V.no_feed;
+                    const open = openCard === s.store;
                     return (
-                      <div key={c.id + (c._cont ? '-cont' : '')} className="px-5 py-3.5 cursor-pointer hover:bg-slate-800/30" onClick={() => setOpenCard(open ? null : c.id)}>
-                        <div className="flex items-center justify-between gap-4">
-                          <div className="min-w-0 flex items-center gap-2">
-                            {c.declining && <span className="text-red-400 text-xs" title="declining on Facebook">⛔</span>}
-                            <p className="text-[13px] text-slate-200 truncate">{c.name} <span className="text-slate-500">··{c.last4}</span></p>
-                          </div>
-                          <div className="flex items-center gap-5 whitespace-nowrap">
-                            <span className="text-[13px] text-slate-400 tabular-nums">owes {fmt2(c.postedCents)}</span>
-                            <span className={`text-[13px] font-semibold ${status.cls}`}>{status.text}</span>
-                            <span className="text-[12px] text-slate-500 w-56 text-right hidden sm:inline">{status.when}</span>
+                      <div key={s.store} className={`bg-slate-900 border rounded-2xl ${v.box}`}>
+                        <div className="px-5 py-4 cursor-pointer" onClick={() => setOpenCard(open ? null : s.store)}>
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="text-base font-bold text-white">{s.store}</p>
+                              <p className="text-[12px] text-slate-500 tabular-nums mt-0.5">
+                                owes <span className="text-slate-200 font-medium">{fmt2(s.owedTotal)}</span> on {s.owed.length} card{s.owed.length > 1 ? 's' : ''}
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <p className={`text-sm font-bold ${v.cls}`}>
+                                {s.verdict === 'covers' && <>✓ PAY {fmt2(s.owedTotal)} — fully covered</>}
+                                {s.verdict === 'partial' && <>PAY {fmt2(s.canPayCents)} — short {fmt2(s.shortCents)}</>}
+                                {s.verdict === 'ads_eat_it' && <>CAN&apos;T PAY — its ads need the cashflow</>}
+                                {s.verdict === 'no_cashflow' && <>CAN&apos;T PAY — nothing landing</>}
+                                {s.verdict === 'no_feed' && <>NO PAYOUT FEED — connect it</>}
+                              </p>
+                              <p className="text-[11px] text-slate-500 tabular-nums mt-0.5">
+                                {s.hasFeed
+                                  ? <>{fmt2(s.committedCents)} landing this week − {fmt2(s.burn7Cents)} its ads = {fmt2(Math.max(0, s.committedCents - s.burn7Cents))} free</>
+                                  : 'cashflow unknown'}
+                              </p>
+                            </div>
                             <span className="text-slate-600 text-xs">{open ? '▾' : '▸'}</span>
                           </div>
                         </div>
-                        {open && detail(c)}
+                        {open && (
+                          <div className="px-5 pb-4 border-t border-slate-800/70 pt-3">
+                            <div className="grid grid-cols-[1fr_auto] gap-x-6 gap-y-1.5 text-[12px]">
+                              <span className="text-[10px] uppercase tracking-wide text-slate-600">on which card</span>
+                              <span className="text-[10px] uppercase tracking-wide text-slate-600 text-right">this store&apos;s share</span>
+                              {s.owed.map((o: any) => (
+                                <Fragment key={o.last4 + o.cents}>
+                                  <span className="text-slate-300">
+                                    {o.declining && <span className="text-red-400 mr-1" title="declining on Facebook">⛔</span>}
+                                    {o.cardName} <span className="text-slate-500">··{o.last4}</span>
+                                  </span>
+                                  <span className="text-right text-white tabular-nums">{fmt2(o.cents)}</span>
+                                </Fragment>
+                              ))}
+                            </div>
+                            <p className="text-[11px] text-slate-500 mt-3">
+                              This store&apos;s week: {fmt2(s.committedCents)} committed landings{s.projectedCents > 0 ? ` (+${fmt2(s.projectedCents)} projected)` : ''} · its ads burn {fmt2(s.burn7Cents / 7)}/day.
+                              {s.verdict === 'partial' && ` It can cover ${fmt2(s.canPayCents)} of its debt this week after funding its own ads.`}
+                              {s.verdict === 'ads_eat_it' && ' Everything it has landing is needed to keep its own ads running.'}
+                            </p>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
-                  {!rest.length && (!first || first.payNowCents >= first.postedCents) && (
-                    <p className="px-5 py-4 text-sm text-slate-500 text-center">Nothing else owed. 🎉</p>
-                  )}
                 </div>
-                <p className="text-center text-[11px] text-slate-600 mt-4">
-                  {fmt2(payPlan.position.incoming_7d_cents)} landing from Shopify this week · click any card for the why
-                </p>
+
+                {/* Company-level: debt no store can be charged with */}
+                {payPlan.company.untracedCents > 0 && (
+                  <div className="mt-5 bg-slate-900/60 border border-slate-800 rounded-2xl px-5 py-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-bold text-slate-300">Company (not traced to a store)</p>
+                        <p className="text-[12px] text-slate-500 tabular-nums mt-0.5">
+                          {fmt2(payPlan.company.untracedCents)} of {fmt2(payPlan.company.debtTotalCents)} total card debt has no store owner yet
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm font-bold text-slate-300 tabular-nums">shared cash can cover {fmt2(Math.min(payPlan.company.safeTodayCents, payPlan.company.untracedCents))} today</p>
+                        <p className="text-[11px] text-slate-500 tabular-nums">{fmt2(payPlan.company.cashCents)} cash − 7d ads reserve = {fmt2(payPlan.company.safeTodayCents)} safe</p>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-amber-500/80 mt-2">Link the FB funding cards in Banking → this debt gets traced to its stores and moves into their rows above.</p>
+                  </div>
+                )}
+                <p className="text-center text-[11px] text-slate-600 mt-4">Each store pays its own cards from its own cashflow · click a store for its cards</p>
               </>
             );
           })()}
