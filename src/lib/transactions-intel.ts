@@ -879,8 +879,8 @@ export function getPayPlan(db: DatabaseType.Database) {
   return {
     generatedAt: projection.generated_at_date,
     position: projection.position,
-    envelopeCents: envelope,
-    allocatedCents: envelope - remainingEnvelope,
+    envelopeCents: projection.position.safe_to_pay_today_cents,
+    allocatedCents: cards.reduce((s: number, c: any) => s + (c.payNowCents || 0), 0),
     cards,
     storePlans,
     company: {
