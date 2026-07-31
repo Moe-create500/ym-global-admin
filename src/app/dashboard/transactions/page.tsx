@@ -88,6 +88,30 @@ export default function TransactionsPage() {
   const [fQ, setFQ] = useState('');
   const [fUnattr, setFUnattr] = useState(false);
   const [assigning, setAssigning] = useState<string | null>(null);
+  // One-off billing: select rows → bill to a store's books (P&L other costs)
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [billStore, setBillStore] = useState('');
+  const [billing, setBilling] = useState(false);
+  const [billMsg, setBillMsg] = useState('');
+  const toggleSelect = (id: string) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const billSelected = async () => {
+    if (!billStore || selected.size === 0) return;
+    setBilling(true); setBillMsg('');
+    const r = await fetch('/api/transactions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'bill_to_store', txnIds: [...selected], storeId: billStore }),
+    });
+    const d = await r.json();
+    setBilling(false);
+    if (d.error) { setBillMsg(`✗ ${d.error}`); return; }
+    setBillMsg(`✓ billed ${d.billed} txn${d.billed === 1 ? '' : 's'} ($${(d.totalCents / 100).toFixed(2)}) to ${d.store}${d.skipped ? ` · ${d.skipped} already billed, skipped` : ''}`);
+    setSelected(new Set());
+    loadLedger();
+  };
 
   const loadSummary = useCallback(() => fetch('/api/transactions?view=summary').then(r => r.json()).then(setSummary), []);
   const loadCards = useCallback(() => fetch(`/api/transactions?view=cards&days=${cardDays}`).then(r => r.json()).then(d => { setCards(d.cards || []); setClarity(d.clarity || null); }), [cardDays]);
@@ -684,15 +708,39 @@ export default function TransactionsPage() {
             </label>
             <span className="text-xs text-slate-500 ml-auto">{ledger.total.toLocaleString()} transactions</span>
           </div>
+          {(selected.size > 0 || billMsg) && (
+            <div className="flex flex-wrap items-center gap-2 mb-3 bg-slate-900 border border-blue-800/50 rounded-lg px-3 py-2">
+              {selected.size > 0 && (
+                <>
+                  <span className="text-xs text-slate-300 font-medium">{selected.size} selected</span>
+                  <select value={billStore} onChange={e => setBillStore(e.target.value)}
+                    className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white">
+                    <option value="">bill to store…</option>
+                    {(summary?.stores || []).map((s: any) => <option key={s.id} value={s.id}>{s.id === billStore ? '→ ' : ''}{s.name}</option>)}
+                  </select>
+                  <button onClick={billSelected} disabled={!billStore || billing}
+                    className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-xs font-semibold rounded-lg">
+                    {billing ? 'billing…' : '💸 Mark paid by this store (books it into P&L)'}
+                  </button>
+                  <button onClick={() => setSelected(new Set())} className="text-xs text-slate-500 hover:text-white">clear</button>
+                </>
+              )}
+              {billMsg && <span className={`text-xs ${billMsg.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>{billMsg}</span>}
+            </div>
+          )}
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
             <table className="w-full text-xs">
               <thead><tr className="text-left text-slate-500 border-b border-slate-800">
+                <th className="px-2 py-2 w-7"></th>
                 <th className="px-3 py-2">Date</th><th className="px-3 py-2">Account</th><th className="px-3 py-2">Description</th>
                 <th className="px-3 py-2">Type</th><th className="px-3 py-2">Store</th><th className="px-3 py-2 text-right">Amount</th>
               </tr></thead>
               <tbody>
                 {ledger.rows.map(r => (
-                  <tr key={r.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                  <tr key={r.id} className={`border-b border-slate-800/50 hover:bg-slate-800/30 ${selected.has(r.id) ? 'bg-blue-950/20' : ''}`}>
+                    <td className="px-2 py-1.5">
+                      <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSelect(r.id)} className="accent-blue-500" />
+                    </td>
                     <td className="px-3 py-1.5 text-slate-400 whitespace-nowrap">{r.date}</td>
                     <td className="px-3 py-1.5 text-slate-400 whitespace-nowrap">{r.account_type === 'credit' ? '💳' : '🏦'} ··{r.last_four}</td>
                     <td className="px-3 py-1.5 text-slate-300 max-w-[360px] truncate" title={r.description}>{r.description}</td>
@@ -718,7 +766,9 @@ export default function TransactionsPage() {
                       ) : (
                         <button onClick={() => setAssigning(r.id)} className="text-left">
                           {r.store_name
-                            ? <span className="text-slate-200">{r.store_name}{r.confidence === 'manual' && <span className="text-slate-500"> ✎</span>}</span>
+                            ? <span className="text-slate-200">{r.store_name}{r.confidence === 'manual' && <span className="text-slate-500"> ✎</span>}
+                                {r.billed_store_at && <span className="ml-1 px-1 py-0.5 bg-emerald-500/15 text-emerald-400 rounded text-[9px] font-semibold" title={`booked into ${r.store_name}'s P&L ${String(r.billed_store_at).slice(0, 10)}`}>✓ billed</span>}
+                              </span>
                             : <span className="text-slate-600 hover:text-slate-400">+ assign</span>}
                         </button>
                       )}
@@ -726,7 +776,7 @@ export default function TransactionsPage() {
                     <td className={`px-3 py-1.5 text-right whitespace-nowrap font-medium ${r.class === 'shopify_payout' || r.class === 'card_payment' ? 'text-emerald-400' : 'text-slate-200'}`}>{fmt2(r.amount_cents)}</td>
                   </tr>
                 ))}
-                {!ledger.rows.length && <tr><td colSpan={6} className="px-3 py-8 text-center text-slate-500">No transactions match — try Scan now first</td></tr>}
+                {!ledger.rows.length && <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-500">No transactions match — try Scan now first</td></tr>}
               </tbody>
             </table>
           </div>

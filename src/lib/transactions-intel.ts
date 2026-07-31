@@ -38,6 +38,9 @@ export function ensureTxnIntelTables(db: DatabaseType.Database) {
   const cols: any[] = db.prepare('PRAGMA table_info(txn_links)').all();
   if (!cols.find((c: any) => c.name === 'match_score')) db.exec('ALTER TABLE txn_links ADD COLUMN match_score REAL');
   if (!cols.find((c: any) => c.name === 'match_evidence')) db.exec('ALTER TABLE txn_links ADD COLUMN match_evidence TEXT');
+  // One-off charges billed to a store's books (P&L other costs) — timestamped
+  // so a transaction can never be billed twice.
+  if (!cols.find((c: any) => c.name === 'billed_store_at')) db.exec('ALTER TABLE txn_links ADD COLUMN billed_store_at TEXT');
 }
 
 // ── Learned lag model ────────────────────────────────────────────────────────
@@ -364,7 +367,7 @@ export function getLedger(db: DatabaseType.Database, f: {
     SELECT t.id, t.date, t.description, t.amount_cents, t.bank_account_id,
            a.institution_name, a.account_name, a.account_type, a.last_four,
            l.class, l.store_id, l.store_source, l.entity_type, l.pair_txn_id, l.confidence,
-           l.match_score, l.match_evidence,
+           l.match_score, l.match_evidence, l.billed_store_at,
            s.name AS store_name
     FROM bank_transactions t
     JOIN bank_accounts a ON a.id = t.bank_account_id

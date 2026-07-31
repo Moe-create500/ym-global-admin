@@ -77,6 +77,52 @@ export async function POST(req: NextRequest) {
   }
 
   // Payroll: add an item {action:'payroll_add', label, amountCents, dueDate, storeId?, recurrence?}
+  // Bill one-off transactions to a store's books: assigns the store (manual,
+  // permanent) AND writes the cost into that store's daily_pnl other costs on
+  // the transaction date — so CFO snapshots account for it and nothing leaks
+  // into the reconciliation residual. Idempotent: a billed txn never bills twice.
+  if (b.action === 'bill_to_store') {
+    ensureTxnIntelTables(db);
+    const ids: string[] = Array.isArray(b.txnIds) ? b.txnIds : [];
+    if (!ids.length || !b.storeId) return NextResponse.json({ error: 'txnIds[] and storeId required' }, { status: 400 });
+    const store: any = db.prepare('SELECT id, name FROM stores WHERE id = ?').get(b.storeId);
+    if (!store) return NextResponse.json({ error: 'Store not found' }, { status: 404 });
+    const crypto = await import('crypto');
+    let billed = 0, skipped = 0, totalCents = 0;
+    for (const txnId of ids) {
+      const t: any = db.prepare(`
+        SELECT t.id, t.date, t.description, t.amount_cents, l.billed_store_at, l.class
+        FROM bank_transactions t LEFT JOIN txn_links l ON l.txn_id = t.id WHERE t.id = ?`).get(txnId);
+      if (!t) { skipped++; continue; }
+      if (t.billed_store_at) { skipped++; continue; } // already on someone's books
+      const amt = Math.abs(t.amount_cents);
+      db.prepare(`INSERT INTO txn_links (txn_id, class, store_id, store_source, confidence, billed_store_at, updated_at)
+        VALUES (?, ?, ?, 'manual', 'manual', datetime('now'), datetime('now'))
+        ON CONFLICT(txn_id) DO UPDATE SET store_id = excluded.store_id, store_source = 'manual',
+          confidence = 'manual', billed_store_at = datetime('now'), updated_at = datetime('now')`)
+        .run(txnId, t.class || 'other', b.storeId);
+      const note = `${String(t.description || '').slice(0, 40)} $${(amt / 100).toFixed(2)}`;
+      const row: any = db.prepare('SELECT * FROM daily_pnl WHERE store_id = ? AND date = ?').get(b.storeId, t.date);
+      if (row) {
+        const other = (row.other_costs_cents || 0) + amt;
+        const totalCosts = (row.cogs_cents || 0) + (row.shipping_cost_cents || 0) + (row.pick_pack_cents || 0)
+          + (row.packaging_cents || 0) + (row.ad_spend_cents || 0) + (row.shopify_fees_cents || 0)
+          + other + (row.chargeback_cents || 0) + (row.app_costs_cents || 0);
+        const net = (row.revenue_cents || 0) - totalCosts;
+        db.prepare(`UPDATE daily_pnl SET other_costs_cents = ?, other_costs_note = ?,
+          net_profit_cents = ?, margin_pct = ?, updated_at = datetime('now') WHERE id = ?`)
+          .run(other, [row.other_costs_note, note].filter(Boolean).join(' · ').slice(0, 500),
+            net, row.revenue_cents > 0 ? (net / row.revenue_cents) * 100 : 0, row.id);
+      } else {
+        db.prepare(`INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count, other_costs_cents, other_costs_note, net_profit_cents, margin_pct, source)
+          VALUES (?, ?, ?, 0, 0, ?, ?, ?, 0, 'manual')`)
+          .run(crypto.randomUUID(), b.storeId, t.date, amt, note, -amt);
+      }
+      billed++; totalCents += amt;
+    }
+    return NextResponse.json({ success: true, billed, skipped, totalCents, store: store.name });
+  }
+
   if (b.action === 'payroll_add') {
     const { ensurePayrollTable } = await import('@/lib/transactions-intel');
     ensurePayrollTable(db);
