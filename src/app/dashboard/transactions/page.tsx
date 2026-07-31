@@ -64,6 +64,8 @@ export default function TransactionsPage() {
   const [payPlan, setPayPlan] = useState<any>(null);
   const [payPlanLoading, setPayPlanLoading] = useState(false);
   const [openCard, setOpenCard] = useState<string | null>(null);
+  const [bankSync, setBankSync] = useState<'syncing' | 'fresh' | 'error' | ''>('');
+  const [bankSyncNote, setBankSyncNote] = useState('');
   const [summary, setSummary] = useState<any>(null);
   const [cards, setCards] = useState<any[]>([]);
   const [clarity, setClarity] = useState<any>(null);
@@ -100,6 +102,33 @@ export default function TransactionsPage() {
   }, []);
 
   useEffect(() => { loadSummary(); loadCards(); }, [loadSummary, loadCards]);
+
+  // Real balances every time: opening the page pulls fresh Teller data
+  // (server-side throttled to 5 min), then reloads whatever is on screen.
+  useEffect(() => {
+    let cancelled = false;
+    setBankSync('syncing');
+    setBankSyncNote('syncing balances…');
+    fetch('/api/transactions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'sync-banks' }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (cancelled) return;
+        if (d.error) { setBankSync('error'); setBankSyncNote(`balance sync failed: ${d.error}`); return; }
+        setBankSync('fresh');
+        if (d.skipped) setBankSyncNote(`balances fresh (synced ${Math.max(1, Math.round((d.ageSeconds || 0) / 60))}m ago)`);
+        else {
+          setBankSyncNote(`balances live · ${d.accounts} accounts synced${d.errors?.length ? ` · ${d.errors.length} bank errors` : ''}`);
+          // fresh data landed — reload everything currently visible
+          loadSummary(); loadCards(); loadPayPlan();
+        }
+      })
+      .catch(() => { if (!cancelled) { setBankSync('error'); setBankSyncNote('balance sync failed'); } });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => { if (tab === 'ledger') loadLedger(); }, [tab, loadLedger]);
   useEffect(() => { if (tab === 'payments') loadPayments(); }, [tab, loadPayments]);
   useEffect(() => { if (tab === 'truth') loadTruth(); }, [tab, loadTruth]);
@@ -131,6 +160,12 @@ export default function TransactionsPage() {
           <p className="text-sm text-slate-400 mt-0.5">Bank ↔ cards ↔ invoices reconciliation — who spent what, who paid what</p>
         </div>
         <div className="flex items-center gap-3">
+          {bankSyncNote && (
+            <span className={`text-xs flex items-center gap-1.5 ${bankSync === 'error' ? 'text-red-400' : bankSync === 'syncing' ? 'text-blue-300' : 'text-emerald-400'}`}>
+              {bankSync === 'syncing' && <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />}
+              {bankSync === 'fresh' && '🏦'} {bankSyncNote}
+            </span>
+          )}
           {scanMsg && <span className="text-xs text-slate-400">{scanMsg}</span>}
           <button onClick={runScan} disabled={scanning}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium rounded-lg">

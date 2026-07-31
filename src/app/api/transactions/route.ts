@@ -38,6 +38,9 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ error: 'Unknown view' }, { status: 400 });
 }
 
+// Single-flight guard for bank syncs — page loads must not stack Teller pulls.
+let bankSyncRunning = false;
+
 export async function POST(req: NextRequest) {
   const db = getDb();
   const b = await req.json().catch(() => ({}));
@@ -45,6 +48,34 @@ export async function POST(req: NextRequest) {
     const stats = runTransactionScan(db, { days: Number(b.days) || 365, force: !!b.force });
     return NextResponse.json({ success: true, stats });
   }
+
+  // Fresh balances on demand — fired by the Transactions page on load.
+  // Throttled: if every account was synced within the last 5 minutes, skip
+  // (the numbers are already real). Runs the incremental scan afterward so
+  // new transactions are classified before the page shows them.
+  if (b.action === 'sync-banks') {
+    const fresh: any = db.prepare(`SELECT MAX(balance_updated_at) at FROM bank_accounts WHERE status = 'active'`).get();
+    const ageMs = fresh?.at ? Date.now() - new Date(String(fresh.at).replace(' ', 'T') + 'Z').getTime() : Infinity;
+    if (!b.force && ageMs < 5 * 60_000) {
+      return NextResponse.json({ success: true, skipped: true, freshAt: fresh.at, ageSeconds: Math.round(ageMs / 1000) });
+    }
+    if (bankSyncRunning) return NextResponse.json({ success: true, alreadyRunning: true });
+    bankSyncRunning = true;
+    try {
+      const { syncBankAccounts } = await import('@/lib/bank-sync');
+      const r = await syncBankAccounts();
+      const scan = runTransactionScan(db, { days: 45 });
+      return NextResponse.json({
+        success: true, accounts: r.accounts_synced, transactions: r.transactions_imported,
+        classified: scan.classified, errors: r.errors.slice(0, 3),
+      });
+    } catch (e: any) {
+      return NextResponse.json({ error: String(e?.message || e).slice(0, 200) }, { status: 500 });
+    } finally {
+      bankSyncRunning = false;
+    }
+  }
+
   return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
 }
 

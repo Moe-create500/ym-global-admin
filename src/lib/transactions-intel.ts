@@ -926,5 +926,10 @@ export function getSummary(db: DatabaseType.Database) {
     WHERE t.date >= date('now', '-90 days')
   `).get();
   const lastScan: any = db.prepare(`SELECT MAX(updated_at) at FROM txn_links`).get();
-  return { totalCardDebtCents: debt?.cents || 0, chargesByClass30d: cls30, cardPaid30dCents: paid30?.cents || 0, coverage, lastScanAt: lastScan?.at || null };
+  const bankFresh: any = db.prepare(`SELECT MIN(balance_updated_at) oldest, MAX(balance_updated_at) newest FROM bank_accounts WHERE status = 'active'`).get();
+  return {
+    totalCardDebtCents: debt?.cents || 0, chargesByClass30d: cls30, cardPaid30dCents: paid30?.cents || 0,
+    coverage, lastScanAt: lastScan?.at || null,
+    bankFreshestAt: bankFresh?.newest || null, bankOldestAt: bankFresh?.oldest || null,
+  };
 }
