@@ -92,7 +92,7 @@ const CREDIT_RULES: Array<[RegExp, TxnClass]> = [
 
 const DEPOSITORY_RULES: Array<[RegExp, TxnClass]> = [
   [/shopify.*(des:|id:|payout|transfer)|shopify payments payout|ach credit shopify/i, 'shopify_payout'],
-  [/american express des:ach pmt|amex epayment|ach hold american express|payment to crd|crd epay|bank of america credit card bill|online banking payment/i, 'card_payment_sent'],
+  [/american express des:ach pmt|amex epayment|ach hold american express|payment to crd|crd epay|bank of america credit card bill|online banking payment|payment to acct #\d+/i, 'card_payment_sent'],
   [/online banking transfer|online transfer (to|from)|transfer (to|from) (chk|sav)/i, 'transfer'],
   [/wise us inc|alibaba|1688|payoneer/i, 'supplier'],
   [/facebook|facebk/i, 'fb_ads'],
