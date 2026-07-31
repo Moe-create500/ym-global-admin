@@ -66,6 +66,13 @@ export default function TransactionsPage() {
   const [openCard, setOpenCard] = useState<string | null>(null);
   const [bankSync, setBankSync] = useState<'syncing' | 'fresh' | 'error' | ''>('');
   const [bankSyncNote, setBankSyncNote] = useState('');
+  const [whyCard, setWhyCard] = useState<string | null>(null);
+  const [prLabel, setPrLabel] = useState(''); const [prAmount, setPrAmount] = useState('');
+  const [prDue, setPrDue] = useState(''); const [prRecur, setPrRecur] = useState('once');
+  const payrollAction = async (body: any) => {
+    await fetch('/api/transactions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    loadPayPlan();
+  };
   const [summary, setSummary] = useState<any>(null);
   const [cards, setCards] = useState<any[]>([]);
   const [clarity, setClarity] = useState<any>(null);
@@ -369,6 +376,12 @@ export default function TransactionsPage() {
                   <span className="text-slate-500">AD BURN <span className="text-orange-400 font-bold">{fmt2(p.ad_burn_daily_cents)}/d</span></span>
                   <span className="text-slate-500">DEBT <span className="text-white font-bold">{fmt2(payPlan.company.debtTotalCents)}</span></span>
                   <span className="text-slate-500">FB UNBILLED <span className="text-blue-300 font-bold">{fmt2(p.fb_unbilled_cents)}</span></span>
+                  {payPlan.campaignsToday?.cents > 0 && (
+                    <span className="text-slate-500">ADS TODAY <span className="text-orange-300 font-bold">{fmt2(payPlan.campaignsToday.cents)}</span> <span className="text-slate-600">({payPlan.campaignsToday.n} campaigns)</span></span>
+                  )}
+                  {payPlan.payroll?.due7Cents > 0 && (
+                    <span className="text-slate-500">PAYROLL 7D <span className="text-rose-300 font-bold">{fmt2(payPlan.payroll.due7Cents)}</span></span>
+                  )}
                   <span className="ml-auto text-slate-600">{payPlan.generatedAt}</span>
                 </div>
 
@@ -393,7 +406,11 @@ export default function TransactionsPage() {
                         return (
                           <Fragment key={c.id}>
                             <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                              <td className={`${td} text-slate-200 whitespace-nowrap`}>{c.declining && <span className="text-red-400 mr-1">⛔</span>}{c.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ').slice(0, 30)} <span className="text-slate-600">·{c.last4}</span></td>
+                              <td className={`${td} text-slate-200 whitespace-nowrap`}>
+                                <button onClick={() => setWhyCard(whyCard === c.id ? null : c.id)} className="hover:text-blue-300 text-left" title="click: why does this card owe money">
+                                  {c.declining && <span className="text-red-400 mr-1">⛔</span>}{c.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ').slice(0, 30)} <span className="text-slate-600">·{c.last4} {whyCard === c.id ? '▾' : '▸'}</span>
+                                </button>
+                              </td>
                               <td className={`${td} text-right`}>
                                 <button onClick={() => setOpenCard(editing ? null : c.id)} className={c.stmtBalanceCents != null ? 'text-white font-medium hover:text-blue-300' : 'text-slate-500 hover:text-blue-300 underline decoration-dotted'}>
                                   {c.stmtBalanceCents != null ? fmt2(c.stmtBalanceCents) : 'set'}
@@ -417,6 +434,33 @@ export default function TransactionsPage() {
                               <tr className="bg-slate-800/40">
                                 <td colSpan={8} className="px-3 py-2">
                                   <StatementEditor card={c} onSaved={() => { setOpenCard(null); loadPayPlan(); }} />
+                                </td>
+                              </tr>
+                            )}
+                            {whyCard === c.id && c.why && (
+                              <tr className="bg-slate-800/30">
+                                <td colSpan={8} className="px-4 py-2.5">
+                                  <div className="grid md:grid-cols-3 gap-x-8 gap-y-2 text-[11px]">
+                                    <div>
+                                      <p className="text-[9px] uppercase tracking-wider text-slate-600 mb-1">Traced card debt · by store</p>
+                                      {c.why.tracedStores.length ? c.why.tracedStores.map((o: any) => (
+                                        <p key={o.store} className="flex justify-between text-slate-300"><span>{o.store}</span><span className="tabular-nums text-white">{fmt2(o.owesCents)}</span></p>
+                                      )) : <p className="text-slate-600">none traced</p>}
+                                      {c.why.untracedCents > 0 && <p className="flex justify-between text-slate-500"><span>untraced</span><span className="tabular-nums">{fmt2(c.why.untracedCents)}</span></p>}
+                                    </div>
+                                    <div>
+                                      <p className="text-[9px] uppercase tracking-wider text-slate-600 mb-1">FB unbilled → will hit this card</p>
+                                      {c.why.fbAccounts.length ? c.why.fbAccounts.map((f: any) => (
+                                        <p key={f.name} className="flex justify-between text-slate-300"><span>{f.declining ? '⛔ ' : ''}{f.name} · {f.store}</span><span className="tabular-nums text-blue-300">{fmt2(f.owedCents)}</span></p>
+                                      )) : <p className="text-slate-600">no FB account funds from this card</p>}
+                                    </div>
+                                    <div>
+                                      <p className="text-[9px] uppercase tracking-wider text-slate-600 mb-1">Shopify app billing · last 30d</p>
+                                      {c.why.shopifyMonthly.length ? c.why.shopifyMonthly.map((s: any) => (
+                                        <p key={s.store} className="flex justify-between text-slate-300"><span>{s.store}</span><span className="tabular-nums text-emerald-300">{fmt2(s.cents)}/mo</span></p>
+                                      )) : <p className="text-slate-600">no Shopify billing on this card</p>}
+                                    </div>
+                                  </div>
                                 </td>
                               </tr>
                             )}
@@ -472,8 +516,62 @@ export default function TransactionsPage() {
                   </table>
                 </div>
 
+                {/* ── PAYROLL ── */}
+                <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mb-3">
+                  <table className="w-full text-[12px]">
+                    <thead><tr className="border-b border-slate-800">
+                      <th className={thCls}>PAYROLL</th>
+                      <th className={thR}>AMOUNT</th>
+                      <th className={thR}>DUE</th>
+                      <th className={thCls}>RECURS</th>
+                      <th className={thR}></th>
+                    </tr></thead>
+                    <tbody>
+                      {(payPlan.payroll?.items || []).map((pr: any) => {
+                        const days = Math.round((new Date(pr.due_date + 'T12:00:00Z').getTime() - new Date(payPlan.generatedAt + 'T12:00:00Z').getTime()) / 86400000);
+                        return (
+                          <tr key={pr.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                            <td className={`${td} text-slate-200`}>{pr.label}{pr.store_name ? <span className="text-slate-500"> · {pr.store_name}</span> : ''}</td>
+                            <td className={`${td} text-right text-white font-medium`}>{fmt2(pr.amount_cents)}</td>
+                            <td className={`${td} text-right whitespace-nowrap ${days <= 3 ? 'text-red-400 font-bold' : days <= 7 ? 'text-amber-400' : 'text-slate-300'}`}>{dayLabel(pr.due_date)} ({days}d)</td>
+                            <td className={`${td} text-slate-500`}>{pr.recurrence === 'once' ? '—' : pr.recurrence}</td>
+                            <td className={`${td} text-right whitespace-nowrap`}>
+                              <button onClick={() => payrollAction({ action: 'payroll_update', id: pr.id, op: 'paid' })} className="text-emerald-400 hover:text-emerald-300 mr-3">✓ paid</button>
+                              <button onClick={() => payrollAction({ action: 'payroll_update', id: pr.id, op: 'delete' })} className="text-red-500/60 hover:text-red-400">✕</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      <tr className="bg-slate-800/20">
+                        <td className={td}>
+                          <input value={prLabel} onChange={e => setPrLabel(e.target.value)} placeholder="add payroll — who/what"
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white text-[11px]" />
+                        </td>
+                        <td className={`${td} text-right`}>
+                          <input type="number" step="0.01" value={prAmount} onChange={e => setPrAmount(e.target.value)} placeholder="$"
+                            className="w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white text-[11px] text-right" />
+                        </td>
+                        <td className={`${td} text-right`}>
+                          <input type="date" value={prDue} onChange={e => setPrDue(e.target.value)}
+                            className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white text-[11px]" />
+                        </td>
+                        <td className={td}>
+                          <select value={prRecur} onChange={e => setPrRecur(e.target.value)} className="bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-white text-[11px]">
+                            <option value="once">once</option><option value="weekly">weekly</option>
+                            <option value="biweekly">biweekly</option><option value="monthly">monthly</option>
+                          </select>
+                        </td>
+                        <td className={`${td} text-right`}>
+                          <button onClick={() => { if (prLabel && prAmount && prDue) { payrollAction({ action: 'payroll_add', label: prLabel, amountCents: Math.round(parseFloat(prAmount) * 100), dueDate: prDue, recurrence: prRecur }); setPrLabel(''); setPrAmount(''); setPrDue(''); } }}
+                            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-semibold text-[11px]">add</button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
                 <p className="text-[10px] text-slate-600">
-                  CAN PAY = store&apos;s committed landings − 7d of its own ad burn, applied to its card shares. SAFE TODAY = cash − 7d total ad burn. Cards: TO CLEAR = balance + holds + FB incoming − payments landing. Full drill-down: Card Intelligence · Source of Truth · Ledger tabs.
+                  Payroll due within 7d is paid BEFORE cards — it comes off the safe envelope first. CAN PAY = store&apos;s committed landings − 7d of its own ad burn. Click a card name for WHY it owes (traced stores · FB unbilled · Shopify billing). Full drill-down: Card Intelligence · Source of Truth · Ledger.
                 </p>
               </>
             );

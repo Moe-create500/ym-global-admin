@@ -687,6 +687,23 @@ export function getPaymentsView(db: DatabaseType.Database, days: number) {
  *  Output per card: PAY NOW $X (from today's safe envelope), the date the
  *  rest becomes payable as landings arrive, and whether the stores that OWE
  *  the card have the cashflow to cover their share. */
+/** Payroll pool — obligations with hard dates, entered by Moe. Payroll gets
+ *  paid before cards: items due within 7 days come straight off the safe
+ *  envelope before any card funding is recommended. */
+export function ensurePayrollTable(db: DatabaseType.Database) {
+  db.exec(`CREATE TABLE IF NOT EXISTS payroll_items (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    due_date TEXT NOT NULL,
+    store_id TEXT,
+    recurrence TEXT NOT NULL DEFAULT 'once',
+    paid_at TEXT,
+    notes TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+}
+
 export function ensureCardStatements(db: DatabaseType.Database) {
   db.exec(`CREATE TABLE IF NOT EXISTS card_statements (
     bank_account_id TEXT PRIMARY KEY,
@@ -702,6 +719,7 @@ export function getPayPlan(db: DatabaseType.Database) {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { buildCashflowProjection } = require('./cashflow');
   ensureCardStatements(db);
+  ensurePayrollTable(db);
   const projection = buildCashflowProjection(db);
   const clarity = getCardClarity(db);
   const truth = getTruth(db, 90);
@@ -792,7 +810,52 @@ export function getPayPlan(db: DatabaseType.Database) {
   for (const [name, flow] of storeFlow) {
     storeFreePool.set(name, Math.max(0, flow.committed - (burnPerStore.get(name) || 0) * 7));
   }
-  let companyPool = projection.position.safe_to_pay_today_cents;
+  // Payroll first: unpaid items due within 7 days come off the safe envelope
+  // BEFORE any card gets a dollar. Hard dates beat revolving debt.
+  const payrollItems: any[] = db.prepare(`
+    SELECT p.*, s.name AS store_name FROM payroll_items p
+    LEFT JOIN stores s ON s.id = p.store_id
+    WHERE p.paid_at IS NULL AND p.due_date <= date('now', '+45 days')
+    ORDER BY p.due_date ASC
+  `).all();
+  const payrollDue7 = payrollItems
+    .filter(p => p.due_date <= projection.calendar[Math.min(7, projection.calendar.length - 1)]?.date)
+    .reduce((s, p) => s + p.amount_cents, 0);
+  let companyPool = Math.max(0, projection.position.safe_to_pay_today_cents - payrollDue7);
+
+  // Ad engine live state: what's actually spending right now
+  const today = projection.generated_at_date;
+  let campaignsToday: any = db.prepare(
+    `SELECT COUNT(DISTINCT campaign_id) n, COALESCE(SUM(spend_cents), 0) cents, MAX(date) date FROM ad_spend WHERE date = ?`
+  ).get(today);
+  if (!campaignsToday?.cents) {
+    campaignsToday = db.prepare(
+      `SELECT COUNT(DISTINCT campaign_id) n, COALESCE(SUM(spend_cents), 0) cents, MAX(date) date FROM ad_spend WHERE date = date(?, '-1 day')`
+    ).get(today);
+  }
+
+  // Shopify app billing per card+store (last 30d = the recurring monthly load)
+  const shopifyByCard = new Map<string, { store: string; cents: number }[]>();
+  for (const r of db.prepare(`
+    SELECT i.card_last4, s.name AS store, SUM(i.total_cents) cents
+    FROM shopify_invoices i JOIN stores s ON s.id = i.store_id
+    WHERE i.date >= date('now', '-30 days') AND i.card_last4 IS NOT NULL AND i.card_last4 != ''
+    GROUP BY i.card_last4, s.name ORDER BY cents DESC
+  `).all() as any[]) {
+    if (!shopifyByCard.has(r.card_last4)) shopifyByCard.set(r.card_last4, []);
+    shopifyByCard.get(r.card_last4)!.push({ store: r.store, cents: r.cents });
+  }
+
+  for (const c of cards) {
+    // The WHY: what feeds this card's balance, from every data pool
+    const cl2 = clarity.perCard[c.id];
+    c.why = {
+      tracedStores: c.owners.filter((o: any) => o.store !== '(unattributed)'),
+      fbAccounts: cl2?.fbProfiles || [],                    // FB unbilled, per ad account + store
+      shopifyMonthly: shopifyByCard.get(c.last4) || [],     // app billing hitting this card, per store
+      untracedCents: (c.owners.find((o: any) => o.store === '(unattributed)')?.owesCents || 0) + (c.unexplainedCents || 0),
+    };
+  }
 
   for (const c of cards) {
     const hasStatement = c.stmtBalanceCents != null;
@@ -892,6 +955,12 @@ export function getPayPlan(db: DatabaseType.Database) {
     position: projection.position,
     envelopeCents: projection.position.safe_to_pay_today_cents,
     allocatedCents: cards.reduce((s: number, c: any) => s + (c.payNowCents || 0), 0),
+    payroll: {
+      items: payrollItems,
+      due7Cents: payrollDue7,
+      due30Cents: payrollItems.filter(p => p.due_date <= projection.calendar[projection.calendar.length - 1]?.date || true).reduce((s, p) => s + p.amount_cents, 0),
+    },
+    campaignsToday,
     cards,
     storePlans,
     company: {

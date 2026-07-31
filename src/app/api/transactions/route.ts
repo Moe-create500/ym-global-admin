@@ -76,6 +76,44 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Payroll: add an item {action:'payroll_add', label, amountCents, dueDate, storeId?, recurrence?}
+  if (b.action === 'payroll_add') {
+    const { ensurePayrollTable } = await import('@/lib/transactions-intel');
+    ensurePayrollTable(db);
+    if (!b.label || !b.amountCents || !b.dueDate) return NextResponse.json({ error: 'label, amountCents, dueDate required' }, { status: 400 });
+    const crypto = await import('crypto');
+    db.prepare(`INSERT INTO payroll_items (id, label, amount_cents, due_date, store_id, recurrence) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(crypto.randomUUID(), String(b.label).slice(0, 120), Math.round(Number(b.amountCents)), b.dueDate,
+        b.storeId || null, ['once', 'weekly', 'biweekly', 'monthly'].includes(b.recurrence) ? b.recurrence : 'once');
+    return NextResponse.json({ success: true });
+  }
+
+  // Payroll: mark paid (auto-creates the next occurrence for recurring) or delete
+  if (b.action === 'payroll_update') {
+    const { ensurePayrollTable } = await import('@/lib/transactions-intel');
+    ensurePayrollTable(db);
+    const item: any = db.prepare('SELECT * FROM payroll_items WHERE id = ?').get(b.id);
+    if (!item) return NextResponse.json({ error: 'Item not found' }, { status: 404 });
+    if (b.op === 'delete') {
+      db.prepare('DELETE FROM payroll_items WHERE id = ?').run(b.id);
+      return NextResponse.json({ success: true });
+    }
+    if (b.op === 'paid') {
+      db.prepare(`UPDATE payroll_items SET paid_at = datetime('now') WHERE id = ?`).run(b.id);
+      if (item.recurrence !== 'once') {
+        const days = item.recurrence === 'weekly' ? 7 : item.recurrence === 'biweekly' ? 14 : 0;
+        const next = days
+          ? new Date(new Date(item.due_date + 'T12:00:00Z').getTime() + days * 86400000).toISOString().slice(0, 10)
+          : (() => { const d = new Date(item.due_date + 'T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() + 1); return d.toISOString().slice(0, 10); })();
+        const crypto = await import('crypto');
+        db.prepare(`INSERT INTO payroll_items (id, label, amount_cents, due_date, store_id, recurrence) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(crypto.randomUUID(), item.label, item.amount_cents, next, item.store_id, item.recurrence);
+      }
+      return NextResponse.json({ success: true });
+    }
+    return NextResponse.json({ error: 'Unknown op' }, { status: 400 });
+  }
+
   return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
 }
 
