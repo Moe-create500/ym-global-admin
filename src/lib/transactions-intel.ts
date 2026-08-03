@@ -975,6 +975,107 @@ export function getPayPlan(db: DatabaseType.Database) {
   };
 }
 
+/** Live system-health score — measures how fed the intelligence actually is,
+ *  and prices every blocker in points so the path to 10/10 is a burn-down,
+ *  not a guess. Weights favor dollar-attribution (the thing decisions ride on). */
+export function getSystemHealth(db: DatabaseType.Database) {
+  ensureTxnIntelTables(db);
+  ensureCardStatements(db);
+
+  // Credit-card feed freshness
+  const cards: any[] = db.prepare(`
+    SELECT a.id, a.last_four, a.account_name, COALESCE(a.provider,'teller') provider,
+           a.balance_updated_at, a.last_sync_error,
+           (SELECT MAX(t.date) FROM bank_transactions t WHERE t.bank_account_id = a.id) last_txn,
+           (SELECT COUNT(*) FROM bank_transactions t WHERE t.bank_account_id = a.id AND t.date >= date('now','-90 days')) txns90
+    FROM bank_accounts a WHERE a.account_type = 'credit' AND a.status = 'active'
+  `).all();
+  const now = Date.now();
+  const feedRows = cards.map(c => {
+    const balAge = c.balance_updated_at ? (now - new Date(String(c.balance_updated_at).replace(' ', 'T') + 'Z').getTime()) / 86400000 : 999;
+    const txnAge = c.last_txn ? (now - new Date(c.last_txn + 'T00:00:00Z').getTime()) / 86400000 : 999;
+    // A feed is only LIVE if both balances and transactions are moving
+    const status = c.last_sync_error ? 'broken' : balAge <= 2 && txnAge <= 10 && c.txns90 > 10 ? 'live' : balAge <= 2 ? 'partial' : 'stale';
+    return { last4: c.last_four, name: c.account_name, provider: c.provider, status, balAgeDays: Math.round(balAge), txns90: c.txns90, error: c.last_sync_error || null };
+  });
+  const feedScore = feedRows.length ? feedRows.filter(f => f.status === 'live').length / feedRows.length : 0;
+
+  // Dollar-weighted store attribution on card charges, 90d
+  const attr: any = db.prepare(`
+    SELECT SUM(CASE WHEN l.store_id IS NOT NULL THEN ABS(t.amount_cents) ELSE 0 END) attributed,
+           SUM(ABS(t.amount_cents)) total
+    FROM bank_transactions t JOIN bank_accounts a ON a.id = t.bank_account_id
+    LEFT JOIN txn_links l ON l.txn_id = t.id
+    WHERE a.account_type = 'credit' AND t.date >= date('now','-90 days')
+      AND COALESCE(l.class,'') NOT IN ('card_payment')
+  `).get();
+  const attrScore = attr?.total ? (attr.attributed || 0) / attr.total : 0;
+
+  // Statements entered
+  const stmtCount = (db.prepare('SELECT COUNT(*) n FROM card_statements WHERE statement_balance_cents IS NOT NULL').get() as any)?.n || 0;
+  const stmtScore = cards.length ? Math.min(1, stmtCount / cards.length) : 0;
+
+  // Payments sent that confirmed landing (30d, dollar-weighted)
+  const pair: any = db.prepare(`
+    SELECT SUM(CASE WHEN l.pair_txn_id IS NOT NULL THEN ABS(t.amount_cents) ELSE 0 END) paired,
+           SUM(ABS(t.amount_cents)) total
+    FROM bank_transactions t JOIN txn_links l ON l.txn_id = t.id AND l.class = 'card_payment_sent'
+    WHERE t.date >= date('now','-30 days')
+  `).get();
+  const pairScore = pair?.total ? (pair.paired || 0) / pair.total : 1;
+
+  // FB funding cards linked in banking
+  const linkedLast4s = new Set(cards.map(c => c.last_four).filter(Boolean));
+  const fundingCards = new Set<string>();
+  for (const p of db.prepare(`SELECT primary_card_last4, working_card_last4 FROM fb_profiles WHERE is_active = 1 AND balance_cents > 0`).all() as any[]) {
+    const l4 = p.primary_card_last4 || p.working_card_last4;
+    if (l4) fundingCards.add(l4);
+  }
+  const fbLinked = [...fundingCards].filter(l4 => linkedLast4s.has(l4)).length;
+  const fbLinkScore = fundingCards.size ? fbLinked / fundingCards.size : 1;
+
+  const W = { attr: 0.30, feed: 0.25, stmt: 0.15, pair: 0.15, fb: 0.15 };
+  const compute = (s: { attr: number; feed: number; stmt: number; pair: number; fb: number }) =>
+    Math.round(100 * (W.attr * s.attr + W.feed * s.feed + W.stmt * s.stmt + W.pair * s.pair + W.fb * s.fb)) / 10;
+  const parts = { attr: attrScore, feed: feedScore, stmt: stmtScore, pair: pairScore, fb: fbLinkScore };
+  const score = compute(parts);
+  const pts = (k: keyof typeof parts) => Math.round((compute({ ...parts, [k]: 1 }) - score) * 10) / 10;
+
+  const brokenFeeds = feedRows.filter(f => f.status !== 'live');
+  const blockers = [
+    ...(brokenFeeds.length ? [{
+      owner: 'YOU', pts: pts('feed') + pts('pair'), // fixing feeds also confirms payments
+      label: `Reconnect ${brokenFeeds.length} card feed${brokenFeeds.length > 1 ? 's' : ''}`,
+      detail: brokenFeeds.map(f => `··${f.last4} (${f.provider}${f.error ? ' — login required' : f.status === 'partial' ? ' — balances only, no txns' : ` — ${f.balAgeDays}d stale`})`).join(' · '),
+      action: 'Banking → reconnect the Teller Amex enrollment AND the Plaid American Express item',
+    }] : []),
+    ...(fundingCards.size - fbLinked > 0 ? [{
+      owner: 'YOU', pts: pts('fb') + pts('attr'), // linking is also what unlocks attribution
+      label: `Link ${fundingCards.size - fbLinked} FB funding card${fundingCards.size - fbLinked > 1 ? 's' : ''}`,
+      detail: [...fundingCards].filter(l4 => !linkedLast4s.has(l4)).map(l4 => `··${l4}`).join(' '),
+      action: 'Banking → Connect Card for each — turns untraced FB spend into per-store truth',
+    }] : []),
+    ...(stmtCount < cards.length ? [{
+      owner: 'YOU', pts: pts('stmt'),
+      label: `Enter ${cards.length - stmtCount} card statement${cards.length - stmtCount > 1 ? 's' : ''}`,
+      detail: `${stmtCount}/${cards.length} entered`,
+      action: 'Operations → click "set" in the STMT BAL column per card',
+    }] : []),
+  ].sort((a, b) => b.pts - a.pts);
+
+  return {
+    score,
+    components: {
+      dollarAttribution: { score: Math.round(attrScore * 100), attributedCents: attr?.attributed || 0, totalCents: attr?.total || 0 },
+      cardFeeds: { score: Math.round(feedScore * 100), rows: feedRows },
+      statements: { score: Math.round(stmtScore * 100), entered: stmtCount, total: cards.length },
+      paymentsConfirmed: { score: Math.round(pairScore * 100), unpairedCents: (pair?.total || 0) - (pair?.paired || 0) },
+      fbCardsLinked: { score: Math.round(fbLinkScore * 100), linked: fbLinked, total: fundingCards.size },
+    },
+    blockers,
+  };
+}
+
 export function getSummary(db: DatabaseType.Database) {
   ensureTxnIntelTables(db);
   const debt: any = db.prepare(`SELECT SUM(balance_ledger_cents) cents FROM bank_accounts WHERE account_type = 'credit' AND status = 'active' AND provider = 'plaid'`).get();

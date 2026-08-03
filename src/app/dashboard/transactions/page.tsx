@@ -127,9 +127,11 @@ export default function TransactionsPage() {
   }, [fAccount, fStore, fClass, fQ, fUnattr]);
 
   const loadTruth = useCallback(() => fetch(`/api/transactions?view=truth&days=${truthDays}`).then(r => r.json()).then(setTruth), [truthDays]);
+  const [health, setHealth] = useState<any>(null);
   const loadPayPlan = useCallback(() => {
     setPayPlanLoading(true);
     fetch('/api/transactions?view=payplan', { cache: 'no-store' }).then(r => r.json()).then(setPayPlan).finally(() => setPayPlanLoading(false));
+    fetch('/api/transactions?view=health', { cache: 'no-store' }).then(r => r.json()).then(setHealth).catch(() => {});
   }, []);
 
   useEffect(() => { loadSummary(); loadCards(); }, [loadSummary, loadCards]);
@@ -408,6 +410,32 @@ export default function TransactionsPage() {
                   )}
                   <span className="ml-auto text-slate-600">{payPlan.generatedAt}</span>
                 </div>
+
+                {/* ── SYSTEM SCORE — the burn-down to 10/10 ── */}
+                {health && (
+                  <div className={`border rounded-lg px-4 py-2.5 mb-3 ${health.score >= 9 ? 'bg-emerald-950/20 border-emerald-800/50' : 'bg-slate-900 border-amber-800/40'}`}>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                      <span className="text-sm font-bold tabular-nums">
+                        <span className={health.score >= 9 ? 'text-emerald-400' : health.score >= 6 ? 'text-amber-400' : 'text-red-400'}>{health.score.toFixed(1)}</span>
+                        <span className="text-slate-600">/10</span>
+                      </span>
+                      <div className="w-36 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div className={`h-full ${health.score >= 9 ? 'bg-emerald-500' : health.score >= 6 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${health.score * 10}%` }} />
+                      </div>
+                      <span className="text-[10px] text-slate-500 tabular-nums">
+                        ${Math.round(health.components.dollarAttribution.attributedCents / 100).toLocaleString()} of ${Math.round(health.components.dollarAttribution.totalCents / 100).toLocaleString()} card spend traced ({health.components.dollarAttribution.score}%)
+                        · feeds {health.components.cardFeeds.score}% · statements {health.components.statements.entered}/{health.components.statements.total}
+                        · payments confirmed {health.components.paymentsConfirmed.score}%
+                      </span>
+                      {health.blockers.map((b: any, i: number) => (
+                        <span key={i} className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 cursor-help" title={`${b.detail}\n→ ${b.action}`}>
+                          {b.owner}: {b.label} <span className="font-bold">+{b.pts.toFixed(1)}</span>
+                        </span>
+                      ))}
+                      {health.blockers.length === 0 && <span className="text-[10px] text-emerald-400">all feeds live — full precision</span>}
+                    </div>
+                  </div>
+                )}
 
                 {/* ── CARDS TABLE ── */}
                 <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mb-3">
