@@ -70,6 +70,7 @@ function InvoiceDashboardContent() {
   const [platformSummary, setPlatformSummary] = useState<PlatformSummary[]>([]);
   const [monthlyTotals, setMonthlyTotals] = useState<MonthlyTotal[]>([]);
   const [cardPaidTotals, setCardPaidTotals] = useState<CardPaidTotal[]>([]);
+  const [bankRecon, setBankRecon] = useState<any>({});
   const [cardPayments, setCardPayments] = useState<CardPaymentLog[]>([]);
   const [pendingCents, setPendingCents] = useState<Record<string, number>>({});
   const [totalPendingCents, setTotalPendingCents] = useState(0);
@@ -165,8 +166,18 @@ function InvoiceDashboardContent() {
     setHiddenCards(invoiceData.hiddenCards || []);
     setCardPaidTotals(cardPayData.cardTotals || []);
     setCardPayments(cardPayData.payments || []);
+    setBankRecon(cardPayData.bankRecon || {});
     setLoading(false);
   }
+
+  // Bank truth per logged payment: which account it left + has the issuer taken it
+  const bankChip = (r: any) => {
+    if (!r) return <span className="text-slate-600 text-[10px]">—</span>;
+    if (r.status === 'confirmed') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 whitespace-nowrap">✓ {r.bankAccount} ··{r.bankLast4} · {r.bankDate}</span>;
+    if (r.status === 'pending') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300 whitespace-nowrap">⏳ debit pending · {r.bankAccount} ··{r.bankLast4}</span>;
+    if (r.status === 'too_recent') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-500/15 text-slate-400 whitespace-nowrap">⋯ awaiting bank debit</span>;
+    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 whitespace-nowrap" title="No matching bank debit within 10 days of the logged date — the card issuer hasn't pulled this payment, or it was logged wrong">⚠ NOT TAKEN — no bank debit</span>;
+  };
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -597,6 +608,7 @@ function InvoiceDashboardContent() {
                         <th className="text-left px-5 py-3">Date</th>
                         <th className="text-left px-5 py-3">Card</th>
                         <th className="text-right px-5 py-3">Amount</th>
+                        <th className="text-left px-5 py-3">Bank (verified)</th>
                         <th className="text-left px-5 py-3">Method</th>
                         <th className="text-left px-5 py-3">Notes</th>
                         <th className="px-5 py-3"></th>
@@ -608,6 +620,7 @@ function InvoiceDashboardContent() {
                           <td className="px-5 py-3 text-slate-300">{cp.date}</td>
                           <td className="px-5 py-3 text-slate-400">····{cp.card_last4}</td>
                           <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(cp.amount_cents)}</td>
+                          <td className="px-5 py-3">{bankChip(bankRecon[cp.id])}</td>
                           <td className="px-5 py-3 text-slate-400 text-xs">{cp.method || '—'}</td>
                           <td className="px-5 py-3 text-slate-500 text-xs whitespace-pre-wrap">{cp.notes || '—'}</td>
                           <td className="px-5 py-3">

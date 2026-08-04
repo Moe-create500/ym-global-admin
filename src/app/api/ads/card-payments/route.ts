@@ -35,7 +35,15 @@ export async function GET(req: NextRequest) {
     GROUP BY cp.card_last4
   `).all(...params);
 
-  return NextResponse.json({ payments, cardTotals });
+  // Bank reconciliation: which account each logged payment actually left,
+  // and whether the card issuer has taken it yet.
+  let bankRecon: Record<string, any> = {};
+  try {
+    const { reconcileLoggedPayments } = await import('@/lib/transactions-intel');
+    bankRecon = reconcileLoggedPayments(db);
+  } catch { /* recon is best-effort — the log list must still render */ }
+
+  return NextResponse.json({ payments, cardTotals, bankRecon });
 }
 
 export async function POST(req: NextRequest) {

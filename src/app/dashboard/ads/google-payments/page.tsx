@@ -43,6 +43,7 @@ function GooglePaymentsContent() {
   const [stores, setStores] = useState<Store[]>([]);
   const [charges, setCharges] = useState<AdPayment[]>([]);
   const [payments, setPayments] = useState<CardPaymentLog[]>([]);
+  const [bankRecon, setBankRecon] = useState<any>({});
   const [loading, setLoading] = useState(true);
   const [showPayments, setShowPayments] = useState(false);
 
@@ -114,8 +115,18 @@ function GooglePaymentsContent() {
 
     setCharges(chargeData.payments || []);
     setPayments(payData.payments || []);
+    setBankRecon(payData.bankRecon || {});
     setLoading(false);
   }
+
+  // Bank truth per logged payment: which account it left + has the issuer taken it
+  const bankChip = (r: any) => {
+    if (!r) return <span className="text-slate-600 text-[10px]">—</span>;
+    if (r.status === 'confirmed') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 whitespace-nowrap">✓ {r.bankAccount} ··{r.bankLast4} · {r.bankDate}</span>;
+    if (r.status === 'pending') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300 whitespace-nowrap">⏳ debit pending · {r.bankAccount} ··{r.bankLast4}</span>;
+    if (r.status === 'too_recent') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-500/15 text-slate-400 whitespace-nowrap">⋯ awaiting bank debit</span>;
+    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 whitespace-nowrap" title="No matching bank debit within 10 days of the logged date — the card issuer hasn't pulled this payment, or it was logged wrong">⚠ NOT TAKEN — no bank debit</span>;
+  };
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -360,6 +371,7 @@ function GooglePaymentsContent() {
                         <th className="text-left px-5 py-3">Date</th>
                         <th className="text-left px-5 py-3">Card</th>
                         <th className="text-right px-5 py-3">Amount</th>
+                        <th className="text-left px-5 py-3">Bank (verified)</th>
                         <th className="text-left px-5 py-3">Method</th>
                         <th className="text-left px-5 py-3">Notes</th>
                         <th className="px-5 py-3"></th>
@@ -371,6 +383,7 @@ function GooglePaymentsContent() {
                           <td className="px-5 py-3 text-slate-300">{p.date || 'N/A'}</td>
                           <td className="px-5 py-3 text-slate-400">····{p.card_last4}</td>
                           <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(p.amount_cents)}</td>
+                          <td className="px-5 py-3">{bankChip(bankRecon[p.id])}</td>
                           <td className="px-5 py-3 text-slate-500 text-xs">{p.method || '—'}</td>
                           <td className="px-5 py-3 text-slate-500 text-xs max-w-[200px] truncate">{p.notes || '—'}</td>
                           <td className="px-5 py-3">

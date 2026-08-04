@@ -975,6 +975,70 @@ export function getPayPlan(db: DatabaseType.Database) {
   };
 }
 
+/** Reconcile manually-logged card payments (card_payments_log) against real
+ *  bank debits: WHICH account the money actually left, and whether the card
+ *  issuer has even taken it yet. One-to-one greedy matching — exact amount,
+ *  debit classed card_payment_sent (or transfer), dated logged−3 … logged+10
+ *  days, closest date wins, each bank debit consumed once. Statuses:
+ *    confirmed — posted bank debit found (account + date returned)
+ *    pending   — matching debit exists but hasn't settled (issuer initiated)
+ *    too_recent— logged <4 days ago, debit may not have appeared yet
+ *    not_taken — no debit within window and enough time has passed */
+export function reconcileLoggedPayments(db: DatabaseType.Database, days = 120) {
+  ensureTxnIntelTables(db);
+  const logs: any[] = db.prepare(`
+    SELECT cp.id, cp.date, cp.amount_cents, cp.card_last4
+    FROM card_payments_log cp
+    WHERE cp.date >= date('now', ?) AND cp.date != 'N/A'
+    ORDER BY cp.date DESC
+  `).all(`-${days} days`);
+  const debits: any[] = db.prepare(`
+    SELECT t.id, t.date, ABS(t.amount_cents) cents, t.status, t.description,
+           a.account_name, a.last_four AS bank_last4
+    FROM bank_transactions t
+    JOIN bank_accounts a ON a.id = t.bank_account_id AND a.account_type != 'credit'
+    JOIN txn_links l ON l.txn_id = t.id AND l.class IN ('card_payment_sent', 'transfer')
+    WHERE t.amount_cents < 0 AND t.date >= date('now', ?)
+  `).all(`-${days + 15} days`);
+
+  const byAmount = new Map<number, any[]>();
+  for (const d of debits) {
+    if (!byAmount.has(d.cents)) byAmount.set(d.cents, []);
+    byAmount.get(d.cents)!.push(d);
+  }
+  const daysBetween = (a: string, b: string) => Math.round((new Date(b + 'T12:00:00Z').getTime() - new Date(a + 'T12:00:00Z').getTime()) / 86400000);
+  const today = new Date().toISOString().slice(0, 10);
+  const used = new Set<string>();
+  const out = new Map<string, any>();
+
+  // Closest-date-first assignment across ALL logs so twins ($5k × 4) resolve fairly
+  const candidatePairs: { logId: string; debit: any; gap: number }[] = [];
+  for (const lg of logs) {
+    for (const d of byAmount.get(Math.abs(lg.amount_cents)) || []) {
+      const lag = daysBetween(lg.date, d.date); // debit relative to logged date
+      if (lag < -3 || lag > 10) continue;
+      candidatePairs.push({ logId: lg.id, debit: d, gap: Math.abs(lag) });
+    }
+  }
+  candidatePairs.sort((a, b) => a.gap - b.gap);
+  for (const p of candidatePairs) {
+    if (out.has(p.logId) || used.has(p.debit.id)) continue;
+    used.add(p.debit.id);
+    out.set(p.logId, {
+      status: p.debit.status === 'pending' ? 'pending' : 'confirmed',
+      bankAccount: p.debit.account_name,
+      bankLast4: p.debit.bank_last4,
+      bankDate: p.debit.date,
+    });
+  }
+  for (const lg of logs) {
+    if (out.has(lg.id)) continue;
+    const age = daysBetween(lg.date, today);
+    out.set(lg.id, { status: age < 4 ? 'too_recent' : 'not_taken' });
+  }
+  return Object.fromEntries(out);
+}
+
 /** Live system-health score — measures how fed the intelligence actually is,
  *  and prices every blocker in points so the path to 10/10 is a burn-down,
  *  not a guess. Weights favor dollar-attribution (the thing decisions ride on). */
