@@ -58,6 +58,23 @@ export async function PATCH(req: NextRequest) {
   const body = await req.json();
   const { id, adAccountId, adAccountName, profileName } = body;
 
+  // Replace the access token on EVERY active profile at once — the real
+  // recovery path when a Facebook password change kills the shared token.
+  // Validates against Graph before touching anything.
+  if (body.action === 'replace_token_all') {
+    const token = String(body.token || '').trim();
+    if (!token.startsWith('EAA')) return NextResponse.json({ error: 'That does not look like a Facebook access token (EAA…)' }, { status: 400 });
+    try {
+      const me = await (await fetch(`https://graph.facebook.com/v24.0/me?fields=id,name&access_token=${encodeURIComponent(token)}`)).json();
+      if (me.error) return NextResponse.json({ error: `Facebook rejected the token: ${String(me.error.message || '').slice(0, 150)}` }, { status: 400 });
+      const db2 = getDb();
+      const r = db2.prepare(`UPDATE fb_profiles SET access_token = ?, token_expires_at = datetime('now', '+55 days'), updated_at = datetime('now') WHERE is_active = 1`).run(token);
+      return NextResponse.json({ success: true, updated: r.changes, tokenUser: me.name });
+    } catch (e: any) {
+      return NextResponse.json({ error: String(e?.message || e).slice(0, 200) }, { status: 500 });
+    }
+  }
+
   if (!id) {
     return NextResponse.json({ error: 'id is required' }, { status: 400 });
   }

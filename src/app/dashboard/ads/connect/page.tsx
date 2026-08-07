@@ -41,6 +41,28 @@ function ConnectFacebookContent() {
   const [profiles, setProfiles] = useState<FBProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
+  // One-paste token recovery — all active profiles share one token; when a
+  // FB password change kills it, one fresh token here fixes every profile.
+  const [newToken, setNewToken] = useState('');
+  const [tokenBusy, setTokenBusy] = useState(false);
+  const [tokenMsg, setTokenMsg] = useState('');
+  const replaceTokenAll = async () => {
+    setTokenBusy(true); setTokenMsg('');
+    try {
+      const r = await fetch('/api/fb/profiles', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'replace_token_all', token: newToken }),
+      });
+      const d = await r.json();
+      if (d.error) setTokenMsg(`✗ ${d.error}`);
+      else {
+        setTokenMsg(`✓ Token verified as "${d.tokenUser}" — updated ${d.updated} profiles. Syncs resume within 30 min (or hit Sync on any profile).`);
+        setNewToken('');
+        loadProfiles();
+      }
+    } catch (e: any) { setTokenMsg(`✗ ${e?.message || 'failed'}`); }
+    setTokenBusy(false);
+  };
 
   // Per-profile state for ad account selection
   const [accountsMap, setAccountsMap] = useState<Record<string, FBAdAccount[]>>({});
@@ -144,6 +166,24 @@ function ConnectFacebookContent() {
   return (
     <div>
       <h1 className="text-2xl font-bold text-white mb-2">Facebook Ad Accounts</h1>
+
+      {/* 🔑 One-paste token recovery — THE fix when a FB password change kills all profiles */}
+      <div className="bg-slate-900 border border-amber-700/50 rounded-xl p-4 mb-6">
+        <p className="text-sm font-semibold text-white mb-1">🔑 Replace token on ALL profiles</p>
+        <p className="text-[11px] text-slate-400 mb-3">
+          All active profiles share one access token. When it dies (password change, checkpoint), paste ONE fresh token here — it&apos;s verified against Facebook, then applied to every profile at once.
+        </p>
+        <div className="flex gap-2">
+          <input value={newToken} onChange={(e) => setNewToken(e.target.value)} type="password"
+            placeholder="Paste new token (EAA…)"
+            className="flex-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-amber-500" />
+          <button onClick={replaceTokenAll} disabled={!newToken.trim() || tokenBusy}
+            className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-slate-700 disabled:text-slate-500 text-white text-sm font-semibold rounded-lg">
+            {tokenBusy ? 'Verifying…' : 'Verify & apply to all'}
+          </button>
+        </div>
+        {tokenMsg && <p className={`text-[11px] mt-2 ${tokenMsg.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>{tokenMsg}</p>}
+      </div>
       <p className="text-sm text-slate-400 mb-6">
         Connect Facebook to automatically pull ad spend data per store.
       </p>
