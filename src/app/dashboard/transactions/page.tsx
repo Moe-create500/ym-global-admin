@@ -427,6 +427,11 @@ export default function TransactionsPage() {
                         · feeds {health.components.cardFeeds.score}% · statements {health.components.statements.entered}/{health.components.statements.total}
                         · payments confirmed {health.components.paymentsConfirmed.score}%
                       </span>
+                      {(health.warnings || []).map((w: any, i: number) => (
+                        <span key={`w${i}`} className="text-[10px] px-2 py-0.5 rounded bg-red-500/15 text-red-400 font-bold cursor-help animate-pulse" title={w.detail}>
+                          🚨 {w.label}
+                        </span>
+                      ))}
                       {health.blockers.map((b: any, i: number) => (
                         <span key={i} className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 cursor-help" title={`${b.detail}\n→ ${b.action}`}>
                           {b.owner}: {b.label} <span className="font-bold">+{b.pts.toFixed(1)}</span>

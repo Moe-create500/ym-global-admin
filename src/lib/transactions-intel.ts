@@ -1127,8 +1127,25 @@ export function getSystemHealth(db: DatabaseType.Database) {
     }] : []),
   ].sort((a, b) => b.pts - a.pts);
 
+  // Hard warnings — data feeds that are DEAD (not just incomplete). These
+  // don't lower the score gradually; they mean current numbers are wrong.
+  const warnings: { label: string; detail: string }[] = [];
+  const adFresh: any = db.prepare(`SELECT MAX(date) latest FROM ad_spend`).get();
+  const adAgeDays = adFresh?.latest ? Math.round((now - new Date(adFresh.latest + 'T00:00:00Z').getTime()) / 86400000) : 999;
+  if (adAgeDays >= 2) {
+    warnings.push({
+      label: `AD SPEND BLIND ${adAgeDays}d`,
+      detail: `No FB insights since ${adFresh?.latest} — tokens dead (reconnect Facebook Accounts). Campaigns keep spending; the burn math is understating reality.`,
+    });
+  }
+  const fbSync: any = db.prepare(`SELECT MAX(last_sync_at) latest FROM fb_profiles WHERE is_active = 1`).get();
+  if (fbSync?.latest && now - new Date(String(fbSync.latest).replace(' ', 'T') + 'Z').getTime() > 3 * 3600_000) {
+    warnings.push({ label: 'FB SYNC STALLED', detail: `Last successful FB profile sync ${String(fbSync.latest).slice(0, 16)} — check tokens / sync loop.` });
+  }
+
   return {
     score,
+    warnings,
     components: {
       dollarAttribution: { score: Math.round(attrScore * 100), attributedCents: attr?.attributed || 0, totalCents: attr?.total || 0 },
       cardFeeds: { score: Math.round(feedScore * 100), rows: feedRows },
