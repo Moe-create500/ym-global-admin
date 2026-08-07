@@ -39,20 +39,34 @@ export async function GET(req: NextRequest) {
       ? new Date(Date.now() + longToken.expires_in * 1000).toISOString()
       : null;
 
-    // Store token info so the connect page can pick it up
     const db = getDb();
-    const tempId = crypto.randomUUID();
-    db.prepare(`
-      INSERT INTO fb_profiles (id, store_id, profile_name, access_token, token_expires_at)
-      VALUES (?, ?, 'Pending Setup', ?, ?)
-    `).run(tempId, storeId, longToken.access_token, expiresAt);
+
+    // A fresh login heals EVERYTHING: all active profiles run on this user's
+    // token and die together on a password change — so one successful OAuth
+    // refreshes every one of them, not just the store being connected.
+    const refreshed = db.prepare(`
+      UPDATE fb_profiles SET access_token = ?, token_expires_at = ?, updated_at = datetime('now')
+      WHERE is_active = 1
+    `).run(longToken.access_token, expiresAt);
+
+    // Only create a new "Pending Setup" profile when this store has none —
+    // reconnect-to-refresh must not litter duplicate profiles.
+    const existing: any = db.prepare('SELECT id FROM fb_profiles WHERE store_id = ? AND is_active = 1 LIMIT 1').get(storeId);
+    let tempId = '';
+    if (!existing) {
+      tempId = crypto.randomUUID();
+      db.prepare(`
+        INSERT INTO fb_profiles (id, store_id, profile_name, access_token, token_expires_at)
+        VALUES (?, ?, 'Pending Setup', ?, ?)
+      `).run(tempId, storeId, longToken.access_token, expiresAt);
+    }
 
     // Redirect back to connect page with success
     const proto = req.headers.get('x-forwarded-proto') || req.nextUrl.protocol.replace(':', '');
     const host = req.headers.get('host') || req.nextUrl.host;
     const baseUrl = `${proto}://${host}`;
     return NextResponse.redirect(
-      `${baseUrl}/dashboard/ads/connect?success=1&profileId=${tempId}&accounts=${adAccounts.length}&pages=${pages.length}`
+      `${baseUrl}/dashboard/ads/connect?success=1&refreshed=${refreshed.changes}${tempId ? `&profileId=${tempId}` : ''}&accounts=${adAccounts.length}&pages=${pages.length}`
     );
   } catch (err: any) {
     const proto = req.headers.get('x-forwarded-proto') || req.nextUrl.protocol.replace(':', '');
