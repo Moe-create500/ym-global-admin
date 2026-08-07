@@ -564,13 +564,24 @@ export async function syncTodayRevenueAll(throttleMs = 30000): Promise<{ stores:
 // run the same heavy pipelines. Concurrent runs double peak memory (the OOM
 // pattern) and hammer external APIs. Lock lives on globalThis so every bundle
 // (instrumentation, route handlers) sees the same one.
+// Stale-lock takeover: a hung await inside a sync (an external API that never
+// responds) used to hold the lock FOREVER — on 2026-08-05 a "dashboard-auto"
+// sync hung and froze every scheduled sync for 20+ hours. A lock older than
+// 45 minutes is dead by definition (full passes take ~10 min) and gets stolen.
+const SYNC_LOCK_STALE_MS = 45 * 60_000;
+
 export function acquireSyncLock(label: string): boolean {
   const g = globalThis as any;
-  if (g.__ymSyncLock) return false;
+  if (g.__ymSyncLock) {
+    const age = Date.now() - (g.__ymSyncLockAt || 0);
+    if (age < SYNC_LOCK_STALE_MS) return false;
+    console.warn(`[sync-lock] stealing stale lock "${g.__ymSyncLock}" held ${Math.round(age / 60000)}m by "${label}"`);
+  }
   g.__ymSyncLock = label;
+  g.__ymSyncLockAt = Date.now();
   return true;
 }
-export function releaseSyncLock(): void { (globalThis as any).__ymSyncLock = null; }
+export function releaseSyncLock(): void { (globalThis as any).__ymSyncLock = null; (globalThis as any).__ymSyncLockAt = 0; }
 export function activeSyncLock(): string | null { return (globalThis as any).__ymSyncLock || null; }
 
 /** How many stores sync concurrently. Wall-time is external-API dominated
