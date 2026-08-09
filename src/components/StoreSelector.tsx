@@ -36,6 +36,8 @@ export default function StoreSelector() {
   }, []);
 
   function handleChange(storeId: string) {
+    // Page-level picks pin globally too — one selection follows across tabs
+    import('@/components/GlobalStore').then(m => m.writeGlobalStore(storeId));
     const params = new URLSearchParams(searchParams.toString());
     if (storeId) {
       params.set('storeId', storeId);

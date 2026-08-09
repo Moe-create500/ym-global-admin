@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { readGlobalStore, writeGlobalStore, onGlobalStoreChange } from '@/components/GlobalStore';
 
 function cents(n: number): string {
   return (n / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -21,6 +22,12 @@ const KIND_STYLE: Record<string, { chip: string; label: string }> = {
 export default function CashflowPage() {
   const [projection, setProjection] = useState<any>(null);
   const [storeId, setStoreId] = useState<string>('');
+
+  // Follow the centralized store pin (and contribute to it)
+  useEffect(() => {
+    setStoreId(readGlobalStore());
+    return onGlobalStoreChange(setStoreId);
+  }, []);
   const [gapsOpen, setGapsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set());
@@ -150,7 +157,7 @@ export default function CashflowPage() {
               {syncing ? 'Syncing…' : `↻ Sync now · last ${agoLabel(connByStore.get(storeId)?.last_synced_at)}`}
             </button>
           )}
-          <select value={storeId} onChange={e => setStoreId(e.target.value)}
+          <select value={storeId} onChange={e => { setStoreId(e.target.value); writeGlobalStore(e.target.value); }}
             className="bg-slate-900 border border-slate-700 text-white text-xs rounded-lg px-3 py-2">
             <option value="">All stores</option>
             {allStores.map((s: any) => <option key={s.store_id} value={s.store_id}>{s.store_name}</option>)}

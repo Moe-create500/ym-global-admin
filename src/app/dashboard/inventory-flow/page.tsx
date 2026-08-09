@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { readGlobalStore, writeGlobalStore, onGlobalStoreChange } from '@/components/GlobalStore';
 
 const cents = (n: number | null) => n == null ? '—' : '$' + (n / 100).toLocaleString('en-US', { maximumFractionDigits: 0 });
 
@@ -17,6 +18,12 @@ export default function InventoryFlowPage() {
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [storeFilter, setStoreFilter] = useState('');
+
+  // Follow the centralized store pin (and contribute to it)
+  useEffect(() => {
+    setStoreFilter(readGlobalStore());
+    return onGlobalStoreChange(setStoreFilter);
+  }, []);
   const [savingSettings, setSavingSettings] = useState('');
   const [settingsDraft, setSettingsDraft] = useState<Record<string, { lead: string; cover: string }>>({});
 
@@ -58,7 +65,7 @@ export default function InventoryFlowPage() {
           <p className="text-sm text-slate-400 mt-1">What to buy to stay in stock — live warehouse stock × your real sales velocity</p>
         </div>
         <div className="flex items-center gap-2">
-          <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
+          <select value={storeFilter} onChange={e => { setStoreFilter(e.target.value); writeGlobalStore(e.target.value); }}
             className="bg-slate-900 border border-slate-700 text-white text-xs rounded-lg px-3 py-2">
             <option value="">All stores</option>
             {data.map(s => <option key={s.storeId} value={s.storeId}>{s.storeName}</option>)}
