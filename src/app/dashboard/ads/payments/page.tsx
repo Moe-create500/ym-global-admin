@@ -89,6 +89,7 @@ function InvoiceDashboardContent() {
   const [importResult, setImportResult] = useState<any>(null);
   const [showImport, setShowImport] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const loadSeqRef = useRef(0);
 
   // Add card payment state
   const [showCardPayments, setShowCardPayments] = useState(false);
@@ -139,6 +140,10 @@ function InvoiceDashboardContent() {
   }
 
   async function loadData() {
+    // Stale-response guard: when the global store pin injects ?storeId right
+    // after mount, two loads race — the slow unfiltered response must never
+    // overwrite the fresh filtered one.
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     const params = new URLSearchParams();
     if (storeFilter) params.set('storeId', storeFilter);
@@ -156,6 +161,7 @@ function InvoiceDashboardContent() {
     ]);
     const invoiceData = await invoiceRes.json();
     const cardPayData = await cardPayRes.json();
+    if (seq !== loadSeqRef.current) return; // superseded by a newer load — drop
 
     setAdPayments(invoiceData.payments || []);
     setCardSummary(invoiceData.cardSummary || []);

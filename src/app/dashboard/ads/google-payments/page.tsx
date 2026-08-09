@@ -55,6 +55,7 @@ function GooglePaymentsContent() {
   const [importResult, setImportResult] = useState<any>(null);
   const [showImport, setShowImport] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const loadSeqRef = useRef(0);
 
   // Wrong-box fixes: reassign an invoice to another store, or delete it
   const [reassigning, setReassigning] = useState<string | null>(null);
@@ -99,6 +100,8 @@ function GooglePaymentsContent() {
   }, [storeFilter]);
 
   async function loadData() {
+    // Stale-response guard — see ads/payments: pin-injection races the mount load
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     const params = new URLSearchParams();
     if (storeFilter) params.set('storeId', storeFilter);
@@ -112,6 +115,7 @@ function GooglePaymentsContent() {
     ]);
     const chargeData = await chargeRes.json();
     const payData = await payRes.json();
+    if (seq !== loadSeqRef.current) return; // superseded by a newer load — drop
 
     setCharges(chargeData.payments || []);
     setPayments(payData.payments || []);
