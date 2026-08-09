@@ -1020,7 +1020,13 @@ export function reconcileLoggedPayments(db: DatabaseType.Database, days = 120) {
       candidatePairs.push({ logId: lg.id, debit: d, gap: Math.abs(lag) });
     }
   }
-  candidatePairs.sort((a, b) => a.gap - b.gap);
+  // POSTED debits always beat pending ones: BofA shows each ACH payment twice
+  // (an "ACH HOLD" row Teller leaves pending forever + the real posted row).
+  // Matching the hold made settled payments read "debit pending" for weeks.
+  // A pending row only matches when no posted candidate exists for that log.
+  candidatePairs.sort((a, b) =>
+    (a.debit.status === 'pending' ? 1 : 0) - (b.debit.status === 'pending' ? 1 : 0)
+    || a.gap - b.gap);
   for (const p of candidatePairs) {
     if (out.has(p.logId) || used.has(p.debit.id)) continue;
     used.add(p.debit.id);
