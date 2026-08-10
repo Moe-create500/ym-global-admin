@@ -137,6 +137,22 @@ export async function POST(req: NextRequest) {
 
   try {
     if (body.action === 'create') {
+      // Pre-flight: verify the token can actually reach the ad account BEFORE
+      // the run starts — otherwise we generate a full image batch and die at
+      // the ad-set step with a permissions error (burned 6 runs on VV this way).
+      if (body.config?.profileId) {
+        const prof: any = db.prepare('SELECT profile_name, ad_account_id, access_token FROM fb_profiles WHERE id = ?').get(body.config.profileId);
+        if (prof?.ad_account_id && prof?.access_token) {
+          const acct = prof.ad_account_id.startsWith('act_') ? prof.ad_account_id : `act_${prof.ad_account_id}`;
+          const chk = await fetch(`https://graph.facebook.com/v24.0/${acct}?fields=account_status&access_token=${encodeURIComponent(prof.access_token)}`)
+            .then(r => r.json()).catch(() => null);
+          if (!chk || chk.error) {
+            return NextResponse.json({
+              error: `Ad account "${prof.profile_name}" (${acct}) is NOT reachable with the connected Facebook token — the launch would fail at the ad-set step. Fix: in Business Manager, share this ad account into the business and assign it to the system user, then relaunch. FB says: ${(chk?.error?.message || 'no response').slice(0, 160)}`,
+            }, { status: 400 });
+          }
+        }
+      }
       const wf = createLaunchWorkflow(db, body.storeId, body.productId, body.config);
       return NextResponse.json({ workflow: wf });
     }

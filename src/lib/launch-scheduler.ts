@@ -113,6 +113,20 @@ export async function runDueSchedules(db: Database.Database): Promise<{ ran: num
       config.campaignName = undefined; // fresh dated name per run
       config.audienceId = null;        // every run gets a NEW Fable 5 audience
       config.scheduledRun = true;      // tag: lets the tick resume us after a process restart
+      // Pre-flight: skip the run entirely if the token can't reach the ad
+      // account — otherwise every tick burns a full image batch then dies
+      // at the ad-set step (VV incident 2026-08-10)
+      if (config.profileId) {
+        const prof: any = db.prepare('SELECT profile_name, ad_account_id, access_token FROM fb_profiles WHERE id = ?').get(config.profileId);
+        if (prof?.ad_account_id && prof?.access_token) {
+          const acct = prof.ad_account_id.startsWith('act_') ? prof.ad_account_id : `act_${prof.ad_account_id}`;
+          const chk = await fetch(`https://graph.facebook.com/v24.0/${acct}?fields=account_status&access_token=${encodeURIComponent(prof.access_token)}`)
+            .then(r => r.json()).catch(() => null);
+          if (!chk || chk.error) {
+            throw new Error(`ad account ${prof.profile_name} (${acct}) unreachable with connected token — fix Business Manager assignment. FB: ${(chk?.error?.message || 'no response').slice(0, 120)}`);
+          }
+        }
+      }
       const wf = createLaunchWorkflow(db, s.store_id, s.product_id, config);
       console.log(`[launch-schedule] "${s.name}" fired → workflow ${wf.id} (${s.auto_live ? 'AUTO-LIVE' : 'paused'})`);
       const done = await runToCompletionWithRetries(db, wf.id, !!s.auto_live);

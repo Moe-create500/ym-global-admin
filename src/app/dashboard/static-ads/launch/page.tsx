@@ -255,12 +255,14 @@ export default function LaunchFlowPage() {
       if ((d.profiles || []).length === 1) setProfileId(d.profiles[0].id);
 
       // A refresh must NOT lose the run: restore the last-viewed workflow if
-      // it's unfinished, else the most recent unfinished one — one click resumes.
+      // it's unfinished. The fallback only grabs ACTIVE runs — errored runs
+      // stay in Past Runs, otherwise "New run" can never escape a dead run.
       setWf(prev => {
         if (prev) return prev;
         const unfinished = (w: Workflow) => ['running', 'awaiting_approval', 'error'].includes(w.status);
+        const active = (w: Workflow) => ['running', 'awaiting_approval'].includes(w.status);
         const savedId = typeof window !== 'undefined' ? localStorage.getItem('launch_active_wf') : null;
-        return rows.find(w => w.id === savedId && unfinished(w)) || rows.find(unfinished) || null;
+        return rows.find(w => w.id === savedId && unfinished(w)) || rows.find(active) || null;
       });
     }).catch(() => {});
   }, []);
