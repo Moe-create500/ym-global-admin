@@ -1171,6 +1171,28 @@ function CFOContent() {
                     </tr>
                   )}
 
+                  {/* 3PL mode: A/R from ShipSourced client billing */}
+                  {(data.assets as any).ar_clients_cents > 0 && (
+                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className="px-5 py-3 text-white font-medium">Accounts Receivable — Clients</td>
+                      <td className="px-5 py-3 text-slate-400 text-xs max-w-[420px]">
+                        {((data.details as any).ssFinance?.arClients || []).slice(0, 6).map((c: any) => `${c.company} ${cents(c.owedCents)}`).join(' · ')}
+                        {((data.details as any).ssFinance?.arClients || []).length > 6 && ` +${((data.details as any).ssFinance?.arClients || []).length - 6} more`}
+                      </td>
+                      <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents((data.assets as any).ar_clients_cents)}</td>
+                    </tr>
+                  )}
+                  {/* 3PL mode: prepaid deposit sitting with the carrier */}
+                  {(data.assets as any).carrier_prepaid_cents > 0 && (
+                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className="px-5 py-3 text-white font-medium">Carrier Prepaid Deposit</td>
+                      <td className="px-5 py-3 text-slate-400 text-xs">
+                        Paid to carriers ahead of invoices — {((data.details as any).ssFinance?.carrier || []).map((c: any) => `${c.carrierType}: paid ${cents(c.paidCents)} vs invoiced ${cents(c.invoicedCents)}`).join(' · ')}
+                      </td>
+                      <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents((data.assets as any).carrier_prepaid_cents)}</td>
+                    </tr>
+                  )}
+
                   {/* Total */}
                   <tr className="bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-bold" colSpan={2}>Total Assets</td>
@@ -1355,6 +1377,23 @@ function CFOContent() {
                         Sent but not yet taken from the bank — {((data.details as any).paymentsInFlight || []).map((p: any) => `${p.date} $${(p.amount_cents / 100).toFixed(2)} → ··${p.card_last4}`).join(' · ')}
                       </td>
                       <td className="px-5 py-3 text-right text-red-400 font-medium">{cents((data.liabilities as any).payments_in_flight_cents)}</td>
+                    </tr>
+                  )}
+
+                  {/* 3PL mode: owed to carriers */}
+                  {(data.liabilities as any).carrier_owed_cents > 0 && (
+                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className="px-5 py-3 text-white font-medium">Carrier Invoices Owed</td>
+                      <td className="px-5 py-3 text-slate-400 text-xs">Carrier invoices exceeding payments made</td>
+                      <td className="px-5 py-3 text-right text-red-400 font-medium">{cents((data.liabilities as any).carrier_owed_cents)}</td>
+                    </tr>
+                  )}
+                  {/* 3PL mode: client overpayments we owe back */}
+                  {(data.liabilities as any).client_credits_cents > 0 && (
+                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className="px-5 py-3 text-white font-medium">Client Credit Balances</td>
+                      <td className="px-5 py-3 text-slate-400 text-xs">Clients who have paid ahead — owed back in services</td>
+                      <td className="px-5 py-3 text-right text-red-400 font-medium">{cents((data.liabilities as any).client_credits_cents)}</td>
                     </tr>
                   )}
 

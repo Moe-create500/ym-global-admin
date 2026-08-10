@@ -344,3 +344,20 @@ export interface SSInventoryProduct {
 export function getClientInventory(clientId: string): Promise<{ products: SSInventoryProduct[] }> {
   return apiFetch<{ products: SSInventoryProduct[] }>(`/api/integration/inventory?clientId=${clientId}`);
 }
+
+// ── 3PL finance summary (for the ShipSourced store's CFO sheet) ─────────────
+
+export interface SSFinanceSummary {
+  arClients: { clientId: string; company: string; owedCents: number }[];
+  arTotalCents: number;
+  clientCreditsCents: number;
+  carrier: { carrierType: string; invoicedCents: number; paidCents: number; balanceCents: number }[];
+  carrierOwedCents: number;
+  carrierPrepaidCents: number;
+  asOf: string;
+}
+
+/** A/R, client credits, and the carrier position from ShipSourced's books. */
+export function getFinanceSummary(): Promise<SSFinanceSummary> {
+  return apiFetch<SSFinanceSummary>('/api/integration/finance');
+}

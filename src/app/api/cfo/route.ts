@@ -318,6 +318,19 @@ export async function GET(req: NextRequest) {
     paymentsInFlightCents = paymentsInFlightRows.reduce((s, p) => s + p.amount_cents, 0);
   } catch { /* best-effort — the sheet must still render */ }
 
+  // ── 3PL mode (ShipSourced store): banks & cards stay identical, but the
+  // business lines come from ShipSourced's own books — A/R from client
+  // billing, the carrier deposit/owed position, client credit balances.
+  let ssFinance: any = null;
+  if (store.name === 'ShipSourced') {
+    try {
+      const { getFinanceSummary } = await import('@/lib/shipsourced');
+      ssFinance = await getFinanceSummary();
+    } catch (e) {
+      console.error('[cfo] 3PL finance feed failed:', (e as any)?.message);
+    }
+  }
+
   // Build balance sheet
   const assets = {
     cash_bank_cents: bankTotal,
@@ -326,7 +339,10 @@ export async function GET(req: NextRequest) {
     reserves_cents: reservesTotal,
     inventory_cents: inventoryAssetCents,
     loans_receivable_cents: loans.lent_remaining_cents,
-    total_cents: bankTotal + shopifyBalance + shopifyPayout + reservesTotal + inventoryAssetCents + loans.lent_remaining_cents,
+    ar_clients_cents: ssFinance?.arTotalCents || 0,
+    carrier_prepaid_cents: ssFinance?.carrierPrepaidCents || 0,
+    total_cents: bankTotal + shopifyBalance + shopifyPayout + reservesTotal + inventoryAssetCents + loans.lent_remaining_cents
+      + (ssFinance?.arTotalCents || 0) + (ssFinance?.carrierPrepaidCents || 0),
   };
 
   const liabilities = {
@@ -338,7 +354,10 @@ export async function GET(req: NextRequest) {
     loans_payable_cents: loans.borrowed_remaining_cents,
     manual_cc_cents: manualCCTotal,
     payments_in_flight_cents: paymentsInFlightCents,
-    total_cents: fulfillment.balance_cents + fulfillment.estimated_cents + adSpend.balance_due_cents + fbPendingBalanceCents + appInvoices.balance_due_cents + loans.borrowed_remaining_cents + manualCCTotal + paymentsInFlightCents,
+    carrier_owed_cents: ssFinance?.carrierOwedCents || 0,
+    client_credits_cents: ssFinance?.clientCreditsCents || 0,
+    total_cents: fulfillment.balance_cents + fulfillment.estimated_cents + adSpend.balance_due_cents + fbPendingBalanceCents + appInvoices.balance_due_cents + loans.borrowed_remaining_cents + manualCCTotal + paymentsInFlightCents
+      + (ssFinance?.carrierOwedCents || 0) + (ssFinance?.clientCreditsCents || 0),
   };
 
   const equity = assets.total_cents - liabilities.total_cents;
@@ -385,6 +404,7 @@ export async function GET(req: NextRequest) {
       reserves: reserveRows.map((r: any) => ({ id: r.id, amount_cents: r.amount_cents, held_at: r.held_at })),
       manualCreditCards: manualCCRows.map((c: any) => ({ id: c.id, card_name: c.card_name, amount_owed_cents: c.amount_owed_cents })),
       paymentsInFlight: paymentsInFlightRows,
+      ssFinance,
     },
     snapshots: db.prepare(
       'SELECT id, snapshot_date, assets_cents, liabilities_cents, equity_cents, created_at, COALESCE(excluded, 0) AS excluded FROM cfo_snapshots WHERE store_id = ? ORDER BY created_at DESC LIMIT 20'
