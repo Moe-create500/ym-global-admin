@@ -1346,6 +1346,18 @@ function CFOContent() {
                     <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(data.liabilities.app_invoices_due_cents)}</td>
                   </tr>
 
+                  {/* Payments in flight — initiated, not yet debited from any bank.
+                      Committed money the bank balance still shows as free. */}
+                  {(data.liabilities as any).payments_in_flight_cents > 0 && (
+                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className="px-5 py-3 text-white font-medium">Payments in Flight</td>
+                      <td className="px-5 py-3 text-slate-400 text-xs">
+                        Sent but not yet taken from the bank — {((data.details as any).paymentsInFlight || []).map((p: any) => `${p.date} $${(p.amount_cents / 100).toFixed(2)} → ··${p.card_last4}`).join(' · ')}
+                      </td>
+                      <td className="px-5 py-3 text-right text-red-400 font-medium">{cents((data.liabilities as any).payments_in_flight_cents)}</td>
+                    </tr>
+                  )}
+
                   {/* Loans Payable */}
                   {data.liabilities.loans_payable_cents > 0 && (
                     <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">

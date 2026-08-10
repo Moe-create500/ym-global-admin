@@ -298,6 +298,26 @@ export async function GET(req: NextRequest) {
   ).all(storeId);
   const manualCCTotal = manualCCRows.reduce((s: number, c: any) => s + (c.amount_owed_cents || 0), 0);
 
+  // Payments INITIATED but not yet debited from any bank — the money is
+  // committed even though the balance still shows it. Counting it as free
+  // cash overstates the position (the exact mis-accounting that kept showing
+  // up as reconciliation residuals). Source: this store's logged card
+  // payments (last 21 days) with no matching bank debit yet.
+  let paymentsInFlightCents = 0;
+  let paymentsInFlightRows: any[] = [];
+  try {
+    const { reconcileLoggedPayments } = await import('@/lib/transactions-intel');
+    const recon = reconcileLoggedPayments(db, 21);
+    const recent: any[] = db.prepare(`
+      SELECT id, date, amount_cents, card_last4 FROM card_payments_log
+      WHERE store_id = ? AND date != 'N/A' AND date >= date('now', '-21 days')
+    `).all(storeId);
+    paymentsInFlightRows = recent
+      .filter(p => ['too_recent', 'not_taken'].includes((recon as any)[p.id]?.status))
+      .map(p => ({ date: p.date, amount_cents: p.amount_cents, card_last4: p.card_last4, status: (recon as any)[p.id].status }));
+    paymentsInFlightCents = paymentsInFlightRows.reduce((s, p) => s + p.amount_cents, 0);
+  } catch { /* best-effort — the sheet must still render */ }
+
   // Build balance sheet
   const assets = {
     cash_bank_cents: bankTotal,
@@ -317,7 +337,8 @@ export async function GET(req: NextRequest) {
     app_invoices_due_cents: appInvoices.balance_due_cents,
     loans_payable_cents: loans.borrowed_remaining_cents,
     manual_cc_cents: manualCCTotal,
-    total_cents: fulfillment.balance_cents + fulfillment.estimated_cents + adSpend.balance_due_cents + fbPendingBalanceCents + appInvoices.balance_due_cents + loans.borrowed_remaining_cents + manualCCTotal,
+    payments_in_flight_cents: paymentsInFlightCents,
+    total_cents: fulfillment.balance_cents + fulfillment.estimated_cents + adSpend.balance_due_cents + fbPendingBalanceCents + appInvoices.balance_due_cents + loans.borrowed_remaining_cents + manualCCTotal + paymentsInFlightCents,
   };
 
   const equity = assets.total_cents - liabilities.total_cents;
@@ -363,6 +384,7 @@ export async function GET(req: NextRequest) {
       shopify_live: liveShopify,
       reserves: reserveRows.map((r: any) => ({ id: r.id, amount_cents: r.amount_cents, held_at: r.held_at })),
       manualCreditCards: manualCCRows.map((c: any) => ({ id: c.id, card_name: c.card_name, amount_owed_cents: c.amount_owed_cents })),
+      paymentsInFlight: paymentsInFlightRows,
     },
     snapshots: db.prepare(
       'SELECT id, snapshot_date, assets_cents, liabilities_cents, equity_cents, created_at, COALESCE(excluded, 0) AS excluded FROM cfo_snapshots WHERE store_id = ? ORDER BY created_at DESC LIMIT 20'
