@@ -44,6 +44,7 @@ function GooglePaymentsContent() {
   const [charges, setCharges] = useState<AdPayment[]>([]);
   const [payments, setPayments] = useState<CardPaymentLog[]>([]);
   const [bankRecon, setBankRecon] = useState<any>({});
+  const [chargeRecon, setChargeRecon] = useState<any>({});
   const [loading, setLoading] = useState(true);
   const [showPayments, setShowPayments] = useState(false);
 
@@ -118,10 +119,19 @@ function GooglePaymentsContent() {
     if (seq !== loadSeqRef.current) return; // superseded by a newer load — drop
 
     setCharges(chargeData.payments || []);
+    setChargeRecon(chargeData.chargeRecon || {});
     setPayments(payData.payments || []);
     setBankRecon(payData.bankRecon || {});
     setLoading(false);
   }
+
+  // Charge truth per invoice: did it actually hit a credit card?
+  const chargeChip = (r: any) => {
+    if (!r) return <span className="text-slate-600 text-[10px]">—</span>;
+    if (r.status === 'verified') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 whitespace-nowrap" title={`matched at ${r.score ?? '—'}% confidence`}>✓ on ··{r.cardLast4} · {r.txnDate}</span>;
+    if (r.status === 'missing') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 whitespace-nowrap" title="Card is linked but no matching charge found — billed with no card charge, or amount mismatch">⚠ NO CARD CHARGE — ··{r.cardLast4} is linked</span>;
+    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-500/15 text-slate-400 whitespace-nowrap" title="Funding card not connected in Banking — link it to verify">○ card {r.cardLast4 ? `··${r.cardLast4}` : '?'} not linked</span>;
+  };
 
   // Bank truth per logged payment: which account it left + has the issuer taken it
   const bankChip = (r: any) => {
@@ -416,6 +426,7 @@ function GooglePaymentsContent() {
                     <th className="text-left px-5 py-3">Store</th>
                     <th className="text-left px-5 py-3">Card</th>
                     <th className="text-right px-5 py-3">Amount</th>
+                    <th className="text-left px-5 py-3">Card charge (verified)</th>
                     <th className="text-left px-5 py-3">Reference</th>
                     <th className="px-5 py-3"></th>
                   </tr>
@@ -437,6 +448,7 @@ function GooglePaymentsContent() {
                       </td>
                       <td className="px-5 py-3 text-slate-400">····{c.card_last4}</td>
                       <td className="px-5 py-3 text-right text-white font-medium">{cents(c.amount_cents)}</td>
+                      <td className="px-5 py-3">{chargeChip(chargeRecon[c.id])}</td>
                       <td className="px-5 py-3 text-slate-500 text-xs font-mono">{c.transaction_id?.replace('google-', '')}</td>
                       <td className="px-5 py-3 text-right">
                         <button onClick={() => deleteCharge(c.id)} className="text-xs text-red-500/70 hover:text-red-400">✕</button>

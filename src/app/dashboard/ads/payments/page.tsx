@@ -71,6 +71,7 @@ function InvoiceDashboardContent() {
   const [monthlyTotals, setMonthlyTotals] = useState<MonthlyTotal[]>([]);
   const [cardPaidTotals, setCardPaidTotals] = useState<CardPaidTotal[]>([]);
   const [bankRecon, setBankRecon] = useState<any>({});
+  const [chargeRecon, setChargeRecon] = useState<any>({});
   const [cardPayments, setCardPayments] = useState<CardPaymentLog[]>([]);
   const [pendingCents, setPendingCents] = useState<Record<string, number>>({});
   const [totalPendingCents, setTotalPendingCents] = useState(0);
@@ -163,6 +164,7 @@ function InvoiceDashboardContent() {
     const cardPayData = await cardPayRes.json();
     if (seq !== loadSeqRef.current) return; // superseded by a newer load — drop
 
+    setChargeRecon(invoiceData.chargeRecon || {});
     setAdPayments(invoiceData.payments || []);
     setCardSummary(invoiceData.cardSummary || []);
     setPlatformSummary(invoiceData.platformSummary || []);
@@ -175,6 +177,14 @@ function InvoiceDashboardContent() {
     setBankRecon(cardPayData.bankRecon || {});
     setLoading(false);
   }
+
+  // Charge truth per invoice: did it actually hit a credit card?
+  const chargeChip = (r: any) => {
+    if (!r) return <span className="text-slate-600 text-[10px]">—</span>;
+    if (r.status === 'verified') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 whitespace-nowrap" title={`matched at ${r.score ?? '—'}% confidence`}>✓ on ··{r.cardLast4} · {r.txnDate}</span>;
+    if (r.status === 'missing') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 whitespace-nowrap" title="This card IS linked in banking but no matching charge was found — Meta billed with no card charge (declined/failed?) or the charge posted at a different amount">⚠ NO CARD CHARGE — ··{r.cardLast4} is linked</span>;
+    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-500/15 text-slate-400 whitespace-nowrap" title="The funding card isn't connected in Banking — link it to verify these charges">○ card {r.cardLast4 ? `··${r.cardLast4}` : '?'} not linked</span>;
+  };
 
   // Bank truth per logged payment: which account it left + has the issuer taken it
   const bankChip = (r: any) => {
@@ -677,6 +687,7 @@ function InvoiceDashboardContent() {
                     <th className="text-left px-5 py-3">Platform</th>
                     <th className="text-left px-5 py-3">Card</th>
                     <th className="text-right px-5 py-3">Amount</th>
+                    <th className="text-left px-5 py-3">Card charge (verified)</th>
                     <th className="text-left px-5 py-3">Transaction ID</th>
                     <th className="px-5 py-3"></th>
                   </tr>
@@ -699,6 +710,7 @@ function InvoiceDashboardContent() {
                       <td className="px-5 py-3"><span className={`text-xs px-2 py-0.5 rounded-full ${p.platform === 'facebook' ? 'bg-blue-900/30 text-blue-400' : p.platform === 'shopify' ? 'bg-emerald-900/30 text-emerald-400' : 'bg-green-900/30 text-green-400'}`}>{p.platform}</span></td>
                       <td className="px-5 py-3 text-slate-400">····{p.card_last4}</td>
                       <td className="px-5 py-3 text-right text-white font-medium">{cents(p.amount_cents)}</td>
+                      <td className="px-5 py-3">{chargeChip(chargeRecon[p.id])}</td>
                       <td className="px-5 py-3 text-slate-500 text-xs font-mono truncate max-w-[200px]">{p.transaction_id}</td>
                       <td className="px-5 py-3 text-right">
                         <button onClick={() => deleteCharge(p.id)} className="text-xs text-red-500/70 hover:text-red-400">✕</button>

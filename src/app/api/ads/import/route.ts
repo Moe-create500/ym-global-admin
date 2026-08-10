@@ -517,7 +517,41 @@ export async function GET(req: NextRequest) {
     for (const r of rows) hiddenCards.push(r.card_last4);
   }
 
-  return NextResponse.json({ payments, cardSummary, platformSummary, monthlyTotals, pendingCents, totalPendingCents, hiddenCards });
+  // ── Charge verification: each invoice ↔ the credit-card transaction it hit ──
+  // Mirror of the payments bank-verification, invoice side. The likelihood
+  // matcher already links card txns → invoices in txn_links; expose it per
+  // invoice, and classify the unmatched honestly:
+  //   verified      — found on a linked card (card, posted date, confidence)
+  //   card_not_linked — invoice's funding card isn't in banking (can't verify)
+  //   missing       — the card IS linked but no charge matched → Meta billed
+  //                   with no card charge (declined/failed) or a match gap
+  const chargeRecon: Record<string, any> = {};
+  try {
+    const matched: any[] = db.prepare(`
+      SELECT l.entity_id, l.match_score, t.date AS txn_date, a.last_four
+      FROM txn_links l
+      JOIN bank_transactions t ON t.id = l.txn_id
+      JOIN bank_accounts a ON a.id = t.bank_account_id
+      WHERE l.entity_type = 'ad_payment' AND l.entity_id IS NOT NULL
+    `).all();
+    const byInvoice = new Map(matched.map(m => [m.entity_id, m]));
+    const linkedCards = new Set(
+      (db.prepare(`SELECT last_four FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'`).all() as any[])
+        .map(r => r.last_four).filter(Boolean)
+    );
+    for (const inv of payments as any[]) {
+      const m = byInvoice.get(inv.id);
+      if (m) {
+        chargeRecon[inv.id] = { status: 'verified', cardLast4: m.last_four, txnDate: m.txn_date, score: m.match_score != null ? Math.round(m.match_score * 100) : null };
+      } else if (inv.card_last4 && linkedCards.has(inv.card_last4)) {
+        chargeRecon[inv.id] = { status: 'missing', cardLast4: inv.card_last4 };
+      } else {
+        chargeRecon[inv.id] = { status: 'card_not_linked', cardLast4: inv.card_last4 || null };
+      }
+    }
+  } catch { /* verification is best-effort — the invoice list must render */ }
+
+  return NextResponse.json({ payments, cardSummary, platformSummary, monthlyTotals, pendingCents, totalPendingCents, hiddenCards, chargeRecon });
 }
 
 // PATCH: reassign an invoice to another store (wrong-box fix), or toggle card visibility
