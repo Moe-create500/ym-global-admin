@@ -81,6 +81,18 @@ function BankingContent() {
   const [tellerReady, setTellerReady] = useState(false);
   const [connecting, setConnecting] = useState(false);
 
+  // Script onLoad doesn't re-fire on client-side navigation (the Teller SDK is
+  // already in the DOM) — which left Connect Bank permanently grayed until a
+  // hard refresh. Poll for the SDK instead of trusting onLoad alone.
+  useEffect(() => {
+    if ((window as any).TellerConnect) { setTellerReady(true); return; }
+    const t = setInterval(() => {
+      if ((window as any).TellerConnect) { setTellerReady(true); clearInterval(t); }
+    }, 500);
+    const stop = setTimeout(() => clearInterval(t), 15000);
+    return () => { clearInterval(t); clearTimeout(stop); };
+  }, []);
+
   // Transaction view
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
