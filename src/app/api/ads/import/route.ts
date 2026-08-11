@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { getFundingCardMap } from '@/lib/transactions-intel';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -539,6 +540,9 @@ export async function GET(req: NextRequest) {
       (db.prepare(`SELECT last_four FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'`).all() as any[])
         .map(r => r.last_four).filter(Boolean)
     );
+    // Funding sub-cards aliased to a linked account (·2976 → Platinum) ARE
+    // verifiable — without this every sub-card invoice reads "not linked"
+    for (const l4 of getFundingCardMap(db).keys()) linkedCards.add(l4);
     for (const inv of payments as any[]) {
       const m = byInvoice.get(inv.id);
       if (m) {

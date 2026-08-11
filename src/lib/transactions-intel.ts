@@ -41,6 +41,81 @@ export function ensureTxnIntelTables(db: DatabaseType.Database) {
   // One-off charges billed to a store's books (P&L other costs) — timestamped
   // so a transaction can never be billed twice.
   if (!cols.find((c: any) => c.name === 'billed_store_at')) db.exec('ALTER TABLE txn_links ADD COLUMN billed_store_at TEXT');
+  // Funding-card aliases: Amex issues sub-cards (·2976, ·9275…) whose charges
+  // roll up into an account with a DIFFERENT last4 (Platinum ·1009). Invoices
+  // carry the sub-card number, bank feeds carry the account number — without
+  // this map every card comparison is a false mismatch.
+  db.exec(`CREATE TABLE IF NOT EXISTS fb_funding_cards (
+    last4 TEXT PRIMARY KEY,
+    bank_account_id TEXT NOT NULL,
+    learned_from TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+}
+
+/** last4 → bank_account_id for funding sub-cards (only aliases whose target
+ *  account is still active). */
+export function getFundingCardMap(db: DatabaseType.Database): Map<string, string> {
+  const rows: any[] = db.prepare(`
+    SELECT f.last4, f.bank_account_id FROM fb_funding_cards f
+    JOIN bank_accounts a ON a.id = f.bank_account_id AND a.status = 'active'
+  `).all();
+  return new Map(rows.map(r => [r.last4, r.bank_account_id]));
+}
+
+/** Evidence-based alias learning: a funding last4 that matches NO bank account
+ *  gets attributed to the account whose ad-platform charges mirror its
+ *  invoices (exact amount, settlement-window lag). Requires ≥3 distinct
+ *  matched amounts and ≥80% concentration on one account — ambiguity learns
+ *  nothing. Safe to re-run; existing aliases are kept. */
+export function learnFundingCards(db: DatabaseType.Database): number {
+  ensureTxnIntelTables(db);
+  const accountL4 = new Set(
+    (db.prepare(`SELECT last_four FROM bank_accounts WHERE status = 'active'`).all() as any[])
+      .map(r => r.last_four).filter(Boolean)
+  );
+  const known = new Set((db.prepare('SELECT last4 FROM fb_funding_cards').all() as any[]).map(r => r.last4));
+  const invoices: any[] = db.prepare(`
+    SELECT card_last4, date, amount_cents FROM ad_payments
+    WHERE card_last4 IS NOT NULL AND card_last4 != '' AND date >= date('now', '-120 days')
+  `).all();
+  const charges: any[] = db.prepare(`
+    SELECT t.bank_account_id, t.date, ABS(t.amount_cents) cents
+    FROM bank_transactions t JOIN bank_accounts a ON a.id = t.bank_account_id
+    WHERE a.account_type = 'credit' AND a.status = 'active' AND t.status = 'posted'
+      AND t.date >= date('now', '-125 days')
+      AND (lower(t.description) LIKE '%facebk%' OR lower(t.description) LIKE '%facebook%' OR lower(t.description) LIKE '%google%')
+  `).all();
+  const chargeIdx = new Map<number, any[]>();
+  for (const c of charges) {
+    if (!chargeIdx.has(c.cents)) chargeIdx.set(c.cents, []);
+    chargeIdx.get(c.cents)!.push(c);
+  }
+  // votes[last4][account_id] = Set of matched amounts (distinct-amount evidence)
+  const votes = new Map<string, Map<string, Set<number>>>();
+  for (const inv of invoices) {
+    if (accountL4.has(inv.card_last4) || known.has(inv.card_last4)) continue;
+    for (const c of chargeIdx.get(Math.abs(inv.amount_cents)) || []) {
+      const lag = (new Date(c.date + 'T12:00:00Z').getTime() - new Date(inv.date + 'T12:00:00Z').getTime()) / 86400000;
+      if (lag < -1 || lag > 5) continue;
+      if (!votes.has(inv.card_last4)) votes.set(inv.card_last4, new Map());
+      const byAcct = votes.get(inv.card_last4)!;
+      if (!byAcct.has(c.bank_account_id)) byAcct.set(c.bank_account_id, new Set());
+      byAcct.get(c.bank_account_id)!.add(Math.abs(inv.amount_cents));
+    }
+  }
+  const ins = db.prepare(`INSERT OR IGNORE INTO fb_funding_cards (last4, bank_account_id, learned_from) VALUES (?, ?, ?)`);
+  let learned = 0;
+  for (const [l4, byAcct] of votes) {
+    const ranked = Array.from(byAcct.entries()).sort((a, b) => b[1].size - a[1].size);
+    const total = ranked.reduce((s, [, set]) => s + set.size, 0);
+    const [acctId, set] = ranked[0];
+    if (set.size >= 3 && set.size / total >= 0.8) {
+      ins.run(l4, acctId, `auto: ${set.size} amount matches (${Math.round(100 * set.size / total)}% one account)`);
+      learned++;
+    }
+  }
+  return learned;
 }
 
 // ── Learned lag model ────────────────────────────────────────────────────────
@@ -196,6 +271,11 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
   // Likelihood curves learned from this system's own confirmed matches
   const lagCurves = learnLagCurves(db);
 
+  // Funding sub-card aliases (·2976 → Platinum account): learn new ones from
+  // this window's evidence, then load the full map for card comparisons.
+  learnFundingCards(db);
+  const fundingMap = getFundingCardMap(db);
+
   /** Score one invoice candidate against a bank txn: date-lag typicality is
    *  the dominant signal, card last-4 confirms or kills, exact amount is the
    *  entry ticket (already filtered). Returns 0..1. */
@@ -206,8 +286,12 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
     // but-plausible lag lowers confidence, it doesn't disqualify.
     const ls = Math.max(lagScore(lagCurves, cls, lag), lag >= -1 && lag <= 5 ? 0.3 : 0.1);
     let cardScore: number;
-    if (inv.card_last4 && txn.last_four) cardScore = inv.card_last4 === txn.last_four ? 1 : -1; // mismatch = hard kill
-    else cardScore = 0.5; // one side unknown — neutral
+    if (inv.card_last4 && txn.last_four) {
+      // Direct last4 match, OR the invoice's funding sub-card is aliased to
+      // this txn's account (Amex sub-cards post under the account number)
+      const aliased = fundingMap.get(inv.card_last4) === txn.bank_account_id;
+      cardScore = (inv.card_last4 === txn.last_four || aliased) ? 1 : -1; // mismatch = hard kill
+    } else cardScore = 0.5; // one side unknown — neutral
     if (cardScore < 0) return { score: 0, lag, cardMatch: false };
     return { score: 0.65 * ls + 0.35 * cardScore, lag, cardMatch: cardScore === 1 };
   };
@@ -264,7 +348,10 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
           else if (scored.length === 1 && best.score > 0) best.score = Math.max(best.score, 0.55);
           const evidence = {
             invoiceDate: best.inv.date, txnDate: t.date, lagDays: best.lag,
-            card: best.inv.card_last4 && t.last_four ? (best.inv.card_last4 === t.last_four ? 'match' : 'unknown') : 'partial',
+            card: best.inv.card_last4 && t.last_four
+              ? (best.inv.card_last4 === t.last_four ? 'match'
+                : fundingMap.get(best.inv.card_last4) === t.bank_account_id ? 'match_via_funding_alias' : 'unknown')
+              : 'partial',
             candidates: scored.length, score: Math.round(best.score * 100) / 100,
           };
           // Accept: confident score AND clear separation from the runner-up
@@ -462,14 +549,21 @@ export function getCardClarity(db: DatabaseType.Database) {
     FROM fb_profiles p JOIN stores s ON s.id = p.store_id
     WHERE p.is_active = 1 AND (p.balance_cents > 0 OR p.primary_card_declining = 1)
   `).all();
-  const cardLast4s = new Set(cards.map(c => c.last_four).filter(Boolean));
+  // Sub-card aliases: a funding last4 (·2976) that posts under a different
+  // account number (·1009) still routes to that card, not to "unmapped".
+  // Keyed by account ID — two cards can share a last4 (Gold/Platinum ·1009).
+  const fundingMap = getFundingCardMap(db);
   const fbByCard = new Map<string, any[]>();
   const unmappedFb: any[] = [];
   for (const p of profiles) {
     const l4 = p.primary_card_last4 || p.working_card_last4;
-    if (l4 && cardLast4s.has(l4)) {
-      if (!fbByCard.has(l4)) fbByCard.set(l4, []);
-      fbByCard.get(l4)!.push(p);
+    const direct = l4 ? cards.filter(c => c.last_four === l4).map(c => c.id) : [];
+    const targets = direct.length ? direct : (l4 && fundingMap.has(l4) ? [fundingMap.get(l4)!] : []);
+    if (targets.length) {
+      for (const cid of targets) {
+        if (!fbByCard.has(cid)) fbByCard.set(cid, []);
+        fbByCard.get(cid)!.push(p);
+      }
     } else if (p.balance_cents > 0) {
       unmappedFb.push(p); // owed to FB but the funding card isn't a linked bank card
     }
@@ -494,7 +588,7 @@ export function getCardClarity(db: DatabaseType.Database) {
 
   const perCard = cards.map(c => {
     const pending: any = pendingQ.get(c.id) || {};
-    const fb = fbByCard.get(c.last_four) || [];
+    const fb = fbByCard.get(c.id) || [];
     const fbOwedCents = fb.reduce((s, p) => s + (p.balance_cents || 0), 0);
     const declining = fb.some(p => p.primary_card_declining);
     const posted = Math.abs(c.balance_ledger_cents || 0);
