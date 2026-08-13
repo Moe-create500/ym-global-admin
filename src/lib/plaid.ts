@@ -46,7 +46,12 @@ export async function createLinkToken(opts: { accessToken?: string } = {}): Prom
     client_name: 'YM Global',
     language: 'en',
     country_codes: ['US'],
-    ...(opts.accessToken ? { access_token: opts.accessToken } : { products: ['transactions'] }),
+    // liabilities consent = statement balance/date/due date straight from the
+    // bank (drives card_statements automatically). Update-mode relinks request
+    // it as additional consent so existing items gain the scope on re-auth.
+    ...(opts.accessToken
+      ? { access_token: opts.accessToken, additional_consented_products: ['liabilities'] }
+      : { products: ['transactions'], additional_consented_products: ['liabilities'] }),
   };
   const d = await plaidPost('/link/token/create', body);
   return d.link_token;
@@ -120,6 +125,38 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
           WHERE teller_account_id = ?`).run(available, ledger, a.account_id);
         if (r.changes) synced++;
       }
+
+      // Statement data (balance/dates/min/limit) — the bank's own numbers, no
+      // manual typing. Consent-gated: items linked before liabilities consent
+      // 400 here (ADDITIONAL_CONSENT_REQUIRED) and we just move on.
+      try {
+        const li = await plaidPost('/liabilities/get', { access_token: item.access_token });
+        db.exec(`CREATE TABLE IF NOT EXISTS card_statements (
+          bank_account_id TEXT PRIMARY KEY, statement_balance_cents INTEGER, statement_date TEXT,
+          due_date TEXT, min_payment_cents INTEGER, updated_at TEXT DEFAULT (datetime('now')))`);
+        try { db.exec("ALTER TABLE card_statements ADD COLUMN source TEXT"); } catch { /* exists */ }
+        for (const c of li.liabilities?.credit || []) {
+          const row: any = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(c.account_id);
+          if (!row) continue;
+          const acct = (li.accounts || []).find((a: any) => a.account_id === c.account_id);
+          if (acct?.balances?.limit) {
+            db.prepare('UPDATE bank_accounts SET credit_limit_cents = ? WHERE id = ?')
+              .run(Math.round(acct.balances.limit * 100), row.id);
+          }
+          if (c.last_statement_balance == null && !c.next_payment_due_date) continue;
+          // Bank statement data beats hand-typed entries — always current
+          db.prepare(`INSERT INTO card_statements (bank_account_id, statement_balance_cents, statement_date, due_date, min_payment_cents, source, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'plaid', datetime('now'))
+            ON CONFLICT(bank_account_id) DO UPDATE SET
+              statement_balance_cents = excluded.statement_balance_cents, statement_date = excluded.statement_date,
+              due_date = excluded.due_date, min_payment_cents = excluded.min_payment_cents,
+              source = 'plaid', updated_at = datetime('now')`)
+            .run(row.id,
+              c.last_statement_balance != null ? Math.round(c.last_statement_balance * 100) : null,
+              c.last_statement_issue_date || null, c.next_payment_due_date || null,
+              c.minimum_payment_amount != null ? Math.round(c.minimum_payment_amount * 100) : null);
+        }
+      } catch { /* consent not granted yet — manual entry covers these cards */ }
 
       let cursor: string | undefined = item.cursor || undefined;
       let hasMore = true;

@@ -177,13 +177,14 @@ export async function PATCH(req: NextRequest) {
     if (!b.accountId) return NextResponse.json({ error: 'accountId required' }, { status: 400 });
     const acct = db.prepare("SELECT id FROM bank_accounts WHERE id = ? AND account_type = 'credit'").get(b.accountId);
     if (!acct) return NextResponse.json({ error: 'Credit card account not found' }, { status: 404 });
-    db.prepare(`INSERT INTO card_statements (bank_account_id, statement_balance_cents, statement_date, due_date, min_payment_cents, updated_at)
-      VALUES (?, ?, ?, ?, ?, datetime('now'))
+    db.prepare(`INSERT INTO card_statements (bank_account_id, statement_balance_cents, statement_date, due_date, min_payment_cents, source, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'manual', datetime('now'))
       ON CONFLICT(bank_account_id) DO UPDATE SET
         statement_balance_cents = excluded.statement_balance_cents,
         statement_date = excluded.statement_date,
         due_date = excluded.due_date,
         min_payment_cents = excluded.min_payment_cents,
+        source = 'manual',
         updated_at = datetime('now')`)
       .run(b.accountId,
         b.statementBalanceCents != null ? Math.round(Number(b.statementBalanceCents)) : null,

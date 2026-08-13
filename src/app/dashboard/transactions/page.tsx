@@ -21,11 +21,13 @@ const CLASS_COLORS: Record<string, string> = {
   personal: 'bg-pink-500/15 text-pink-400', other: 'bg-slate-600/20 text-slate-500',
 };
 
-function StatementEditor({ card, onSaved }: { card: any; onSaved: () => void }) {
+function StatementEditor({ card, onSaved, compact }: { card: any; onSaved: () => void; compact?: boolean }) {
   const [bal, setBal] = useState(card.stmtBalanceCents != null ? String(card.stmtBalanceCents / 100) : '');
+  const [stmtDate, setStmtDate] = useState(card.stmtDate || '');
   const [due, setDue] = useState(card.dueDate || '');
   const [minPay, setMinPay] = useState(card.minPaymentCents != null ? String(card.minPaymentCents / 100) : '');
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const save = async () => {
     setSaving(true);
     await fetch('/api/transactions', {
@@ -33,21 +35,24 @@ function StatementEditor({ card, onSaved }: { card: any; onSaved: () => void }) 
       body: JSON.stringify({
         action: 'statement', accountId: card.id,
         statementBalanceCents: bal ? Math.round(parseFloat(bal) * 100) : null,
+        statementDate: stmtDate || null,
         dueDate: due || null,
         minPaymentCents: minPay ? Math.round(parseFloat(minPay) * 100) : null,
       }),
     });
-    setSaving(false);
+    setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 2000);
     onSaved();
   };
+  const inp = 'bg-slate-950 border border-slate-700 focus:border-blue-500 rounded px-1.5 py-1 text-white outline-none';
   return (
-    <div className="flex flex-wrap items-end gap-3 text-[11px]">
-      <span className="text-slate-400 font-medium">Statement for ··{card.last4}:</span>
-      <label className="text-slate-500">balance $<input type="number" step="0.01" value={bal} onChange={e => setBal(e.target.value)} className="ml-1 w-24 bg-slate-900 border border-slate-600 rounded px-1.5 py-1 text-white" /></label>
-      <label className="text-slate-500">due <input type="date" value={due} onChange={e => setDue(e.target.value)} className="ml-1 bg-slate-900 border border-slate-600 rounded px-1.5 py-1 text-white" /></label>
-      <label className="text-slate-500">min $<input type="number" step="0.01" value={minPay} onChange={e => setMinPay(e.target.value)} placeholder="opt" className="ml-1 w-20 bg-slate-900 border border-slate-600 rounded px-1.5 py-1 text-white" /></label>
-      <button onClick={save} disabled={saving} className="px-3 py-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded font-semibold">{saving ? 'saving…' : 'save'}</button>
-      <span className="text-slate-600">from the card&apos;s latest statement — drives the PAY amount and due-date urgency</span>
+    <div className="flex flex-wrap items-center gap-3 text-[11px]">
+      {!compact && <span className="text-slate-400 font-medium">Statement for ··{card.last4}:</span>}
+      <label className="text-slate-500">stmt bal $<input type="number" step="0.01" value={bal} onChange={e => setBal(e.target.value)} className={`ml-1 w-24 ${inp}`} /></label>
+      <label className="text-slate-500">stmt date <input type="date" value={stmtDate} onChange={e => setStmtDate(e.target.value)} className={`ml-1 ${inp}`} /></label>
+      <label className="text-slate-500">due date <input type="date" value={due} onChange={e => setDue(e.target.value)} className={`ml-1 ${inp}`} /></label>
+      <label className="text-slate-500">min $<input type="number" step="0.01" value={minPay} onChange={e => setMinPay(e.target.value)} placeholder="opt" className={`ml-1 w-20 ${inp}`} /></label>
+      <button onClick={save} disabled={saving} className="px-3 py-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded font-semibold">{saving ? 'saving…' : saved ? '✓ saved' : 'save'}</button>
+      {!compact && <span className="text-slate-600">drives the PAY amount and due-date urgency</span>}
     </div>
   );
 }
@@ -526,6 +531,27 @@ export default function TransactionsPage() {
                       })}
                     </tbody>
                   </table>
+                </div>
+
+                {/* ── STATEMENTS PANEL — one editable row per card, always visible ── */}
+                <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mb-3">
+                  <div className="px-3 py-2 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">📅 Card statements — balances &amp; dates</p>
+                    <p className="text-[10px] text-slate-500">auto-filled from the bank where the connection allows it · <span className="text-blue-400">🏦 bank</span> = live from Plaid, <span className="text-slate-400">✍️ manual</span> = you typed it (bank data replaces it when available)</p>
+                  </div>
+                  <div className="divide-y divide-slate-800/60">
+                    {payPlan.cards.map((c: any) => (
+                      <div key={`st-${c.id}`} className="px-3 py-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+                        <span className="text-[12px] text-slate-200 w-48 truncate" title={c.name}>
+                          {c.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ')} <span className="text-slate-600">·{c.last4}</span>
+                        </span>
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${c.stmtSource === 'plaid' ? 'bg-blue-500/15 text-blue-400' : c.stmtSource ? 'bg-slate-700/60 text-slate-400' : 'bg-amber-500/10 text-amber-400'}`}>
+                          {c.stmtSource === 'plaid' ? '🏦 bank' : c.stmtSource ? '✍️ manual' : 'not set'}
+                        </span>
+                        <StatementEditor compact card={c} onSaved={loadPayPlan} />
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 {/* ── STORES TABLE ── */}

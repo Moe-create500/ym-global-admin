@@ -810,6 +810,8 @@ export function ensureCardStatements(db: DatabaseType.Database) {
     min_payment_cents INTEGER,
     updated_at TEXT DEFAULT (datetime('now'))
   )`);
+  // source: 'plaid' = pulled from the bank's liabilities data, 'manual' = typed
+  try { db.exec("ALTER TABLE card_statements ADD COLUMN source TEXT"); } catch { /* exists */ }
 }
 
 export function getPayPlan(db: DatabaseType.Database) {
@@ -887,6 +889,8 @@ export function getPayPlan(db: DatabaseType.Database) {
       dueDate,
       daysToDue,
       minPaymentCents: stmt?.min_payment_cents ?? null,
+      stmtSource: stmt ? (stmt.source || 'manual') : null,
+      stmtUpdatedAt: stmt?.updated_at || null,
     };
   }).filter(Boolean) as any[];
 
