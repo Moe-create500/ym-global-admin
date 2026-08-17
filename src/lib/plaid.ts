@@ -7,6 +7,7 @@
 
 import type Database from 'better-sqlite3';
 import crypto from 'crypto';
+import { reportSource } from '@/lib/source-registry';
 
 const PLAID_ENV = process.env.PLAID_ENV || 'production';
 const BASE = `https://${PLAID_ENV}.plaid.com`;
@@ -184,9 +185,11 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
         hasMore = !!d.has_more;
       }
       db.prepare("UPDATE plaid_items SET cursor = ?, updated_at = datetime('now') WHERE item_id = ?").run(cursor || null, item.item_id);
+      reportSource(db, `bank:plaid:${item.item_id}`, { ok: true, records: txns, label: `Bank — ${item.institution_name || 'Plaid item'}`, cadenceMin: 120 });
     } catch (e: any) {
       const msg = String(e?.message || e);
       errors.push(`plaid ${item.institution_name || item.item_id}: ${msg.slice(0, 160)}`);
+      reportSource(db, `bank:plaid:${item.item_id}`, { ok: false, error: msg, label: `Bank — ${item.institution_name || 'Plaid item'}`, cadenceMin: 120 });
       if (/ITEM_LOGIN_REQUIRED|ITEM_LOCKED|ACCESS_NOT_GRANTED/i.test(msg)) {
         db.prepare("UPDATE bank_accounts SET last_sync_error = 'CONNECTION EXPIRED — reconnect this bank via Connect Bank' WHERE teller_enrollment_id = ?").run(item.item_id);
       }

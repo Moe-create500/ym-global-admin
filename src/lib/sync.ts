@@ -3,6 +3,7 @@ import { getClientBilling, getClientOrders, getAllClientProducts } from '@/lib/s
 import { computeFulfillmentEstimates } from '@/lib/fulfillment-estimate';
 import { calculateShopifyFees } from '@/lib/recalc-pnl';
 import { getAdInsights, getAdCreatives, getBillingCharges, getAccountPaymentMethods, getVideoSourceUrls, getPages } from '@/lib/facebook';
+import { reportSource } from '@/lib/source-registry';
 import crypto from 'crypto';
 
 /**
@@ -329,8 +330,10 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
     // Update last_synced_at
     db.prepare('UPDATE stores SET last_synced_at = datetime(\'now\') WHERE id = ?').run(store.id);
 
+    reportSource(db, `ss_orders:${store.id}`, { ok: true, records: synced, label: `SS orders/billing — ${store.name}`, cadenceMin: 60, storeId: store.id });
     return { storeId: store.id, storeName: store.name, synced };
   } catch (err: any) {
+    reportSource(db, `ss_orders:${store.id}`, { ok: false, error: err.message, label: `SS orders/billing — ${store.name}`, cadenceMin: 60, storeId: store.id });
     return { storeId: store.id, storeName: store.name, synced, error: err.message };
   }
 }
@@ -406,9 +409,11 @@ export async function syncShopifyRevenue(storeId: string): Promise<{ synced: num
     })();
 
     console.log(`[shopify-sync] ${store.name}: synced ${synced} days`);
+    reportSource(db, `shopify_revenue:${storeId}`, { ok: true, records: synced, label: `Shopify revenue — ${store.name}`, cadenceMin: 60, storeId });
     return { synced };
   } catch (err: any) {
     console.error(`[shopify-sync] ${store.name}: ${err.message}`);
+    reportSource(db, `shopify_revenue:${storeId}`, { ok: false, error: err.message, label: `Shopify revenue — ${store.name}`, cadenceMin: 60, storeId });
     return { synced: 0, error: err.message };
   }
 }
@@ -903,8 +908,10 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
       } catch (invoiceErr: any) {
         errors.push(`Invoices for ${profile.profile_name}: ${invoiceErr.message}`);
       }
+      reportSource(db, `fb_spend:${profile.id}`, { ok: true, records: totalSynced, label: `FB ad spend — ${profile.profile_name}`, cadenceMin: 120, storeId: profile.store_id });
     } catch (err: any) {
       errors.push(`Profile ${profile.profile_name}: ${err.message}`);
+      reportSource(db, `fb_spend:${profile.id}`, { ok: false, error: err.message, label: `FB ad spend — ${profile.profile_name}`, cadenceMin: 120, storeId: profile.store_id });
     }
 
     // Always rollup ad_spend → daily_pnl even if ad-level sync failed
