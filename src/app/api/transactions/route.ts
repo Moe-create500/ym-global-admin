@@ -73,8 +73,26 @@ export async function GET(req: NextRequest) {
       GROUP BY t.date, l.store_id ORDER BY t.date DESC
     `).all();
     const in7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+    // One row per store — where its cash IS across the whole pipeline
+    const perStore = new Map<string, any>();
+    const row = (store: string) => {
+      if (!perStore.has(store)) perStore.set(store, { store, atShopifyCents: 0, reservedCents: 0, upcoming7Cents: 0, landed7Cents: 0, nextPayout: null });
+      return perStore.get(store);
+    };
+    for (const b of shopifyBalances) row(b.store_name || b.account_name).atShopifyCents += b.available_cents;
+    for (const r of reserves) row(r.store_name).reservedCents += r.cents;
+    for (const u of upcoming) {
+      const s = row(u.store);
+      if (u.date <= in7) s.upcoming7Cents += u.cents;
+      if (!s.nextPayout || u.date < s.nextPayout.date) s.nextPayout = { date: u.date, cents: u.cents, status: u.status };
+    }
+    for (const l of landed) if (l.store_name) row(l.store_name).landed7Cents += l.cents;
+    const stores = [...perStore.values()]
+      .map(s => ({ ...s, totalIncomingCents: s.atShopifyCents + s.reservedCents + s.upcoming7Cents }))
+      .sort((a, b) => b.totalIncomingCents - a.totalIncomingCents);
+
     return NextResponse.json({
-      shopifyBalances, reserves, upcoming, landed,
+      stores, upcoming, landed,
       totals: {
         atShopifyCents: shopifyBalances.reduce((s, b) => s + b.available_cents, 0),
         reservesCents: reserves.reduce((s, r) => s + r.cents, 0),

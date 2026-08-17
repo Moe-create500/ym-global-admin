@@ -399,28 +399,73 @@ export default function TransactionsPage() {
         };
         return (
           <div className="space-y-3">
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              {[['Cash at Shopify', t.atShopifyCents, 'text-emerald-400', 'sitting in Shopify Balance accounts — spendable there or pays out'],
-                ['Reserved by Shopify', t.reservesCents, 'text-amber-400', 'held back from payouts — released on Shopify’s schedule'],
-                ['Landing ≤7 days', t.upcoming7Cents, 'text-blue-300', 'scheduled/in-transit payouts hitting the banks this week'],
-                ['Landed · last 7d', t.landed7Cents, 'text-slate-200', 'payout deposits confirmed in the banks']].map(([l, c, cls, tip]: any) => (
-                <div key={l} className="bg-slate-900 border border-slate-800 rounded-xl p-3" title={tip}>
-                  <p className="text-[11px] uppercase tracking-wide text-slate-500">{l}</p>
-                  <p className={`text-lg font-bold mt-0.5 ${cls}`}>{fmt(c)}</p>
-                </div>
+            {/* The money's journey, left to right: at Shopify → held → landing → landed */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 flex flex-wrap items-center gap-x-2 gap-y-2">
+              {[['AT SHOPIFY', t.atShopifyCents, 'text-emerald-400', 'sitting in Shopify Balance accounts'],
+                ['HELD IN RESERVE', t.reservesCents, 'text-amber-400', 'held back by Shopify — releases on their schedule'],
+                ['LANDING ≤7D', t.upcoming7Cents, 'text-blue-300', 'payouts scheduled/in transit to the banks this week'],
+                ['LANDED · 7D', t.landed7Cents, 'text-slate-200', 'confirmed deposits in the banks, last 7 days']].map(([l, c, cls, tip]: any, i: number) => (
+                <span key={l} className="flex items-center gap-2">
+                  {i > 0 && <span className="text-slate-700 text-lg px-1">→</span>}
+                  <span title={tip}>
+                    <span className="block text-[9px] uppercase tracking-widest text-slate-500">{l}</span>
+                    <span className={`text-xl font-bold ${cls}`}>{fmt(c)}</span>
+                  </span>
+                </span>
               ))}
             </div>
+
+            {/* ONE ROW PER STORE — where its cash is right now */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-              <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">Payout schedule — what lands, when</p>
+              <table className="w-full text-[12px]">
+                <thead><tr className="border-b border-slate-800">
+                  <th className={thc}>STORE</th>
+                  <th className={thc + ' text-right'}>AT SHOPIFY</th>
+                  <th className={thc + ' text-right'}>RESERVED</th>
+                  <th className={thc + ' text-right'}>LANDING ≤7D</th>
+                  <th className={thc}>NEXT PAYOUT</th>
+                  <th className={thc + ' text-right'}>LANDED 7D</th>
+                  <th className={thc + ' text-right'}>TOTAL INCOMING</th>
+                </tr></thead>
+                <tbody>
+                  {incoming.stores.map((s: any) => (
+                    <tr key={s.store} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className={`${tdc} text-slate-200 font-medium`}>{s.store}</td>
+                      <td className={`${tdc} text-right ${s.atShopifyCents ? 'text-emerald-300' : 'text-slate-700'}`}>{s.atShopifyCents ? fmt(s.atShopifyCents) : '—'}</td>
+                      <td className={`${tdc} text-right ${s.reservedCents ? 'text-amber-400 font-medium' : 'text-slate-700'}`}>{s.reservedCents ? fmt(s.reservedCents) : '—'}</td>
+                      <td className={`${tdc} text-right ${s.upcoming7Cents ? 'text-blue-300' : 'text-slate-700'}`}>{s.upcoming7Cents ? fmt(s.upcoming7Cents) : '—'}</td>
+                      <td className={`${tdc} text-slate-400 whitespace-nowrap`}>{s.nextPayout ? <>{dayTag(s.nextPayout.date)} · {fmt(s.nextPayout.cents)}</> : <span className="text-slate-700">—</span>}</td>
+                      <td className={`${tdc} text-right ${s.landed7Cents ? 'text-slate-200' : 'text-slate-700'}`}>{s.landed7Cents ? fmt(s.landed7Cents) : '—'}</td>
+                      <td className={`${tdc} text-right font-bold text-white`}>{fmt(s.totalIncomingCents)}</td>
+                    </tr>
+                  ))}
+                  <tr className="bg-slate-800/20 font-semibold">
+                    <td className={`${tdc} text-slate-400`}>TOTAL</td>
+                    <td className={`${tdc} text-right text-emerald-400`}>{fmt(t.atShopifyCents)}</td>
+                    <td className={`${tdc} text-right text-amber-400`}>{fmt(t.reservesCents)}</td>
+                    <td className={`${tdc} text-right text-blue-300`}>{fmt(t.upcoming7Cents)}</td>
+                    <td className={tdc} />
+                    <td className={`${tdc} text-right text-slate-200`}>{fmt(t.landed7Cents)}</td>
+                    <td className={`${tdc} text-right text-white`}>{fmt(t.atShopifyCents + t.reservesCents + t.upcoming7Cents)}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p className="px-3 py-2 text-[10px] text-slate-600 border-t border-slate-800">
+                AT SHOPIFY = spendable balance held at Shopify · RESERVED = held back from payouts, releases on Shopify&apos;s schedule · LANDING = scheduled/in-transit payouts · LANDED = confirmed in your banks
+              </p>
+            </div>
+
+            {/* Day-by-day schedule, secondary */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">Day by day — next 14 days</p>
               {incoming.upcoming.length === 0 ? <p className="px-3 py-3 text-xs text-slate-500">no scheduled payouts in the next 14 days</p> : (
                 <table className="w-full text-[12px]">
-                  <thead><tr className="border-b border-slate-800"><th className={thc}>WHEN</th><th className={thc}>DATE</th><th className={thc}>STORE</th><th className={thc}>STATUS</th><th className={thc + ' text-right'}>AMOUNT</th></tr></thead>
                   <tbody>
                     {incoming.upcoming.map((u: any, i: number) => (
                       <tr key={i} className="border-b border-slate-800/40 hover:bg-slate-800/30">
-                        <td className={tdc}>{dayTag(u.date)}</td>
-                        <td className={`${tdc} text-slate-400`}>{u.date}</td>
-                        <td className={`${tdc} text-slate-200 font-medium`}>{u.store}</td>
+                        <td className={`${tdc} w-20`}>{dayTag(u.date)}</td>
+                        <td className={`${tdc} text-slate-500 w-24`}>{u.date.slice(5)}</td>
+                        <td className={`${tdc} text-slate-200`}>{u.store}</td>
                         <td className={tdc}><span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${u.status === 'in_transit' ? 'bg-blue-500/15 text-blue-300' : u.status === 'paid' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-slate-700/60 text-slate-400'}`}>{u.status.replace('_', ' ')}</span></td>
                         <td className={`${tdc} text-right text-white font-medium`}>{fmt(u.cents)}</td>
                       </tr>
@@ -428,28 +473,6 @@ export default function TransactionsPage() {
                   </tbody>
                 </table>
               )}
-            </div>
-            <div className="grid lg:grid-cols-2 gap-3">
-              <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-                <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">Shopify Balance accounts</p>
-                {incoming.shopifyBalances.map((b: any) => (
-                  <p key={b.id} className="px-3 py-1.5 flex justify-between text-[12px] border-b border-slate-800/40">
-                    <span className="text-slate-300">{b.store_name || b.account_name}</span>
-                    <span className="tabular-nums text-emerald-300 font-medium">{fmt(b.available_cents)}</span>
-                  </p>
-                ))}
-                {incoming.shopifyBalances.length === 0 && <p className="px-3 py-3 text-xs text-slate-500">none connected</p>}
-              </div>
-              <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-                <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">Landed in banks — last 7 days</p>
-                {incoming.landed.map((l: any, i: number) => (
-                  <p key={i} className="px-3 py-1.5 flex justify-between text-[12px] border-b border-slate-800/40">
-                    <span className="text-slate-400">{l.date} <span className="text-slate-300">{l.store_name || 'unattributed'}</span></span>
-                    <span className="tabular-nums text-slate-200">{fmt(l.cents)}</span>
-                  </p>
-                ))}
-                {incoming.landed.length === 0 && <p className="px-3 py-3 text-xs text-slate-500">no payout deposits detected this week</p>}
-              </div>
             </div>
           </div>
         );
