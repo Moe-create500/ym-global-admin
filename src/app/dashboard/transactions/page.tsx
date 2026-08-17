@@ -304,14 +304,18 @@ export default function TransactionsPage() {
 
       {(tab === 'banks' || tab === 'cc') && (() => {
         if (!accounts) return <p className="text-slate-500 text-sm py-8">Loading accounts…</p>;
-        const stale = (asOf: string | null) => asOf ? Math.round((Date.now() - new Date(asOf + 'T12:00:00Z').getTime()) / 86400000) : null;
         const co = (r: any) => <span className={`px-1 py-0.5 rounded text-[9px] font-bold ${r.company === 'shipsourced' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/10 text-blue-400'}`}>{r.company === 'shipsourced' ? 'SS' : 'YM'}</span>;
+        // Feed health = when the BANK last answered (balance heartbeat), not
+        // the last transaction — an unused card is idle, not stale.
         const feed = (r: any) => {
-          const d = stale(r.bank_data_as_of);
-          if (r.last_sync_error) return <span className="text-red-400 text-[10px]" title={r.last_sync_error}>⚠ {String(r.last_sync_error).slice(0, 34)}…</span>;
-          if (d == null) return <span className="text-slate-600 text-[10px]">no data</span>;
-          if (d > 3) return <span className="text-amber-400 text-[10px]">stale · {d}d old</span>;
-          return <span className="text-emerald-400 text-[10px]">live · {d === 0 ? 'today' : `${d}d ago`}</span>;
+          const balHours = r.balance_updated_at ? Math.round((Date.now() - new Date(r.balance_updated_at.replace(' ', 'T') + 'Z').getTime()) / 3600000) : null;
+          const txnDays = r.bank_data_as_of ? Math.round((Date.now() - new Date(r.bank_data_as_of + 'T12:00:00Z').getTime()) / 86400000) : null;
+          if (balHours != null && balHours <= 36) {
+            return <span className="text-emerald-400 text-[10px]" title={r.last_sync_error || ''}>live{txnDays != null && txnDays > 2 ? <span className="text-slate-500"> · last txn {txnDays}d ago</span> : ''}</span>;
+          }
+          if (r.last_sync_error) return <span className="text-red-400 text-[10px]" title={r.last_sync_error}>⚠ reconnect needed</span>;
+          if (balHours == null) return <span className="text-slate-600 text-[10px]">no feed</span>;
+          return <span className="text-amber-400 text-[10px]">feed stale · {Math.round(balHours / 24)}d — reconnect</span>;
         };
         const nm = (r: any) => (r.nickname || `${r.institution_name} ${r.account_name}`).replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ').slice(0, 34);
         const thc = 'text-left text-[9px] uppercase tracking-wider text-slate-600 px-3 py-1.5 font-semibold';

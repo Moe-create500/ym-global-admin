@@ -52,7 +52,7 @@ export async function GET(req: NextRequest) {
              a.provider, COALESCE(a.company, 'ymgv') AS company, a.credit_limit_cents,
              COALESCE(a.balance_available_cents, a.balance_ledger_cents, 0) AS available_cents,
              COALESCE(a.balance_ledger_cents, 0) AS ledger_cents,
-             a.bank_data_as_of, a.last_sync_error, s.name AS store_name
+             a.bank_data_as_of, a.balance_updated_at, a.last_sync_error, s.name AS store_name
       FROM bank_accounts a LEFT JOIN stores s ON s.id = a.store_id
       WHERE a.status = 'active'
       ORDER BY a.account_type, a.institution_name, a.last_four
