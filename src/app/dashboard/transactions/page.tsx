@@ -433,6 +433,7 @@ export default function TransactionsPage() {
             const cAction = (c: any) => {
               const fundStr = (c.funding || []).map((f: any) => `${f.source} ${fmt2(f.cents)}`).join(' + ');
               if (c.verdict === 'no_statement') return { t: 'ENTER STATEMENT →', c: 'text-slate-500', tip: 'no statement balance/due date entered — amount due unknown' };
+              if (c.verdict === 'stmt_paid') return { t: 'STMT PAID ✓', c: 'text-emerald-400 font-bold', tip: `statement ${fmt2(c.stmtBalanceCents)} fully covered by payments since ${c.stmtDate || 'statement date'}` };
               if (c.verdict === 'pay_full') return { t: `PAY ${fmt2(c.payNowCents)}`, c: c.daysToDue != null && c.daysToDue <= 3 ? 'text-red-400 font-bold' : 'text-emerald-400 font-bold', tip: `funded by: ${fundStr}` };
               if (c.verdict === 'pay_partial') return { t: `PAY ${fmt2(c.payNowCents)} · SHORT ${fmt2(c.shortCents)}`, c: c.minCovered === false ? 'text-red-400 font-bold' : 'text-amber-400 font-bold', tip: `funded by: ${fundStr}${c.minCovered === false ? ' — DOES NOT COVER MIN PAYMENT' : ''}` };
               return { t: 'NOT FUNDED', c: 'text-red-400', tip: 'no owner-store cashflow and no company cash left' };
@@ -519,8 +520,17 @@ export default function TransactionsPage() {
                                 </button>
                               </td>
                               <td className={`${td} text-right`}>
-                                <button onClick={() => setOpenCard(editing ? null : c.id)} className={c.stmtBalanceCents != null ? 'text-white font-medium hover:text-blue-300' : 'text-slate-500 hover:text-blue-300 underline decoration-dotted'}>
-                                  {c.stmtBalanceCents != null ? fmt2(c.stmtBalanceCents) : 'set'}
+                                <button onClick={() => setOpenCard(editing ? null : c.id)}
+                                  title={c.remainingStmtCents != null && c.remainingStmtCents !== c.stmtBalanceCents
+                                    ? `statement at cut: ${fmt2(c.stmtBalanceCents)} — payments since bring the REMAINING to ${fmt2(c.remainingStmtCents)}`
+                                    : 'remaining statement balance — click to edit statement'}
+                                  className={c.stmtBalanceCents != null ? 'text-white font-medium hover:text-blue-300' : 'text-slate-500 hover:text-blue-300 underline decoration-dotted'}>
+                                  {c.stmtBalanceCents == null ? 'set'
+                                    : c.remainingStmtCents === 0 ? <span className="text-emerald-400">PAID ✓</span>
+                                    : fmt2(c.remainingStmtCents ?? c.stmtBalanceCents)}
+                                  {c.remainingStmtCents != null && c.remainingStmtCents > 0 && c.remainingStmtCents !== c.stmtBalanceCents && (
+                                    <span className="block text-[9px] font-normal text-slate-500">of {fmt2(c.stmtBalanceCents)} stmt</span>
+                                  )}
                                 </button>
                               </td>
                               <td className={`${td} text-right whitespace-nowrap ${c.daysToDue == null ? 'text-slate-600' : c.daysToDue <= 3 ? 'text-red-400 font-bold' : c.daysToDue <= 7 ? 'text-amber-400' : 'text-slate-300'}`}>

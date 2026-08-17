@@ -874,6 +874,23 @@ export function getPayPlan(db: DatabaseType.Database) {
     const daysToDue = dueDate
       ? Math.round((new Date(dueDate + 'T12:00:00Z').getTime() - new Date(projection.generated_at_date + 'T12:00:00Z').getTime()) / 86400000)
       : null;
+    // REMAINING statement balance — what Amex shows as "Remaining Statement
+    // Balance": the statement minus every payment that landed since it cut.
+    // This (not the raw statement) is what actually needs to be paid by the
+    // due date, so it's what drives PAY.
+    let remainingStmtCents: number | null = null;
+    if (stmt?.statement_balance_cents != null) {
+      const paidSince = stmt.statement_date
+        ? ((db.prepare(`
+            SELECT COALESCE(SUM(t.amount_cents), 0) c
+            FROM bank_transactions t
+            JOIN txn_links l ON l.txn_id = t.id AND l.class = 'card_payment'
+            WHERE t.bank_account_id = ? AND t.amount_cents > 0
+              AND t.status IN ('posted', 'pending') AND t.date > ?
+          `).get(meta.id, stmt.statement_date) as any)?.c || 0)
+        : 0;
+      remainingStmtCents = Math.max(0, stmt.statement_balance_cents - paidSince);
+    }
     return {
       id: meta.id,
       name: meta.nickname || `${meta.institution_name} ${meta.account_name}`,
@@ -894,6 +911,7 @@ export function getPayPlan(db: DatabaseType.Database) {
       // statement entered = the need is unknown; the UI asks for it rather
       // than inventing a number.
       stmtBalanceCents: stmt?.statement_balance_cents ?? null,
+      remainingStmtCents,
       stmtDate: stmt?.statement_date || null,
       dueDate,
       daysToDue,
@@ -982,7 +1000,8 @@ export function getPayPlan(db: DatabaseType.Database) {
       c.verdict = 'no_statement';
       continue;
     }
-    const need = c.stmtBalanceCents;
+    // Pay what's actually LEFT on the statement, not what it was at cut
+    const need = c.remainingStmtCents ?? c.stmtBalanceCents;
     let remaining = need;
     const funding: { source: string; cents: number }[] = [];
     for (const o of c.owners) {
@@ -1008,6 +1027,7 @@ export function getPayPlan(db: DatabaseType.Database) {
     c.shortCents = remaining;
     c.minCovered = c.minPaymentCents != null ? c.payNowCents >= c.minPaymentCents : null;
     c.verdict = !hasStatement ? 'no_statement'
+      : need === 0 ? 'stmt_paid'
       : c.payNowCents >= need ? 'pay_full'
       : c.payNowCents > 0 ? 'pay_partial'
       : 'not_funded';
