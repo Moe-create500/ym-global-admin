@@ -44,6 +44,9 @@ export function ensureTxnIntelTables(db: DatabaseType.Database) {
   // Company tag on accounts (also ensured by foundation.ts) — the Brain reads
   // it on every card so YM and ShipSourced money never blend silently
   try { db.exec("ALTER TABLE bank_accounts ADD COLUMN company TEXT"); } catch { /* exists */ }
+  // Internal nickname — Moe's own name for a card ("Purebite ads card"),
+  // preferred over the bank's product name everywhere the Brain displays one
+  try { db.exec("ALTER TABLE bank_accounts ADD COLUMN nickname TEXT"); } catch { /* exists */ }
   // Funding-card aliases: Amex issues sub-cards (·2976, ·9275…) whose charges
   // roll up into an account with a DIFFERENT last4 (Platinum ·1009). Invoices
   // carry the sub-card number, bank feeds carry the account number — without
@@ -643,7 +646,7 @@ export function getTruth(db: DatabaseType.Database, days: number) {
   const d = `-${Math.min(Math.max(days || 90, 30), 365)} days`;
 
   const cards: any[] = db.prepare(`
-    SELECT id, institution_name, account_name, last_four, balance_ledger_cents, bank_data_as_of
+    SELECT id, institution_name, account_name, nickname, last_four, balance_ledger_cents, bank_data_as_of
     FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'
     ORDER BY ABS(balance_ledger_cents) DESC
   `).all();
@@ -690,7 +693,7 @@ export function getTruth(db: DatabaseType.Database, days: number) {
       g.cents += r.unpaidCents; g.n++;
     }
     return {
-      id: c.id, institution: c.institution_name, name: c.account_name, last4: c.last_four,
+      id: c.id, institution: c.institution_name, name: c.nickname || c.account_name, last4: c.last_four,
       asOf: c.bank_data_as_of, postedCents: posted,
       groups: [...byGroup.values()].sort((a, b) => b.cents - a.cents),
       oldestUnpaidDate: included.length ? included[included.length - 1].date : null,
@@ -843,7 +846,7 @@ export function getPayPlan(db: DatabaseType.Database) {
   const compByCardId = new Map(truth.composition.map((c: any) => [c.id, c]));
 
   const cardsMeta: any[] = db.prepare(`
-    SELECT id, institution_name, account_name, last_four, COALESCE(company, 'ymgv') AS company
+    SELECT id, institution_name, account_name, last_four, nickname, COALESCE(company, 'ymgv') AS company
     FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'
   `).all();
 
@@ -873,7 +876,9 @@ export function getPayPlan(db: DatabaseType.Database) {
       : null;
     return {
       id: meta.id,
-      name: `${meta.institution_name} ${meta.account_name}`,
+      name: meta.nickname || `${meta.institution_name} ${meta.account_name}`,
+      bankName: `${meta.institution_name} ${meta.account_name}`,
+      nickname: meta.nickname || null,
       last4: meta.last_four,
       company: meta.company, // 'ymgv' | 'shipsourced' — the Brain never blends the two
       postedCents: cl.postedCents,

@@ -57,6 +57,35 @@ function StatementEditor({ card, onSaved, compact }: { card: any; onSaved: () =>
   );
 }
 
+function NicknameEditor({ card, onSaved }: { card: any; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [nick, setNick] = useState(card.nickname || '');
+  const save = async () => {
+    await fetch('/api/transactions', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'nickname', accountId: card.id, nickname: nick }),
+    });
+    setEditing(false);
+    onSaved();
+  };
+  if (editing) return (
+    <span className="inline-flex items-center gap-1">
+      <input autoFocus value={nick} onChange={e => setNick(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }}
+        placeholder="internal name (e.g. Purebite ads card)"
+        className="w-52 bg-slate-950 border border-blue-500 rounded px-1.5 py-0.5 text-[12px] text-white outline-none" />
+      <button onClick={save} className="text-[10px] px-1.5 py-0.5 bg-blue-600 hover:bg-blue-500 text-white rounded font-semibold">save</button>
+    </span>
+  );
+  return (
+    <button onClick={() => setEditing(true)} className="text-left hover:text-blue-300 group" title={`bank name: ${card.bankName || card.name}\nclick to set your internal name`}>
+      <span className={card.nickname ? 'text-white font-medium' : ''}>{card.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ').slice(0, 30)}</span>
+      <span className="text-slate-600"> ·{card.last4}</span>
+      <span className="text-slate-600 opacity-0 group-hover:opacity-100 ml-1">✏️</span>
+    </button>
+  );
+}
+
 function ClassChip({ cls }: { cls: string | null }) {
   const c = cls || 'other';
   return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${CLASS_COLORS[c] || CLASS_COLORS.other}`}>{CLASS_LABELS[c] || c}</span>;
@@ -558,8 +587,8 @@ export default function TransactionsPage() {
                   <div className="divide-y divide-slate-800/60">
                     {brainCards.map((c: any) => (
                       <div key={`st-${c.id}`} className="px-3 py-2 flex flex-wrap items-center gap-x-4 gap-y-1">
-                        <span className="text-[12px] text-slate-200 w-48 truncate" title={c.name}>
-                          {c.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ')} <span className="text-slate-600">·{c.last4}</span>
+                        <span className="text-[12px] text-slate-200 w-52 truncate">
+                          <NicknameEditor card={c} onSaved={loadPayPlan} />
                         </span>
                         <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${c.stmtSource === 'plaid' ? 'bg-blue-500/15 text-blue-400' : c.stmtSource ? 'bg-slate-700/60 text-slate-400' : 'bg-amber-500/10 text-amber-400'}`}>
                           {c.stmtSource === 'plaid' ? '🏦 bank' : c.stmtSource ? '✍️ manual' : 'not set'}

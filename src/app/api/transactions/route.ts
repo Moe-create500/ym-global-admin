@@ -174,6 +174,15 @@ export async function PATCH(req: NextRequest) {
   const b = await req.json().catch(() => ({}));
   dropBrainCache();
 
+  if (b.action === 'nickname') {
+    if (!b.accountId) return NextResponse.json({ error: 'accountId required' }, { status: 400 });
+    const nick = typeof b.nickname === 'string' ? b.nickname.trim().slice(0, 40) : '';
+    const r = db.prepare("UPDATE bank_accounts SET nickname = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(nick || null, b.accountId);
+    if (!r.changes) return NextResponse.json({ error: 'account not found' }, { status: 404 });
+    return NextResponse.json({ success: true, nickname: nick || null });
+  }
+
   if (b.action === 'statement') {
     const { ensureCardStatements } = await import('@/lib/transactions-intel');
     ensureCardStatements(db);
