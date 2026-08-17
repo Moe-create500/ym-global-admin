@@ -491,6 +491,34 @@ export default function TransactionsPage() {
                   </div>
                 )}
 
+                {/* ── MEET THE STATEMENT — remaining balances vs due dates ── */}
+                {payPlan.meetStatement && (() => {
+                  const m = payPlan.meetStatement;
+                  const chip = (c: any) => `${c.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ')} ·${c.last4}: ${fmt2(c.cents)} (${c.daysToDue < 0 ? `${-c.daysToDue}d late` : c.daysToDue === 0 ? 'TODAY' : `${c.daysToDue}d`})`;
+                  const clean = !m.overdueCents && !m.dueSoonCents;
+                  return (
+                    <div className={`rounded-lg px-4 py-2.5 mb-3 border flex flex-wrap items-center gap-x-6 gap-y-1 ${clean ? 'bg-emerald-950/20 border-emerald-800/40' : m.overdueCents ? 'bg-red-950/30 border-red-800/50' : 'bg-amber-950/20 border-amber-800/40'}`}>
+                      <span className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Meet the statement</span>
+                      {clean && <span className="text-emerald-400 text-sm font-bold">all statements met ✓{m.laterCents > 0 ? ` · ${fmt2(m.laterCents)} due later this cycle` : ''}</span>}
+                      {m.overdueCents > 0 && (
+                        <span className="text-red-400 text-sm font-bold" title={m.overdueCards.map(chip).join('\n')}>
+                          🚨 OVERDUE {fmt2(m.overdueCents)} <span className="font-normal text-red-300/70">({m.overdueCards.map((c: any) => `·${c.last4}`).join(' ')})</span>
+                        </span>
+                      )}
+                      {m.dueSoonCents > 0 && (
+                        <span className="text-amber-400 text-sm font-bold" title={m.dueSoonCards.map(chip).join('\n')}>
+                          DUE ≤7D {fmt2(m.dueSoonCents)} <span className="font-normal text-amber-300/70">({m.dueSoonCards.map((c: any) => `·${c.last4}`).join(' ')})</span>
+                        </span>
+                      )}
+                      {m.nextDue && (
+                        <span className="text-slate-400 text-xs">
+                          next: <span className="text-white font-medium">{fmt2(m.nextDue.cents)}</span> on {m.nextDue.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ')} ·{m.nextDue.last4} — {m.nextDue.daysToDue === 0 ? <span className="text-red-400 font-bold">due TODAY</span> : m.nextDue.daysToDue === 1 ? <span className="text-red-400 font-bold">due TOMORROW</span> : `due in ${m.nextDue.daysToDue}d`}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* ── CARDS TABLE ── */}
                 <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mb-3">
                   <table className="w-full text-[12px]">

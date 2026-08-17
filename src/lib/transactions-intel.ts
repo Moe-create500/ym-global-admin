@@ -874,21 +874,35 @@ export function getPayPlan(db: DatabaseType.Database) {
     const daysToDue = dueDate
       ? Math.round((new Date(dueDate + 'T12:00:00Z').getTime() - new Date(projection.generated_at_date + 'T12:00:00Z').getTime()) / 86400000)
       : null;
-    // REMAINING statement balance — what Amex shows as "Remaining Statement
-    // Balance": the statement minus every payment that landed since it cut.
-    // This (not the raw statement) is what actually needs to be paid by the
-    // due date, so it's what drives PAY.
+    // REMAINING statement balance — Amex's own arithmetic, reproduced:
+    // statement balance minus PAYMENTS AND CREDITS applied since the cut.
+    // Posted credits always count; pending ones only within 14 days (Teller
+    // leaves dead pendings forever) and only when no posted twin exists yet
+    // (BofA shows ACH payments as a pending+posted pair — counting both
+    // would double-subtract). Recomputed every sync → walks to PAID ✓.
     let remainingStmtCents: number | null = null;
     if (stmt?.statement_balance_cents != null) {
-      const paidSince = stmt.statement_date
-        ? ((db.prepare(`
-            SELECT COALESCE(SUM(t.amount_cents), 0) c
-            FROM bank_transactions t
-            JOIN txn_links l ON l.txn_id = t.id AND l.class = 'card_payment'
-            WHERE t.bank_account_id = ? AND t.amount_cents > 0
-              AND t.status IN ('posted', 'pending') AND t.date > ?
-          `).get(meta.id, stmt.statement_date) as any)?.c || 0)
-        : 0;
+      let paidSince = 0;
+      if (stmt.statement_date) {
+        paidSince = ((db.prepare(`
+          SELECT COALESCE(SUM(t.amount_cents), 0) c
+          FROM bank_transactions t
+          WHERE t.bank_account_id = ? AND t.amount_cents > 0
+            AND t.status = 'posted' AND t.date > ?
+        `).get(meta.id, stmt.statement_date) as any)?.c || 0);
+        paidSince += ((db.prepare(`
+          SELECT COALESCE(SUM(p.amount_cents), 0) c
+          FROM bank_transactions p
+          WHERE p.bank_account_id = ? AND p.amount_cents > 0
+            AND p.status = 'pending' AND p.date > ? AND p.date >= date('now', '-14 days')
+            AND NOT EXISTS (
+              SELECT 1 FROM bank_transactions q
+              WHERE q.bank_account_id = p.bank_account_id AND q.status = 'posted'
+                AND q.amount_cents = p.amount_cents
+                AND ABS(julianday(q.date) - julianday(p.date)) <= 3
+            )
+        `).get(meta.id, stmt.statement_date) as any)?.c || 0);
+      }
       remainingStmtCents = Math.max(0, stmt.statement_balance_cents - paidSince);
     }
     return {
@@ -1080,7 +1094,24 @@ export function getPayPlan(db: DatabaseType.Database) {
   const tracedTotal = storePlans.reduce((s, x) => s + x.owedTotal, 0);
   const debtTotal = cards.reduce((s, c) => s + c.postedCents, 0);
 
+  // "Meet the statement" radar — the whole point of tracking remaining:
+  // never let a due date arrive unmet. Buckets by urgency.
+  const withStmt = cards.filter(c => (c.remainingStmtCents ?? 0) > 0 && c.dueDate);
+  const overdue = withStmt.filter(c => c.daysToDue != null && c.daysToDue < 0);
+  const dueSoon = withStmt.filter(c => c.daysToDue != null && c.daysToDue >= 0 && c.daysToDue <= 7);
+  const later = withStmt.filter(c => c.daysToDue != null && c.daysToDue > 7);
+  const next = withStmt.filter(c => (c.daysToDue ?? 0) >= 0).sort((a, b) => (a.daysToDue ?? 999) - (b.daysToDue ?? 999))[0] || null;
+  const meetStatement = {
+    overdueCents: overdue.reduce((s, c) => s + c.remainingStmtCents, 0),
+    overdueCards: overdue.map(c => ({ name: c.name, last4: c.last4, cents: c.remainingStmtCents, dueDate: c.dueDate, daysToDue: c.daysToDue })),
+    dueSoonCents: dueSoon.reduce((s, c) => s + c.remainingStmtCents, 0),
+    dueSoonCards: dueSoon.map(c => ({ name: c.name, last4: c.last4, cents: c.remainingStmtCents, dueDate: c.dueDate, daysToDue: c.daysToDue })),
+    laterCents: later.reduce((s, c) => s + c.remainingStmtCents, 0),
+    nextDue: next ? { name: next.name, last4: next.last4, cents: next.remainingStmtCents, dueDate: next.dueDate, daysToDue: next.daysToDue } : null,
+  };
+
   return {
+    meetStatement,
     generatedAt: projection.generated_at_date,
     position: projection.position,
     envelopeCents: projection.position.safe_to_pay_today_cents,
