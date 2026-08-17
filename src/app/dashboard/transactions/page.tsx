@@ -92,9 +92,10 @@ function ClassChip({ cls }: { cls: string | null }) {
 }
 
 export default function TransactionsPage() {
-  const [tab, setTab] = useState<'cards' | 'payplan' | 'truth' | 'ledger' | 'payments' | 'banks' | 'cc' | 'payroll' | 'adspend'>('payplan');
+  const [tab, setTab] = useState<'cards' | 'payplan' | 'truth' | 'ledger' | 'payments' | 'banks' | 'cc' | 'payroll' | 'adspend' | 'incoming'>('payplan');
   const [accounts, setAccounts] = useState<{ banks: any[]; creditCards: any[] } | null>(null);
   const [adSpend, setAdSpend] = useState<{ spend: any[]; fbUnbilled: any[] } | null>(null);
+  const [incoming, setIncoming] = useState<any>(null);
   // Company lens — the Brain knows YM and ShipSourced are different companies
   // sharing one money layer; this never blends them silently.
   const [company, setCompany] = useState<'all' | 'ymgv' | 'shipsourced'>('all');
@@ -207,6 +208,7 @@ export default function TransactionsPage() {
       if (!payPlan) loadPayPlan(); // statement data for the credit-cards tab
     }
     if (tab === 'adspend') fetch('/api/transactions?view=adspend').then(r => r.json()).then(setAdSpend).catch(() => {});
+    if (tab === 'incoming') fetch('/api/transactions?view=incoming').then(r => r.json()).then(setIncoming).catch(() => {});
     if (tab === 'payroll' && !payPlan) loadPayPlan();
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (tab === 'ledger') loadLedger(); }, [tab, loadLedger]);
@@ -294,7 +296,7 @@ export default function TransactionsPage() {
       )}
 
       <div className="flex gap-1 mb-4 border-b border-slate-800">
-        {([['payplan', '⚡ Operations'], ['banks', '🏦 Bank Accounts'], ['cc', '💳 Credit Cards'], ['payroll', '👥 Payroll'], ['adspend', '📣 Ad Spends'], ['payments', 'Payments'], ['cards', 'Card Intelligence'], ['truth', 'Source of Truth'], ['ledger', 'Ledger']] as const).map(([k, label]) => (
+        {([['payplan', '⚡ Operations'], ['banks', '🏦 Bank Accounts'], ['cc', '💳 Credit Cards'], ['payroll', '👥 Payroll'], ['adspend', '📣 Ad Spends'], ['incoming', '💰 Incoming Cash'], ['payments', 'Payments'], ['cards', 'Card Intelligence'], ['truth', 'Source of Truth'], ['ledger', 'Ledger']] as const).map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${tab === k ? 'border-blue-500 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>
             {label}
@@ -380,6 +382,75 @@ export default function TransactionsPage() {
                 })}
               </tbody>
             </table>
+          </div>
+        );
+      })()}
+
+      {tab === 'incoming' && (() => {
+        if (!incoming) return <p className="text-slate-500 text-sm py-8">Loading incoming cash…</p>;
+        const thc = 'text-left text-[9px] uppercase tracking-wider text-slate-600 px-3 py-1.5 font-semibold';
+        const tdc = 'px-3 py-2 tabular-nums';
+        const t = incoming.totals;
+        const dayTag = (d: string) => {
+          const days = Math.round((new Date(d + 'T12:00:00Z').getTime() - Date.now()) / 86400000);
+          if (days <= 0) return <span className="text-emerald-400 font-bold">today</span>;
+          if (days === 1) return <span className="text-emerald-300">tomorrow</span>;
+          return <span className="text-slate-400">{days}d</span>;
+        };
+        return (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              {[['Cash at Shopify', t.atShopifyCents, 'text-emerald-400', 'sitting in Shopify Balance accounts — spendable there or pays out'],
+                ['Reserved by Shopify', t.reservesCents, 'text-amber-400', 'held back from payouts — released on Shopify’s schedule'],
+                ['Landing ≤7 days', t.upcoming7Cents, 'text-blue-300', 'scheduled/in-transit payouts hitting the banks this week'],
+                ['Landed · last 7d', t.landed7Cents, 'text-slate-200', 'payout deposits confirmed in the banks']].map(([l, c, cls, tip]: any) => (
+                <div key={l} className="bg-slate-900 border border-slate-800 rounded-xl p-3" title={tip}>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">{l}</p>
+                  <p className={`text-lg font-bold mt-0.5 ${cls}`}>{fmt(c)}</p>
+                </div>
+              ))}
+            </div>
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">Payout schedule — what lands, when</p>
+              {incoming.upcoming.length === 0 ? <p className="px-3 py-3 text-xs text-slate-500">no scheduled payouts in the next 14 days</p> : (
+                <table className="w-full text-[12px]">
+                  <thead><tr className="border-b border-slate-800"><th className={thc}>WHEN</th><th className={thc}>DATE</th><th className={thc}>STORE</th><th className={thc}>STATUS</th><th className={thc + ' text-right'}>AMOUNT</th></tr></thead>
+                  <tbody>
+                    {incoming.upcoming.map((u: any, i: number) => (
+                      <tr key={i} className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                        <td className={tdc}>{dayTag(u.date)}</td>
+                        <td className={`${tdc} text-slate-400`}>{u.date}</td>
+                        <td className={`${tdc} text-slate-200 font-medium`}>{u.store}</td>
+                        <td className={tdc}><span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${u.status === 'in_transit' ? 'bg-blue-500/15 text-blue-300' : u.status === 'paid' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-slate-700/60 text-slate-400'}`}>{u.status.replace('_', ' ')}</span></td>
+                        <td className={`${tdc} text-right text-white font-medium`}>{fmt(u.cents)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div className="grid lg:grid-cols-2 gap-3">
+              <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+                <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">Shopify Balance accounts</p>
+                {incoming.shopifyBalances.map((b: any) => (
+                  <p key={b.id} className="px-3 py-1.5 flex justify-between text-[12px] border-b border-slate-800/40">
+                    <span className="text-slate-300">{b.store_name || b.account_name}</span>
+                    <span className="tabular-nums text-emerald-300 font-medium">{fmt(b.available_cents)}</span>
+                  </p>
+                ))}
+                {incoming.shopifyBalances.length === 0 && <p className="px-3 py-3 text-xs text-slate-500">none connected</p>}
+              </div>
+              <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+                <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">Landed in banks — last 7 days</p>
+                {incoming.landed.map((l: any, i: number) => (
+                  <p key={i} className="px-3 py-1.5 flex justify-between text-[12px] border-b border-slate-800/40">
+                    <span className="text-slate-400">{l.date} <span className="text-slate-300">{l.store_name || 'unattributed'}</span></span>
+                    <span className="tabular-nums text-slate-200">{fmt(l.cents)}</span>
+                  </p>
+                ))}
+                {incoming.landed.length === 0 && <p className="px-3 py-3 text-xs text-slate-500">no payout deposits detected this week</p>}
+              </div>
+            </div>
           </div>
         );
       })()}
