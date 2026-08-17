@@ -92,8 +92,9 @@ function ClassChip({ cls }: { cls: string | null }) {
 }
 
 export default function TransactionsPage() {
-  const [tab, setTab] = useState<'cards' | 'payplan' | 'truth' | 'ledger' | 'payments' | 'banks' | 'cc'>('payplan');
+  const [tab, setTab] = useState<'cards' | 'payplan' | 'truth' | 'ledger' | 'payments' | 'banks' | 'cc' | 'payroll' | 'adspend'>('payplan');
   const [accounts, setAccounts] = useState<{ banks: any[]; creditCards: any[] } | null>(null);
+  const [adSpend, setAdSpend] = useState<{ spend: any[]; fbUnbilled: any[] } | null>(null);
   // Company lens — the Brain knows YM and ShipSourced are different companies
   // sharing one money layer; this never blends them silently.
   const [company, setCompany] = useState<'all' | 'ymgv' | 'shipsourced'>('all');
@@ -205,6 +206,8 @@ export default function TransactionsPage() {
       fetch('/api/transactions?view=accounts').then(r => r.json()).then(setAccounts).catch(() => {});
       if (!payPlan) loadPayPlan(); // statement data for the credit-cards tab
     }
+    if (tab === 'adspend') fetch('/api/transactions?view=adspend').then(r => r.json()).then(setAdSpend).catch(() => {});
+    if (tab === 'payroll' && !payPlan) loadPayPlan();
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (tab === 'ledger') loadLedger(); }, [tab, loadLedger]);
   useEffect(() => { if (tab === 'payments') loadPayments(); }, [tab, loadPayments]);
@@ -291,7 +294,7 @@ export default function TransactionsPage() {
       )}
 
       <div className="flex gap-1 mb-4 border-b border-slate-800">
-        {([['payplan', '⚡ Operations'], ['banks', '🏦 Bank Accounts'], ['cc', '💳 Credit Cards'], ['cards', 'Card Intelligence'], ['truth', 'Source of Truth'], ['ledger', 'Ledger'], ['payments', 'Payments']] as const).map(([k, label]) => (
+        {([['payplan', '⚡ Operations'], ['banks', '🏦 Bank Accounts'], ['cc', '💳 Credit Cards'], ['payroll', '👥 Payroll'], ['adspend', '📣 Ad Spends'], ['payments', 'Payments'], ['cards', 'Card Intelligence'], ['truth', 'Source of Truth'], ['ledger', 'Ledger']] as const).map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${tab === k ? 'border-blue-500 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>
             {label}
@@ -373,6 +376,116 @@ export default function TransactionsPage() {
                 })}
               </tbody>
             </table>
+          </div>
+        );
+      })()}
+
+      {tab === 'payroll' && (() => {
+        if (!payPlan) return <p className="text-slate-500 text-sm py-8">Loading…</p>;
+        const thc = 'text-left text-[9px] uppercase tracking-wider text-slate-600 px-3 py-1.5 font-semibold';
+        const thr = thc + ' text-right';
+        const tdc = 'px-3 py-2 tabular-nums';
+        return (
+          <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+            <table className="w-full text-[12px]">
+              <thead><tr className="border-b border-slate-800">
+                <th className={thc}>PAYROLL</th><th className={thr}>AMOUNT</th><th className={thr}>DUE</th><th className={thc}>RECURS</th><th className={thr}></th>
+              </tr></thead>
+              <tbody>
+                {(payPlan.payroll?.items || []).map((pr: any) => {
+                  const days = Math.round((new Date(pr.due_date + 'T12:00:00Z').getTime() - new Date(payPlan.generatedAt + 'T12:00:00Z').getTime()) / 86400000);
+                  return (
+                    <tr key={pr.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className={`${tdc} text-slate-200`}>{pr.label}{pr.store_name ? <span className="text-slate-500"> · {pr.store_name}</span> : ''}</td>
+                      <td className={`${tdc} text-right text-white font-medium`}>{fmt2(pr.amount_cents)}</td>
+                      <td className={`${tdc} text-right whitespace-nowrap ${days <= 3 ? 'text-red-400 font-bold' : days <= 7 ? 'text-amber-400' : 'text-slate-300'}`}>{dayLabel(pr.due_date)} ({days}d)</td>
+                      <td className={`${tdc} text-slate-500`}>{pr.recurrence === 'once' ? '—' : pr.recurrence}</td>
+                      <td className={`${tdc} text-right whitespace-nowrap`}>
+                        <button onClick={() => payrollAction({ action: 'payroll_update', id: pr.id, op: 'paid' })} className="text-emerald-400 hover:text-emerald-300 mr-3">✓ paid</button>
+                        <button onClick={() => payrollAction({ action: 'payroll_update', id: pr.id, op: 'delete' })} className="text-red-500/60 hover:text-red-400">✕</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                <tr className="bg-slate-800/20">
+                  <td className={tdc}>
+                    <input value={prLabel} onChange={e => setPrLabel(e.target.value)} placeholder="add payroll — who/what"
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white text-[11px]" />
+                  </td>
+                  <td className={`${tdc} text-right`}>
+                    <input type="number" step="0.01" value={prAmount} onChange={e => setPrAmount(e.target.value)} placeholder="$"
+                      className="w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white text-[11px] text-right" />
+                  </td>
+                  <td className={`${tdc} text-right`}>
+                    <input type="date" value={prDue} onChange={e => setPrDue(e.target.value)}
+                      className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white text-[11px]" />
+                  </td>
+                  <td className={tdc}>
+                    <select value={prRecur} onChange={e => setPrRecur(e.target.value)} className="bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-white text-[11px]">
+                      <option value="once">once</option><option value="weekly">weekly</option>
+                      <option value="biweekly">biweekly</option><option value="monthly">monthly</option>
+                    </select>
+                  </td>
+                  <td className={`${tdc} text-right`}>
+                    <button onClick={() => { if (prLabel && prAmount && prDue) { payrollAction({ action: 'payroll_add', label: prLabel, amountCents: Math.round(parseFloat(prAmount) * 100), dueDate: prDue, recurrence: prRecur }); setPrLabel(''); setPrAmount(''); setPrDue(''); } }}
+                      className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-semibold text-[11px]">add</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="px-3 py-2 text-[10px] text-slate-600 border-t border-slate-800">Payroll due within 7 days is paid BEFORE cards — it comes off the safe envelope first in the Operations pay plan.</p>
+          </div>
+        );
+      })()}
+
+      {tab === 'adspend' && (() => {
+        if (!adSpend) return <p className="text-slate-500 text-sm py-8">Loading ad spend…</p>;
+        const thc = 'text-left text-[9px] uppercase tracking-wider text-slate-600 px-3 py-1.5 font-semibold';
+        const thr = thc + ' text-right';
+        const tdc = 'px-3 py-2 tabular-nums';
+        const tot = (k: string) => adSpend.spend.reduce((s: number, r: any) => s + (r[k] || 0), 0);
+        return (
+          <div className="space-y-3">
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <table className="w-full text-[12px]">
+                <thead><tr className="border-b border-slate-800">
+                  <th className={thc}>STORE</th><th className={thc}>PLATFORM</th><th className={thr}>YESTERDAY</th><th className={thr}>7 DAYS</th><th className={thr}>30 DAYS</th>
+                </tr></thead>
+                <tbody>
+                  {adSpend.spend.map((r: any, i: number) => (
+                    <tr key={i} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className={`${tdc} text-slate-200 font-medium`}>{r.store}</td>
+                      <td className={`${tdc} text-slate-400`}>{r.platform}</td>
+                      <td className={`${tdc} text-right text-slate-300`}>{r.y_cents ? fmt(r.y_cents) : '—'}</td>
+                      <td className={`${tdc} text-right text-white font-medium`}>{fmt(r.d7_cents)}</td>
+                      <td className={`${tdc} text-right text-slate-300`}>{fmt(r.d30_cents)}</td>
+                    </tr>
+                  ))}
+                  <tr className="bg-slate-800/20 font-semibold">
+                    <td className={`${tdc} text-slate-400`} colSpan={2}>TOTAL</td>
+                    <td className={`${tdc} text-right text-slate-200`}>{fmt(tot('y_cents'))}</td>
+                    <td className={`${tdc} text-right text-white`}>{fmt(tot('d7_cents'))}</td>
+                    <td className={`${tdc} text-right text-slate-200`}>{fmt(tot('d30_cents'))}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">FB unbilled — spend accrued that hasn&apos;t hit a card yet</p>
+              {adSpend.fbUnbilled.length === 0 ? <p className="px-3 py-3 text-xs text-slate-500">nothing unbilled</p> : (
+                <table className="w-full text-[12px]">
+                  <tbody>
+                    {adSpend.fbUnbilled.map((f: any, i: number) => (
+                      <tr key={i} className="border-b border-slate-800/40">
+                        <td className={`${tdc} text-slate-200`}>{f.declining ? '⛔ ' : ''}{f.profile_name} <span className="text-slate-500">· {f.store}</span></td>
+                        <td className={`${tdc} text-slate-400`}>{f.card_last4 ? `→ card ·${f.card_last4}` : <span className="text-amber-400">no funding card linked</span>}</td>
+                        <td className={`${tdc} text-right text-blue-300 font-medium`}>{fmt(f.balance_cents)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
         );
       })()}
@@ -763,60 +876,6 @@ export default function TransactionsPage() {
                         <td className={`${td} text-right font-bold text-emerald-400`}>{fmt2(Math.min(payPlan.company.safeTodayCents, payPlan.company.untracedCents))}</td>
                         <td className={`${td} text-right font-bold text-amber-400`}>SHARED CASH</td>
                       </tr>}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* ── PAYROLL ── */}
-                <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mb-3">
-                  <table className="w-full text-[12px]">
-                    <thead><tr className="border-b border-slate-800">
-                      <th className={thCls}>PAYROLL</th>
-                      <th className={thR}>AMOUNT</th>
-                      <th className={thR}>DUE</th>
-                      <th className={thCls}>RECURS</th>
-                      <th className={thR}></th>
-                    </tr></thead>
-                    <tbody>
-                      {(payPlan.payroll?.items || []).map((pr: any) => {
-                        const days = Math.round((new Date(pr.due_date + 'T12:00:00Z').getTime() - new Date(payPlan.generatedAt + 'T12:00:00Z').getTime()) / 86400000);
-                        return (
-                          <tr key={pr.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                            <td className={`${td} text-slate-200`}>{pr.label}{pr.store_name ? <span className="text-slate-500"> · {pr.store_name}</span> : ''}</td>
-                            <td className={`${td} text-right text-white font-medium`}>{fmt2(pr.amount_cents)}</td>
-                            <td className={`${td} text-right whitespace-nowrap ${days <= 3 ? 'text-red-400 font-bold' : days <= 7 ? 'text-amber-400' : 'text-slate-300'}`}>{dayLabel(pr.due_date)} ({days}d)</td>
-                            <td className={`${td} text-slate-500`}>{pr.recurrence === 'once' ? '—' : pr.recurrence}</td>
-                            <td className={`${td} text-right whitespace-nowrap`}>
-                              <button onClick={() => payrollAction({ action: 'payroll_update', id: pr.id, op: 'paid' })} className="text-emerald-400 hover:text-emerald-300 mr-3">✓ paid</button>
-                              <button onClick={() => payrollAction({ action: 'payroll_update', id: pr.id, op: 'delete' })} className="text-red-500/60 hover:text-red-400">✕</button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                      <tr className="bg-slate-800/20">
-                        <td className={td}>
-                          <input value={prLabel} onChange={e => setPrLabel(e.target.value)} placeholder="add payroll — who/what"
-                            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white text-[11px]" />
-                        </td>
-                        <td className={`${td} text-right`}>
-                          <input type="number" step="0.01" value={prAmount} onChange={e => setPrAmount(e.target.value)} placeholder="$"
-                            className="w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white text-[11px] text-right" />
-                        </td>
-                        <td className={`${td} text-right`}>
-                          <input type="date" value={prDue} onChange={e => setPrDue(e.target.value)}
-                            className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white text-[11px]" />
-                        </td>
-                        <td className={td}>
-                          <select value={prRecur} onChange={e => setPrRecur(e.target.value)} className="bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-white text-[11px]">
-                            <option value="once">once</option><option value="weekly">weekly</option>
-                            <option value="biweekly">biweekly</option><option value="monthly">monthly</option>
-                          </select>
-                        </td>
-                        <td className={`${td} text-right`}>
-                          <button onClick={() => { if (prLabel && prAmount && prDue) { payrollAction({ action: 'payroll_add', label: prLabel, amountCents: Math.round(parseFloat(prAmount) * 100), dueDate: prDue, recurrence: prRecur }); setPrLabel(''); setPrAmount(''); setPrDue(''); } }}
-                            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-semibold text-[11px]">add</button>
-                        </td>
-                      </tr>
                     </tbody>
                   </table>
                 </div>

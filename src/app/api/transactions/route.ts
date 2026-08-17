@@ -21,6 +21,29 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ...getSummary(db), stores, accounts });
   }
   if (view === 'cards') return NextResponse.json({ cards: getCardIntel(db, days || 30), clarity: getCardClarity(db) });
+  if (view === 'adspend') {
+    // Ad Spends tab — per store/platform: yesterday, 7d, 30d, plus each FB
+    // profile's unbilled balance (what will hit the cards next)
+    const spend: any[] = db.prepare(`
+      SELECT s.name AS store, a.platform,
+        SUM(CASE WHEN a.date = date('now', '-1 day') THEN a.spend_cents ELSE 0 END) AS y_cents,
+        SUM(CASE WHEN a.date >= date('now', '-7 days') THEN a.spend_cents ELSE 0 END) AS d7_cents,
+        SUM(a.spend_cents) AS d30_cents
+      FROM ad_spend a JOIN stores s ON s.id = a.store_id
+      WHERE a.date >= date('now', '-30 days')
+      GROUP BY s.id, a.platform HAVING d30_cents > 0
+      ORDER BY d7_cents DESC
+    `).all();
+    const fbUnbilled: any[] = db.prepare(`
+      SELECT p.profile_name, s.name AS store, p.balance_cents,
+             COALESCE(p.primary_card_last4, p.working_card_last4) AS card_last4,
+             p.primary_card_declining AS declining, p.last_sync_at
+      FROM fb_profiles p JOIN stores s ON s.id = p.store_id
+      WHERE p.is_active = 1 AND p.balance_cents > 0
+      ORDER BY p.balance_cents DESC
+    `).all();
+    return NextResponse.json({ spend, fbUnbilled });
+  }
   if (view === 'accounts') {
     // Bank Accounts / Credit Cards tabs — every active account with company,
     // store, balances, freshness and feed errors in one cheap query
