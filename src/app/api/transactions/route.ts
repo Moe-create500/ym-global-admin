@@ -122,7 +122,36 @@ export async function GET(req: NextRequest) {
       WHERE p.is_active = 1 AND p.balance_cents > 0
       ORDER BY p.balance_cents DESC
     `).all();
-    return NextResponse.json({ spend, fbUnbilled });
+    // Campaign level: run-rate per campaign → estimated forward burn. A
+    // campaign is "active" if it spent in the last 2 days; its est/day is
+    // yesterday's spend, falling back to its 3-day average.
+    const campaigns: any[] = db.prepare(`
+      SELECT s.name AS store, a.platform, a.campaign_id, MAX(a.campaign_name) AS campaign_name,
+        SUM(CASE WHEN a.date = date('now', '-1 day') THEN a.spend_cents ELSE 0 END) AS y_cents,
+        SUM(CASE WHEN a.date >= date('now', '-3 days') THEN a.spend_cents ELSE 0 END) AS d3_cents,
+        COUNT(DISTINCT CASE WHEN a.date >= date('now', '-3 days') AND a.spend_cents > 0 THEN a.date END) AS d3_days,
+        SUM(CASE WHEN a.date >= date('now', '-7 days') THEN a.spend_cents ELSE 0 END) AS d7_cents,
+        MAX(a.date) AS last_spend_date
+      FROM ad_spend a JOIN stores s ON s.id = a.store_id
+      WHERE a.date >= date('now', '-7 days') AND a.campaign_id IS NOT NULL
+      GROUP BY s.id, a.platform, a.campaign_id
+      HAVING d7_cents > 0 ORDER BY d7_cents DESC
+    `).all().map((c: any) => {
+      const active = c.last_spend_date >= new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+      const estDaily = c.y_cents > 0 ? c.y_cents : (c.d3_days > 0 ? Math.round(c.d3_cents / c.d3_days) : 0);
+      return { ...c, active, est_daily_cents: active ? estDaily : 0 };
+    });
+    // Per-store forward estimate from its active campaigns
+    const estByStore = new Map<string, { store: string; n: number; est_daily_cents: number }>();
+    for (const c of campaigns) {
+      if (!c.active || !c.est_daily_cents) continue;
+      if (!estByStore.has(c.store)) estByStore.set(c.store, { store: c.store, n: 0, est_daily_cents: 0 });
+      const e = estByStore.get(c.store)!;
+      e.n++;
+      e.est_daily_cents += c.est_daily_cents;
+    }
+    const estimates = [...estByStore.values()].sort((a, b) => b.est_daily_cents - a.est_daily_cents);
+    return NextResponse.json({ spend, fbUnbilled, campaigns, estimates });
   }
   if (view === 'accounts') {
     // Bank Accounts / Credit Cards tabs — every active account with company,

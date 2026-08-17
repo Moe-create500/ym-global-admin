@@ -542,8 +542,55 @@ export default function TransactionsPage() {
         const thr = thc + ' text-right';
         const tdc = 'px-3 py-2 tabular-nums';
         const tot = (k: string) => adSpend.spend.reduce((s: number, r: any) => s + (r[k] || 0), 0);
+        const est: any[] = (adSpend as any).estimates || [];
+        const estDailyTotal = est.reduce((s, e) => s + e.est_daily_cents, 0);
+        const camps: any[] = (adSpend as any).campaigns || [];
         return (
           <div className="space-y-3">
+            {/* Forward burn — what active campaigns are ON TRACK to spend */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 flex flex-wrap items-center gap-x-8 gap-y-2">
+              <span>
+                <span className="block text-[9px] uppercase tracking-widest text-slate-500">EST BURN / DAY</span>
+                <span className="text-xl font-bold text-orange-400">{fmt(estDailyTotal)}</span>
+              </span>
+              <span>
+                <span className="block text-[9px] uppercase tracking-widest text-slate-500">EST NEXT 7 DAYS</span>
+                <span className="text-xl font-bold text-orange-300">{fmt(estDailyTotal * 7)}</span>
+              </span>
+              <span>
+                <span className="block text-[9px] uppercase tracking-widest text-slate-500">ACTIVE CAMPAIGNS</span>
+                <span className="text-xl font-bold text-white">{camps.filter((c: any) => c.active).length}</span>
+              </span>
+              <span className="flex flex-wrap gap-1.5 items-center">
+                {est.map((e: any) => (
+                  <span key={e.store} className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300" title={`${e.n} active campaigns`}>
+                    {e.store} <span className="text-orange-300 font-semibold">{fmt(e.est_daily_cents)}/d</span>
+                  </span>
+                ))}
+              </span>
+            </div>
+
+            {/* Campaign level — run rate per campaign */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">Campaigns — last 7 days · est/day from actual run rate</p>
+              <table className="w-full text-[12px]">
+                <thead><tr className="border-b border-slate-800">
+                  <th className={thc}>STORE</th><th className={thc}>CAMPAIGN</th><th className={thc}>STATUS</th><th className={thr}>YESTERDAY</th><th className={thr}>7D TOTAL</th><th className={thr}>EST / DAY</th>
+                </tr></thead>
+                <tbody>
+                  {camps.map((c: any, i: number) => (
+                    <tr key={i} className={`border-b border-slate-800/40 hover:bg-slate-800/30 ${!c.active ? 'opacity-50' : ''}`}>
+                      <td className={`${tdc} text-slate-200 font-medium whitespace-nowrap`}>{c.store}</td>
+                      <td className={`${tdc} text-slate-300 max-w-[300px] truncate`} title={c.campaign_name}>{c.campaign_name || c.campaign_id}</td>
+                      <td className={tdc}>{c.active ? <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/15 text-emerald-400">ACTIVE</span> : <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-700/60 text-slate-500">idle · last {c.last_spend_date?.slice(5)}</span>}</td>
+                      <td className={`${tdc} text-right ${c.y_cents ? 'text-slate-200' : 'text-slate-700'}`}>{c.y_cents ? fmt(c.y_cents) : '—'}</td>
+                      <td className={`${tdc} text-right text-slate-300`}>{fmt(c.d7_cents)}</td>
+                      <td className={`${tdc} text-right font-medium ${c.est_daily_cents ? 'text-orange-300' : 'text-slate-700'}`}>{c.est_daily_cents ? fmt(c.est_daily_cents) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <table className="w-full text-[12px]">
                 <thead><tr className="border-b border-slate-800">
