@@ -92,7 +92,8 @@ function ClassChip({ cls }: { cls: string | null }) {
 }
 
 export default function TransactionsPage() {
-  const [tab, setTab] = useState<'cards' | 'payplan' | 'truth' | 'ledger' | 'payments'>('payplan');
+  const [tab, setTab] = useState<'cards' | 'payplan' | 'truth' | 'ledger' | 'payments' | 'banks' | 'cc'>('payplan');
+  const [accounts, setAccounts] = useState<{ banks: any[]; creditCards: any[] } | null>(null);
   // Company lens — the Brain knows YM and ShipSourced are different companies
   // sharing one money layer; this never blends them silently.
   const [company, setCompany] = useState<'all' | 'ymgv' | 'shipsourced'>('all');
@@ -199,6 +200,12 @@ export default function TransactionsPage() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => {
+    if (tab === 'banks' || tab === 'cc') {
+      fetch('/api/transactions?view=accounts').then(r => r.json()).then(setAccounts).catch(() => {});
+      if (!payPlan) loadPayPlan(); // statement data for the credit-cards tab
+    }
+  }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (tab === 'ledger') loadLedger(); }, [tab, loadLedger]);
   useEffect(() => { if (tab === 'payments') loadPayments(); }, [tab, loadPayments]);
   useEffect(() => { if (tab === 'truth') loadTruth(); }, [tab, loadTruth]);
@@ -284,13 +291,91 @@ export default function TransactionsPage() {
       )}
 
       <div className="flex gap-1 mb-4 border-b border-slate-800">
-        {([['payplan', '⚡ Operations'], ['cards', 'Card Intelligence'], ['truth', 'Source of Truth'], ['ledger', 'Ledger'], ['payments', 'Payments']] as const).map(([k, label]) => (
+        {([['payplan', '⚡ Operations'], ['banks', '🏦 Bank Accounts'], ['cc', '💳 Credit Cards'], ['cards', 'Card Intelligence'], ['truth', 'Source of Truth'], ['ledger', 'Ledger'], ['payments', 'Payments']] as const).map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${tab === k ? 'border-blue-500 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>
             {label}
           </button>
         ))}
       </div>
+
+      {(tab === 'banks' || tab === 'cc') && (() => {
+        if (!accounts) return <p className="text-slate-500 text-sm py-8">Loading accounts…</p>;
+        const stale = (asOf: string | null) => asOf ? Math.round((Date.now() - new Date(asOf + 'T12:00:00Z').getTime()) / 86400000) : null;
+        const co = (r: any) => <span className={`px-1 py-0.5 rounded text-[9px] font-bold ${r.company === 'shipsourced' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/10 text-blue-400'}`}>{r.company === 'shipsourced' ? 'SS' : 'YM'}</span>;
+        const feed = (r: any) => {
+          const d = stale(r.bank_data_as_of);
+          if (r.last_sync_error) return <span className="text-red-400 text-[10px]" title={r.last_sync_error}>⚠ {String(r.last_sync_error).slice(0, 34)}…</span>;
+          if (d == null) return <span className="text-slate-600 text-[10px]">no data</span>;
+          if (d > 3) return <span className="text-amber-400 text-[10px]">stale · {d}d old</span>;
+          return <span className="text-emerald-400 text-[10px]">live · {d === 0 ? 'today' : `${d}d ago`}</span>;
+        };
+        const nm = (r: any) => (r.nickname || `${r.institution_name} ${r.account_name}`).replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ').slice(0, 34);
+        const thc = 'text-left text-[9px] uppercase tracking-wider text-slate-600 px-3 py-1.5 font-semibold';
+        const thr = thc + ' text-right';
+        const tdc = 'px-3 py-2 tabular-nums';
+        if (tab === 'banks') {
+          const rows = accounts.banks.filter((r: any) => company === 'all' || r.company === company);
+          const totAvail = rows.reduce((s: number, r: any) => s + r.available_cents, 0);
+          return (
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <table className="w-full text-[12px]">
+                <thead><tr className="border-b border-slate-800">
+                  <th className={thc}>ACCOUNT</th><th className={thc}>STORE</th><th className={thr}>AVAILABLE</th><th className={thr}>LEDGER</th><th className={thc}>FEED</th>
+                </tr></thead>
+                <tbody>
+                  {rows.map((r: any) => (
+                    <tr key={r.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className={`${tdc} text-slate-200`}>{nm(r)} <span className="text-slate-600">·{r.last_four}</span> {co(r)}</td>
+                      <td className={`${tdc} text-slate-400`}>{r.store_name || <span className="text-slate-600">—</span>}</td>
+                      <td className={`${tdc} text-right font-medium text-emerald-300`}>{fmt(r.available_cents)}</td>
+                      <td className={`${tdc} text-right text-slate-300`}>{fmt(r.ledger_cents)}</td>
+                      <td className={tdc}>{feed(r)}</td>
+                    </tr>
+                  ))}
+                  <tr className="bg-slate-800/20 font-semibold">
+                    <td className={`${tdc} text-slate-400`} colSpan={2}>TOTAL AVAILABLE</td>
+                    <td className={`${tdc} text-right text-emerald-400`}>{fmt(totAvail)}</td>
+                    <td colSpan={2} />
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+        const stmtById = new Map((payPlan?.cards || []).map((c: any) => [c.id, c]));
+        const rows = accounts.creditCards.filter((r: any) => company === 'all' || r.company === company);
+        return (
+          <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+            <table className="w-full text-[12px]">
+              <thead><tr className="border-b border-slate-800">
+                <th className={thc}>CARD</th><th className={thr}>LIVE BAL</th><th className={thr}>LIMIT</th><th className={thr}>UTIL</th><th className={thr}>REMAINING STMT</th><th className={thr}>DUE</th><th className={thc}>FEED</th>
+              </tr></thead>
+              <tbody>
+                {rows.map((r: any) => {
+                  const p: any = stmtById.get(r.id);
+                  const util = r.credit_limit_cents > 0 ? Math.round(100 * Math.abs(r.ledger_cents) / r.credit_limit_cents) : null;
+                  return (
+                    <tr key={r.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className={`${tdc} text-slate-200`}>{nm(r)} <span className="text-slate-600">·{r.last_four}</span> {co(r)}</td>
+                      <td className={`${tdc} text-right text-slate-200`}>{fmt(Math.abs(r.ledger_cents))}</td>
+                      <td className={`${tdc} text-right text-slate-500`}>{r.credit_limit_cents ? fmt(r.credit_limit_cents) : '—'}</td>
+                      <td className={`${tdc} text-right ${util == null ? 'text-slate-600' : util >= 100 ? 'text-red-400 font-bold' : util >= 70 ? 'text-amber-400' : 'text-slate-400'}`}>{util != null ? `${util}%` : '—'}</td>
+                      <td className={`${tdc} text-right font-medium ${p?.remainingStmtCents === 0 ? 'text-emerald-400' : p?.remainingStmtCents != null ? 'text-white' : 'text-slate-600'}`}>
+                        {p?.stmtBalanceCents == null ? '—' : p.remainingStmtCents === 0 ? 'PAID ✓' : fmt(p.remainingStmtCents ?? p.stmtBalanceCents)}
+                      </td>
+                      <td className={`${tdc} text-right whitespace-nowrap ${p?.daysToDue == null ? 'text-slate-600' : p.daysToDue < 0 ? 'text-red-400 font-bold' : p.daysToDue <= 3 ? 'text-red-400' : p.daysToDue <= 7 ? 'text-amber-400' : 'text-slate-300'}`}>
+                        {p?.dueDate ? `${p.dueDate.slice(5)} (${p.daysToDue < 0 ? `${-p.daysToDue}d late` : `${p.daysToDue}d`})` : '—'}
+                      </td>
+                      <td className={tdc}>{feed(r)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
 
       {tab === 'cards' && (
         <div>

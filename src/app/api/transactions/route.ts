@@ -21,6 +21,24 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ...getSummary(db), stores, accounts });
   }
   if (view === 'cards') return NextResponse.json({ cards: getCardIntel(db, days || 30), clarity: getCardClarity(db) });
+  if (view === 'accounts') {
+    // Bank Accounts / Credit Cards tabs — every active account with company,
+    // store, balances, freshness and feed errors in one cheap query
+    const rows: any[] = db.prepare(`
+      SELECT a.id, a.institution_name, a.account_name, a.nickname, a.last_four, a.account_type,
+             a.provider, COALESCE(a.company, 'ymgv') AS company, a.credit_limit_cents,
+             COALESCE(a.balance_available_cents, a.balance_ledger_cents, 0) AS available_cents,
+             COALESCE(a.balance_ledger_cents, 0) AS ledger_cents,
+             a.bank_data_as_of, a.last_sync_error, s.name AS store_name
+      FROM bank_accounts a LEFT JOIN stores s ON s.id = a.store_id
+      WHERE a.status = 'active'
+      ORDER BY a.account_type, a.institution_name, a.last_four
+    `).all();
+    return NextResponse.json({
+      banks: rows.filter(r => r.account_type !== 'credit'),
+      creditCards: rows.filter(r => r.account_type === 'credit'),
+    });
+  }
   if (view === 'truth') return NextResponse.json(brainCached(`truth:${days || 90}`, () => getTruth(db, days || 90)));
   if (view === 'payplan') return NextResponse.json(brainCached('payplan', () => getPayPlan(db)));
   if (view === 'health') return NextResponse.json(brainCached('health', () => getSystemHealth(db)));
