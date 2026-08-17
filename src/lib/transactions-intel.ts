@@ -41,6 +41,9 @@ export function ensureTxnIntelTables(db: DatabaseType.Database) {
   // One-off charges billed to a store's books (P&L other costs) — timestamped
   // so a transaction can never be billed twice.
   if (!cols.find((c: any) => c.name === 'billed_store_at')) db.exec('ALTER TABLE txn_links ADD COLUMN billed_store_at TEXT');
+  // Company tag on accounts (also ensured by foundation.ts) — the Brain reads
+  // it on every card so YM and ShipSourced money never blend silently
+  try { db.exec("ALTER TABLE bank_accounts ADD COLUMN company TEXT"); } catch { /* exists */ }
   // Funding-card aliases: Amex issues sub-cards (·2976, ·9275…) whose charges
   // roll up into an account with a DIFFERENT last4 (Platinum ·1009). Invoices
   // carry the sub-card number, bank feeds carry the account number — without
@@ -840,7 +843,7 @@ export function getPayPlan(db: DatabaseType.Database) {
   const compByCardId = new Map(truth.composition.map((c: any) => [c.id, c]));
 
   const cardsMeta: any[] = db.prepare(`
-    SELECT id, institution_name, account_name, last_four
+    SELECT id, institution_name, account_name, last_four, COALESCE(company, 'ymgv') AS company
     FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'
   `).all();
 
@@ -872,6 +875,7 @@ export function getPayPlan(db: DatabaseType.Database) {
       id: meta.id,
       name: `${meta.institution_name} ${meta.account_name}`,
       last4: meta.last_four,
+      company: meta.company, // 'ymgv' | 'shipsourced' — the Brain never blends the two
       postedCents: cl.postedCents,
       toClearCents: cl.toClearCents,
       pendingHoldsCents: cl.pendingHoldsCents,

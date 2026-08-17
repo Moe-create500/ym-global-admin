@@ -4,6 +4,7 @@ import {
   ensureTxnIntelTables, runTransactionScan,
   getLedger, getCardIntel, getPaymentsView, getSummary, getCardClarity, getTruth, getPayPlan, getSystemHealth,
 } from '@/lib/transactions-intel';
+import { brainCached, dropBrainCache } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,13 +17,13 @@ export async function GET(req: NextRequest) {
 
   if (view === 'summary') {
     const stores = db.prepare('SELECT id, name FROM stores ORDER BY name').all();
-    const accounts = db.prepare(`SELECT id, institution_name, account_name, account_type, last_four FROM bank_accounts WHERE status = 'active' ORDER BY account_type, institution_name`).all();
+    const accounts = db.prepare(`SELECT id, institution_name, account_name, account_type, last_four, COALESCE(company,'ymgv') AS company FROM bank_accounts WHERE status = 'active' ORDER BY account_type, institution_name`).all();
     return NextResponse.json({ ...getSummary(db), stores, accounts });
   }
   if (view === 'cards') return NextResponse.json({ cards: getCardIntel(db, days || 30), clarity: getCardClarity(db) });
-  if (view === 'truth') return NextResponse.json(getTruth(db, days || 90));
-  if (view === 'payplan') return NextResponse.json(getPayPlan(db));
-  if (view === 'health') return NextResponse.json(getSystemHealth(db));
+  if (view === 'truth') return NextResponse.json(brainCached(`truth:${days || 90}`, () => getTruth(db, days || 90)));
+  if (view === 'payplan') return NextResponse.json(brainCached('payplan', () => getPayPlan(db)));
+  if (view === 'health') return NextResponse.json(brainCached('health', () => getSystemHealth(db)));
   if (view === 'payments') return NextResponse.json({ payments: getPaymentsView(db, days || 60) });
   if (view === 'ledger') {
     return NextResponse.json(getLedger(db, {
@@ -45,6 +46,7 @@ let bankSyncRunning = false;
 export async function POST(req: NextRequest) {
   const db = getDb();
   const b = await req.json().catch(() => ({}));
+  dropBrainCache(); // any write invalidates the speed layer — fast, never stale
   if (b.action === 'scan') {
     const stats = runTransactionScan(db, { days: Number(b.days) || 365, force: !!b.force });
     return NextResponse.json({ success: true, stats });
@@ -170,6 +172,7 @@ export async function PATCH(req: NextRequest) {
   const db = getDb();
   ensureTxnIntelTables(db);
   const b = await req.json().catch(() => ({}));
+  dropBrainCache();
 
   if (b.action === 'statement') {
     const { ensureCardStatements } = await import('@/lib/transactions-intel');

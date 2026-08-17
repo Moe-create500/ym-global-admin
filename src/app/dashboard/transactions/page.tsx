@@ -64,6 +64,9 @@ function ClassChip({ cls }: { cls: string | null }) {
 
 export default function TransactionsPage() {
   const [tab, setTab] = useState<'cards' | 'payplan' | 'truth' | 'ledger' | 'payments'>('payplan');
+  // Company lens — the Brain knows YM and ShipSourced are different companies
+  // sharing one money layer; this never blends them silently.
+  const [company, setCompany] = useState<'all' | 'ymgv' | 'shipsourced'>('all');
   const [truth, setTruth] = useState<any>(null);
   const [truthDays, setTruthDays] = useState(90);
   const [payPlan, setPayPlan] = useState<any>(null);
@@ -190,14 +193,25 @@ export default function TransactionsPage() {
     setAssigning(null); loadLedger();
   };
 
+  // Company lens applied once, used by every panel
+  const brainCards = (payPlan?.cards || []).filter((c: any) => company === 'all' || (c.company || 'ymgv') === company);
+  const brainStores = (payPlan?.storePlans || []).filter((s: any) =>
+    company === 'all' || ((s.store === 'ShipSourced') === (company === 'shipsourced')));
+
   return (
     <div className="p-6 max-w-[1500px]">
       <div className="flex items-center justify-between mb-5">
         <div>
-          <h1 className="text-2xl font-bold text-white">Transactions</h1>
-          <p className="text-sm text-slate-400 mt-0.5">Bank ↔ cards ↔ invoices reconciliation — who spent what, who paid what</p>
+          <h1 className="text-2xl font-bold text-white">🧠 The Brain</h1>
+          <p className="text-sm text-slate-400 mt-0.5">One money mind, two companies — who spent what, who owes what, who pays</p>
         </div>
         <div className="flex items-center gap-3">
+          <div className="flex gap-1 bg-slate-900 border border-slate-800 rounded-lg p-1">
+            {([['all', 'ALL'], ['ymgv', 'YM'], ['shipsourced', 'SHIPSOURCED']] as const).map(([k, l]) => (
+              <button key={k} onClick={() => setCompany(k)}
+                className={`text-[11px] rounded-md px-2.5 py-1 font-semibold ${company === k ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}>{l}</button>
+            ))}
+          </div>
           {bankSyncNote && (
             <span className={`text-xs flex items-center gap-1.5 ${bankSync === 'error' ? 'text-red-400' : bankSync === 'syncing' ? 'text-blue-300' : 'text-emerald-400'}`}>
               {bankSync === 'syncing' && <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />}
@@ -461,7 +475,7 @@ export default function TransactionsPage() {
                       <th className={thR}>PAY (FUNDED BY)</th>
                     </tr></thead>
                     <tbody>
-                      {payPlan.cards.map((c: any) => {
+                      {brainCards.map((c: any) => {
                         const a = cAction(c);
                         const owners = c.owners.filter((o: any) => o.store !== '(unattributed)').map((o: any) => o.store).join(', ');
                         const editing = openCard === c.id;
@@ -470,7 +484,9 @@ export default function TransactionsPage() {
                             <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                               <td className={`${td} text-slate-200 whitespace-nowrap`}>
                                 <button onClick={() => setWhyCard(whyCard === c.id ? null : c.id)} className="hover:text-blue-300 text-left" title="click: why does this card owe money">
-                                  {c.declining && <span className="text-red-400 mr-1">⛔</span>}{c.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ').slice(0, 30)} <span className="text-slate-600">·{c.last4} {whyCard === c.id ? '▾' : '▸'}</span>
+                                  {c.declining && <span className="text-red-400 mr-1">⛔</span>}{c.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ').slice(0, 30)} <span className="text-slate-600">·{c.last4}</span>
+                                  <span className={`ml-1.5 px-1 py-0.5 rounded text-[9px] font-bold ${c.company === 'shipsourced' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/10 text-blue-400'}`}>{c.company === 'shipsourced' ? 'SS' : 'YM'}</span>
+                                  <span className="text-slate-600"> {whyCard === c.id ? '▾' : '▸'}</span>
                                 </button>
                               </td>
                               <td className={`${td} text-right`}>
@@ -540,7 +556,7 @@ export default function TransactionsPage() {
                     <p className="text-[10px] text-slate-500">auto-filled from the bank where the connection allows it · <span className="text-blue-400">🏦 bank</span> = live from Plaid, <span className="text-slate-400">✍️ manual</span> = you typed it (bank data replaces it when available)</p>
                   </div>
                   <div className="divide-y divide-slate-800/60">
-                    {payPlan.cards.map((c: any) => (
+                    {brainCards.map((c: any) => (
                       <div key={`st-${c.id}`} className="px-3 py-2 flex flex-wrap items-center gap-x-4 gap-y-1">
                         <span className="text-[12px] text-slate-200 w-48 truncate" title={c.name}>
                           {c.name.replace('American Express ', 'Amex ').replace('Bank of America ', 'BofA ')} <span className="text-slate-600">·{c.last4}</span>
@@ -568,7 +584,7 @@ export default function TransactionsPage() {
                       <th className={thR}>STATUS</th>
                     </tr></thead>
                     <tbody>
-                      {payPlan.storePlans.map((s: any) => {
+                      {brainStores.map((s: any) => {
                         const v = sVerdict[s.verdict] || sVerdict.no_feed;
                         const free = Math.max(0, s.committedCents - s.burn7Cents);
                         return (
@@ -584,8 +600,8 @@ export default function TransactionsPage() {
                           </tr>
                         );
                       })}
-                      {/* Company row — untraced debt against shared cash */}
-                      <tr className="bg-slate-800/20">
+                      {/* Company row — untraced debt against shared cash (YM lens only) */}
+                      {company !== 'shipsourced' && <tr className="bg-slate-800/20">
                         <td className={`${td} text-slate-400 font-medium`}>COMPANY <span className="text-slate-600 font-normal">(untraced — link FB cards)</span></td>
                         <td className={`${td} text-right text-slate-300`}>{fmt2(payPlan.company.untracedCents)}</td>
                         <td className={`${td} text-slate-600`}>all</td>
@@ -594,7 +610,7 @@ export default function TransactionsPage() {
                         <td className={`${td} text-right text-emerald-400`}>{fmt2(payPlan.company.safeTodayCents)}</td>
                         <td className={`${td} text-right font-bold text-emerald-400`}>{fmt2(Math.min(payPlan.company.safeTodayCents, payPlan.company.untracedCents))}</td>
                         <td className={`${td} text-right font-bold text-amber-400`}>SHARED CASH</td>
-                      </tr>
+                      </tr>}
                     </tbody>
                   </table>
                 </div>
