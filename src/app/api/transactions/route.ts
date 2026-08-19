@@ -107,7 +107,9 @@ export async function GET(req: NextRequest) {
       LEFT JOIN txn_links l ON l.txn_id = t.id
       WHERE t.status = 'posted' AND t.date >= date('now', '-90 days')
         AND l.store_id IS NULL AND l.entity_id IS NULL AND l.pair_txn_id IS NULL
-        AND COALESCE(l.class, 'other') = 'other'
+        -- ownerless money in owner-requiring classes: pure unknowns AND
+        -- supplier spend with no store (whose stock?) both need resolution
+        AND COALESCE(l.class, 'other') IN ('other', 'supplier')
       ORDER BY ABS(t.amount_cents) DESC LIMIT 25
     `).all();
     const vote = db.prepare(`
