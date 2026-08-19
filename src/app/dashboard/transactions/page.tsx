@@ -222,8 +222,9 @@ export default function TransactionsPage() {
       const r = await fetch('/api/transactions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'scan', days: 365, force: true }) });
       const d = await r.json();
       if (d.success) {
-        setScanMsg(`Scanned ${d.stats.scanned} · attributed ${d.stats.storeAttributed} · invoices ${d.stats.invoiceMatched} · payment pairs ${d.stats.paymentsPaired}`);
-        loadSummary(); loadCards(); if (tab === 'ledger') loadLedger(); if (tab === 'payments') loadPayments();
+        const bankNote = d.banks?.accounts != null ? `banks synced (${d.banks.accounts} accts, ${d.banks.transactions} new txns) · ` : '';
+        setScanMsg(`${bankNote}Scanned ${d.stats.scanned} · attributed ${d.stats.storeAttributed} · invoices ${d.stats.invoiceMatched} · payment pairs ${d.stats.paymentsPaired}`);
+        loadSummary(); loadCards(); loadPayPlan(); if (tab === 'ledger') loadLedger(); if (tab === 'payments') loadPayments();
       } else setScanMsg(d.error || 'Scan failed');
     } catch (e: any) { setScanMsg(String(e?.message || e)); }
     setScanning(false);

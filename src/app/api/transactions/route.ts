@@ -198,8 +198,23 @@ export async function POST(req: NextRequest) {
   const b = await req.json().catch(() => ({}));
   dropBrainCache(); // any write invalidates the speed layer — fast, never stale
   if (b.action === 'scan') {
+    // A scan over stale bank data classifies the past — pull the banks
+    // CURRENT first (no throttle), then classify what just arrived.
+    let banks: any = null;
+    if (!bankSyncRunning) {
+      bankSyncRunning = true;
+      try {
+        const { syncBankAccounts } = await import('@/lib/bank-sync');
+        const r = await syncBankAccounts();
+        banks = { accounts: r.accounts_synced, transactions: r.transactions_imported, errors: r.errors.slice(0, 3) };
+      } catch (e: any) {
+        banks = { error: String(e?.message || e).slice(0, 120) };
+      } finally {
+        bankSyncRunning = false;
+      }
+    }
     const stats = runTransactionScan(db, { days: Number(b.days) || 365, force: !!b.force });
-    return NextResponse.json({ success: true, stats });
+    return NextResponse.json({ success: true, stats, banks });
   }
 
   // Fresh balances on demand — fired by the Transactions page on load.
