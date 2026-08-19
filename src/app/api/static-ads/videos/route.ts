@@ -48,8 +48,16 @@ export async function POST(req: NextRequest) {
   const tmpPath = path.join(os.tmpdir(), `kalodata-${crypto.randomUUID()}.xlsx`);
   try {
     fs.writeFileSync(tmpPath, Buffer.from(await file.arrayBuffer()));
-    const rows = await parseKalodataXlsx(tmpPath);
-    if (!rows.length) return NextResponse.json({ error: 'No TikTok video rows found in the file' }, { status: 400 });
+    const parsed = await parseKalodataXlsx(tmpPath);
+    const rows = parsed.rows;
+    if (!rows.length) {
+      // The most common miss: uploading Kalodata's CREATOR export (profile
+      // links, no /video/ URLs). Name the problem and the fix.
+      const error = parsed.profileRows > 0
+        ? `This is a Kalodata CREATOR export (${parsed.profileRows} creator profiles, no video links). Export the VIDEO list instead: Kalodata → Video tab → set your filters → Export.`
+        : 'No TikTok video rows found in the file';
+      return NextResponse.json({ error }, { status: 400 });
+    }
     const r = importVideos(db, storeId, productId, rows);
     return NextResponse.json({ success: true, parsed: rows.length, ...r, stats: poolStats(db, storeId, productId) });
   } catch (e: any) {

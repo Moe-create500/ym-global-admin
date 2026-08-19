@@ -52,7 +52,7 @@ export function ensureVideoPoolTable(db: Database.Database) {
 
 /** Parse a Kalodata xlsx (already saved to disk) with python3 — no npm deps.
  *  Returns rows sorted as exported (revenue DESC). */
-export async function parseKalodataXlsx(xlsxPath: string): Promise<{ id: string; caption: string; author: string; url: string; revenue: number; duration: string; productTitle?: string }[]> {
+export async function parseKalodataXlsx(xlsxPath: string): Promise<{ rows: { id: string; caption: string; author: string; url: string; revenue: number; duration: string; productTitle?: string }[]; profileRows: number }> {
   const py = `
 import sys, zipfile, re, json
 import xml.etree.ElementTree as ET
@@ -61,6 +61,7 @@ z = zipfile.ZipFile(sys.argv[1])
 sheet = 'xl/worksheets/sheet1.xml'
 root = ET.fromstring(z.read(sheet))
 out = []
+profile_rows = 0
 for row in root.iter(ns + 'row'):
     vals = []
     for c in row.iter(ns + 'c'):
@@ -71,7 +72,10 @@ for row in root.iter(ns + 'row'):
             v = c.find(ns + 'v')
             vals.append(v.text if v is not None else '')
     url = next((v for v in vals if isinstance(v, str) and 'tiktok.com' in v and '/video/' in v), None)
-    if not url: continue
+    if not url:
+        # Creator exports carry profile links (tiktok.com/@handle) but no /video/ URLs
+        if any(isinstance(v, str) and 'tiktok.com/@' in v for v in vals): profile_rows += 1
+        continue
     m = re.search(r'/video/(\\d+)', url)
     if not m: continue
     caption = vals[1] if len(vals) > 1 else ''
@@ -82,7 +86,7 @@ for row in root.iter(ns + 'row'):
     try: revenue = float(vals[5])
     except: pass
     out.append({'id': m.group(1), 'caption': caption[:300], 'author': author, 'url': url, 'revenue': revenue, 'duration': duration, 'productTitle': product[:200]})
-print(json.dumps(out))
+print(json.dumps({'rows': out, 'profileRows': profile_rows}))
 `;
   return new Promise((resolve, reject) => {
     execFile('python3', ['-c', py, xlsxPath], { maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
