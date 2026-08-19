@@ -95,6 +95,43 @@ export async function GET(req: NextRequest) {
       creditCards: rows.filter(r => r.account_type === 'credit'),
     });
   }
+  if (view === 'untracked') {
+    // The resolution queue: biggest unexplained dollars first, each with the
+    // strongest available candidate (merchant history vote) — never a guess,
+    // always evidence with counts. Confirming teaches a durable rule.
+    const rows: any[] = db.prepare(`
+      SELECT t.id, t.date, t.description, t.amount_cents,
+             a.institution_name || ' ·' || a.last_four AS account, COALESCE(a.company, 'ymgv') AS company
+      FROM bank_transactions t
+      JOIN bank_accounts a ON a.id = t.bank_account_id AND a.status = 'active'
+      LEFT JOIN txn_links l ON l.txn_id = t.id
+      WHERE t.status = 'posted' AND t.date >= date('now', '-90 days')
+        AND l.store_id IS NULL AND l.entity_id IS NULL AND l.pair_txn_id IS NULL
+        AND COALESCE(l.class, 'other') = 'other'
+      ORDER BY ABS(t.amount_cents) DESC LIMIT 25
+    `).all();
+    const vote = db.prepare(`
+      SELECT s.name AS store, l.store_id, COUNT(*) n
+      FROM bank_transactions t
+      JOIN txn_links l ON l.txn_id = t.id AND l.store_id IS NOT NULL
+      JOIN stores s ON s.id = l.store_id
+      WHERE t.description LIKE ? AND t.id != ?
+      GROUP BY l.store_id ORDER BY n DESC LIMIT 2
+    `);
+    const queue = rows.map(r => {
+      // merchant token: first meaningful words of the description
+      const token = String(r.description).replace(/[#*\d]/g, ' ').trim().split(/\s+/).slice(0, 2).join(' ');
+      const candidates = token.length >= 4 ? (vote.all(`%${token}%`, r.id) as any[]) : [];
+      const top = candidates[0];
+      const total = candidates.reduce((s: number, c: any) => s + c.n, 0);
+      return {
+        ...r, suggestedPattern: token.toLowerCase(),
+        candidate: top ? { store: top.store, storeId: top.store_id, evidence: `${top.n} previous "${token}" transactions attributed to ${top.store}`, confidence: total > 0 ? Math.round(100 * top.n / total) : 0 } : null,
+      };
+    });
+    const { getTraceability } = await import('@/lib/coverage');
+    return NextResponse.json({ queue, traceability: getTraceability(db) });
+  }
   if (view === 'truth') return NextResponse.json(brainCached(`truth:${days || 90}`, () => getTruth(db, days || 90)));
   if (view === 'payplan') return NextResponse.json(brainCached('payplan', () => getPayPlan(db)));
   if (view === 'health') return NextResponse.json(brainCached('health', () => getSystemHealth(db)));
@@ -305,5 +342,13 @@ export async function PATCH(req: NextRequest) {
       class = CASE WHEN ? IS NOT NULL THEN ? ELSE txn_links.class END,
       confidence = 'manual', updated_at = datetime('now')`)
     .run(b.txnId, b.class || existing?.class || 'other', b.storeId || null, b.class || null, b.class || null);
+  // "Make it a rule": this confirmation becomes durable attribution for every
+  // future (and past, on next deep scan) transaction matching the pattern
+  if (b.makeRule && b.pattern && b.storeId && String(b.pattern).trim().length >= 4) {
+    const { ensureMerchantRules } = await import('@/lib/transactions-intel');
+    ensureMerchantRules(db);
+    db.prepare(`INSERT INTO merchant_store_rules (pattern, store_id, class, source) VALUES (?, ?, ?, 'user')`)
+      .run(String(b.pattern).trim().toLowerCase(), b.storeId, b.class || null);
+  }
   return NextResponse.json({ success: true });
 }

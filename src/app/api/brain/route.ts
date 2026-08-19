@@ -6,6 +6,7 @@ import { getForwardCash } from '@/lib/forward-cash';
 import { runIntegrityChecks, getRisks, getWhatChanged, takeBrainSnapshot } from '@/lib/brain-insights';
 import { getSourceHealth } from '@/lib/source-registry';
 import { getIncomingCash } from '@/lib/incoming-cash';
+import { getCoveragePlan, getTraceability } from '@/lib/coverage';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,6 +16,8 @@ function buildCommand(db: any) {
   const payPlan = brainCached('payplan', () => getPayPlan(db));
   const forward = getForwardCash(db, payPlan);
   const integrity = runIntegrityChecks(db, payPlan);
+  const coverage = getCoveragePlan(db, payPlan);
+  const traceability = getTraceability(db);
   const risks = getRisks(db, payPlan, forward);
   const changed = getWhatChanged(db);
   const trust = getSourceHealth(db);
@@ -25,7 +28,7 @@ function buildCommand(db: any) {
     ? { title: top.title, action: top.action, why: top.why, cents: top.cents, confidence: trust.trustworthy ? 'high' : 'reduced — some feeds stale' }
     : { title: 'No urgent risks', action: `Safe to deploy: YM $${(forward.ymgv.safeToDeployCents / 100).toFixed(0)} · SS $${(forward.shipsourced.safeToDeployCents / 100).toFixed(0)}`, why: 'no overdue statements, no shortfalls in the committed 14-day projection, no unlanded payments flagged', cents: 0, confidence: trust.trustworthy ? 'high' : 'reduced — some feeds stale' };
 
-  return { payPlan: undefined, forward, integrity, risks: risks.slice(0, 6), changed, trust: { trustworthy: trust.trustworthy, badCount: trust.badCount, summary: trust.summary }, recommendation };
+  return { payPlan: undefined, forward, integrity, coverage, traceability, risks: risks.slice(0, 6), changed, trust: { trustworthy: trust.trustworthy, badCount: trust.badCount, summary: trust.summary }, recommendation };
 }
 
 export async function GET() {

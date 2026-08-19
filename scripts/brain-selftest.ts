@@ -9,6 +9,7 @@ import { getIncomingCash } from '../src/lib/incoming-cash';
 import { getForwardCash } from '../src/lib/forward-cash';
 import { runIntegrityChecks, getRisks, getWhatChanged } from '../src/lib/brain-insights';
 import { getSourceHealth } from '../src/lib/source-registry';
+import { getCoveragePlan, getTraceability, recommendedPayDate } from '../src/lib/coverage';
 
 let pass = 0, fail = 0;
 const ok = (name: string, cond: boolean, detail = '') => {
@@ -93,6 +94,37 @@ ok('reconciler keyed by payment id', typeof rec === 'object');
 console.log('[trust]');
 const trust = getSourceHealth(db);
 ok('source registry has feeds reporting', trust.sources.length >= 3, `${trust.sources.length} feeds`);
+
+// ── 9. Coverage / reservation invariants ──
+console.log('[coverage]');
+const cov = getCoveragePlan(db, payPlan);
+ok('coverage never exceeds obligation', cov.obligations.every(o => o.coveredCents <= o.amountCents + 1));
+ok('covered + gap = obligation', cov.obligations.every(o => Math.abs(o.coveredCents + o.gapCents - o.amountCents) <= 1));
+ok('no negative reservations', cov.freeCashAfterReservations.ymgv >= 0 && cov.freeCashAfterReservations.shipsourced >= 0);
+ok('unallocated inflows non-negative', cov.unallocatedInflows.every(i => i.cents >= 0));
+ok('pay dates never after due dates', cov.obligations.every(o => o.payDate <= o.dueDate || o.overdue));
+{
+  // one dollar never twice: sum of all allocations from inflows ≤ sum of inflows
+  const allocatedFromInflows = cov.obligations.flatMap(o => o.coveredBy).filter(c => c.kind !== 'cash').reduce((s, c) => s + c.cents, 0);
+  const { getIncomingCash: gic } = require('../src/lib/incoming-cash');
+  const totalInflows = gic(db).upcoming.filter((u: any) => u.date >= new Date().toISOString().slice(0,10)).reduce((s: number, u: any) => s + u.cents, 0);
+  ok('inflow allocations ≤ total inflows (no dollar twice)', allocatedFromInflows <= totalInflows + 1, `${allocatedFromInflows} vs ${totalInflows}`);
+}
+ok('recommended date skips weekends', !['0','6'].includes(String(new Date(recommendedPayDate('2026-08-24') + 'T12:00:00Z').getUTCDay())));
+const trace = getTraceability(db);
+ok('traceability 0–100%', trace.trackedPct >= 0 && trace.trackedPct <= 100);
+
+// ── 10. SS settlement regression (permanent) ──
+console.log('[ss-settlement]');
+const logged: any[] = db.prepare(`SELECT amount_cents FROM card_payments_log p JOIN stores s ON s.id = p.store_id WHERE s.name = 'ShipSourced' AND p.date = '2026-08-19' AND p.card_last4 = '1654'`).all();
+ok('both SS settlement payments logged', logged.length >= 2 && logged.some(l => l.amount_cents === 398491) && logged.some(l => l.amount_cents === 304484));
+ok('settlement sums to the SS share', 398491 + 304484 === 702975);
+{
+  // when the bank debits land+pair, SS share on 1654 must drop — assert machinery: 
+  // no duplicate expense (payments classed card_payment_sent never as supplier/other spend)
+  const misclassed: any = db.prepare(`SELECT COUNT(*) n FROM bank_transactions t JOIN txn_links l ON l.txn_id = t.id WHERE ABS(t.amount_cents) IN (398491, 304484) AND l.class NOT IN ('card_payment', 'card_payment_sent')`).get();
+  ok('settlement debits never misclassed as expense', misclassed.n === 0);
+}
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

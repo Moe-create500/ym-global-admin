@@ -59,6 +59,22 @@ export function ensureTxnIntelTables(db: DatabaseType.Database) {
   )`);
 }
 
+/** Learned merchant→store rules — created when Moe confirms an untracked
+ *  transaction with "make this a rule". Consulted by every scan; scoped by
+ *  pattern substring; auditable and reversible (enabled flag). */
+export function ensureMerchantRules(db: DatabaseType.Database) {
+  db.exec(`CREATE TABLE IF NOT EXISTS merchant_store_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern TEXT NOT NULL,
+    store_id TEXT NOT NULL,
+    class TEXT,
+    source TEXT NOT NULL DEFAULT 'user',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now')),
+    last_used_at TEXT
+  )`);
+}
+
 /** last4 → bank_account_id for funding sub-cards (only aliases whose target
  *  account is still active). */
 export function getFundingCardMap(db: DatabaseType.Database): Map<string, string> {
@@ -281,6 +297,12 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
   // ShipSourced store id for merchant rules (XE transfers = SS China stock)
   const ssStoreId: string | null = (db.prepare("SELECT id FROM stores WHERE name = 'ShipSourced'").get() as any)?.id || null;
 
+  // Learned merchant rules (user confirmations become durable attribution)
+  ensureMerchantRules(db);
+  const merchantRules: any[] = db.prepare('SELECT id, pattern, store_id, class FROM merchant_store_rules WHERE enabled = 1').all()
+    .map((r: any) => ({ ...r, pattern: String(r.pattern).toLowerCase() }));
+  const touchRule = db.prepare("UPDATE merchant_store_rules SET last_used_at = datetime('now') WHERE id = ?");
+
   // Self-healing: a pending older than 3 days whose identical posted twin
   // exists is a superseded duplicate (the bank replaced it; older feeds never
   // sent the removal). One economic event, one row — the posted one wins.
@@ -335,7 +357,7 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
       }
 
       const desc = String(t.description || '');
-      const cls = classifyDescription(desc, t.account_type);
+      let cls = classifyDescription(desc, t.account_type);
       stats.classified++;
 
       let storeId: string | null = null;
@@ -408,6 +430,17 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
       if (!storeId) {
         const hit = storeNameMap.find(s => s.re.test(desc));
         if (hit) { storeId = hit.id; storeSource = 'description'; }
+      }
+
+      // 3b-data. Learned merchant rules — user-confirmed patterns
+      if (!storeId && merchantRules.length) {
+        const dl = desc.toLowerCase();
+        const hit = merchantRules.find(r => dl.includes(r.pattern));
+        if (hit) {
+          storeId = hit.store_id; storeSource = 'merchant_rule';
+          if (hit.class && cls === 'other') cls = hit.class;
+          touchRule.run(hit.id);
+        }
       }
 
       // 3b. Moe's merchant rules (2026-08-19): XE Money Transfer on ANY card

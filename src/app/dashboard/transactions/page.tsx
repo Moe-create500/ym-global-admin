@@ -97,6 +97,7 @@ export default function TransactionsPage() {
   const [askQ, setAskQ] = useState('');
   const [askA, setAskA] = useState<any>(null);
   const [asking, setAsking] = useState(false);
+  const [untracked, setUntracked] = useState<any>(null);
   const [accounts, setAccounts] = useState<{ banks: any[]; creditCards: any[] } | null>(null);
   const [adSpend, setAdSpend] = useState<{ spend: any[]; fbUnbilled: any[] } | null>(null);
   const [incoming, setIncoming] = useState<any>(null);
@@ -213,7 +214,10 @@ export default function TransactionsPage() {
     }
     if (tab === 'adspend') fetch('/api/transactions?view=adspend').then(r => r.json()).then(setAdSpend).catch(() => {});
     if (tab === 'incoming') fetch('/api/transactions?view=incoming').then(r => r.json()).then(setIncoming).catch(() => {});
-    if (tab === 'command') fetch('/api/brain').then(r => r.json()).then(setCommand).catch(() => {});
+    if (tab === 'command') {
+      fetch('/api/brain').then(r => r.json()).then(setCommand).catch(() => {});
+      fetch('/api/transactions?view=untracked').then(r => r.json()).then(setUntracked).catch(() => {});
+    }
     if (tab === 'payroll' && !payPlan) loadPayPlan();
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (tab === 'ledger') loadLedger(); }, [tab, loadLedger]);
@@ -449,6 +453,67 @@ export default function TransactionsPage() {
               <p className="text-sm text-blue-300 mt-0.5">→ {command.recommendation.action}</p>
               <p className="text-[11px] text-slate-500 mt-1">why: {command.recommendation.why}</p>
             </div>
+
+            {/* WHAT MUST BE PAID — payment calendar with coverage + day-by-day paydown */}
+            {command.coverage?.obligations?.length > 0 && (
+              <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+                <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">
+                  What must be paid — pay date · coverage · day-by-day plan
+                  {command.coverage.totalGapCents > 0 && <span className="text-red-400 normal-case font-bold ml-3">TOTAL GAP {fmt(command.coverage.totalGapCents)}</span>}
+                </p>
+                {command.coverage.obligations.map((o: any, i: number) => {
+                  const chip = o.status === 'funded' ? ['🟢 FUNDED', 'text-emerald-400'] : o.status === 'funded_if_payout_lands' ? ['🟡 IF PAYOUTS LAND', 'text-amber-400'] : o.status === 'overdue_unfunded' ? ['🔴 OVERDUE · UNFUNDED', 'text-red-400'] : ['🔴 UNDERFUNDED', 'text-red-400'];
+                  return (
+                    <div key={i} className="px-3 py-2 border-b border-slate-800/40">
+                      <div className="flex flex-wrap items-center gap-x-4">
+                        <span className="text-[12px] text-slate-200 font-medium">{o.label}</span>
+                        <span className="text-white font-bold tabular-nums">{fmt(o.amountCents)}</span>
+                        <span className="text-[11px] text-slate-400">pay by <span className={o.overdue ? 'text-red-400 font-bold' : 'text-slate-200'}>{o.payDate.slice(5)}</span> · due {o.dueDate.slice(5)}</span>
+                        <span className={`text-[11px] font-bold ${chip[1]}`}>{chip[0]}{o.gapCents > 0 && ` · gap ${fmt(o.gapCents)}`}</span>
+                        {o.company === 'shipsourced' && <span className="text-[9px] px-1 rounded bg-purple-500/15 text-purple-400">SS</span>}
+                      </div>
+                      {(o.paydownPlan || []).length > 0 && (
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          plan: {o.paydownPlan.map((d: any) => `${d.date.slice(5)} pay ${fmt(d.cents)} (${d.sources.slice(0, 2).join(' + ')}${d.sources.length > 2 ? '…' : ''})`).join(' → ')}
+                        </p>
+                      )}
+                      {o.holdNote && <p className="text-[11px] text-blue-300 mt-0.5">💡 {o.holdNote}</p>}
+                    </div>
+                  );
+                })}
+                <p className="px-3 py-1.5 text-[10px] text-slate-600">one dollar is never promised twice — earlier due dates reserve cash and payouts first · free cash after all reservations: YM {fmt(command.coverage.freeCashAfterReservations.ymgv)} · SS {fmt(command.coverage.freeCashAfterReservations.shipsourced)}</p>
+              </div>
+            )}
+
+            {/* UNTRACKED — the resolution queue */}
+            {untracked && (
+              <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+                <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800 flex flex-wrap gap-x-4">
+                  <span>Untracked money — resolve it</span>
+                  <span className="text-slate-500 normal-case">traceability <span className={untracked.traceability.trackedPct >= 95 ? 'text-emerald-400' : 'text-amber-400'}>{untracked.traceability.trackedPct}%</span> of {fmt(untracked.traceability.totalCents)} (90d) · untracked {fmt(untracked.traceability.untrackedCents)} in {untracked.traceability.untrackedCount} txns</span>
+                </p>
+                {untracked.queue.length === 0 ? <p className="px-3 py-3 text-xs text-emerald-400">nothing unresolved ✓</p> :
+                  untracked.queue.slice(0, 8).map((u: any) => (
+                    <div key={u.id} className="px-3 py-1.5 border-b border-slate-800/40 flex flex-wrap items-center gap-x-3">
+                      <span className="text-[11px] text-slate-500 w-16">{u.date.slice(5)}</span>
+                      <span className="text-[12px] text-slate-300 flex-1 min-w-[180px] truncate" title={u.description}>{u.description}</span>
+                      <span className="tabular-nums text-white text-[12px] font-medium">{fmt(Math.abs(u.amount_cents))}</span>
+                      <span className="text-[11px] text-slate-500">{u.account}</span>
+                      {u.candidate ? (
+                        <button
+                          onClick={async () => {
+                            await fetch('/api/transactions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ txnId: u.id, storeId: u.candidate.storeId, makeRule: true, pattern: u.suggestedPattern }) });
+                            fetch('/api/transactions?view=untracked').then(r => r.json()).then(setUntracked).catch(() => {});
+                          }}
+                          title={u.candidate.evidence}
+                          className="text-[11px] px-2 py-0.5 rounded bg-blue-600/20 border border-blue-600/40 text-blue-300 hover:bg-blue-600/40">
+                          ✓ {u.candidate.store} ({u.candidate.confidence}%) + rule
+                        </button>
+                      ) : <span className="text-[10px] text-slate-600">no strong evidence — assign in Ledger</span>}
+                    </div>
+                  ))}
+              </div>
+            )}
 
             <div className="grid lg:grid-cols-2 gap-3">
               {/* Risks, ranked */}
