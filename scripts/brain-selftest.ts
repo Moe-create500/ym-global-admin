@@ -122,7 +122,9 @@ ok('settlement sums to the SS share', 398491 + 304484 === 702975);
 {
   // when the bank debits land+pair, SS share on 1654 must drop — assert machinery: 
   // no duplicate expense (payments classed card_payment_sent never as supplier/other spend)
-  const misclassed: any = db.prepare(`SELECT COUNT(*) n FROM bank_transactions t JOIN txn_links l ON l.txn_id = t.id WHERE ABS(t.amount_cents) IN (398491, 304484) AND l.class NOT IN ('card_payment', 'card_payment_sent')`).get();
+  // DEBITS must be payment-classed; an inbound funding transfer sharing the
+  // amount is a separate economic event and must NOT be payment-classed
+  const misclassed: any = db.prepare(`SELECT COUNT(*) n FROM bank_transactions t JOIN txn_links l ON l.txn_id = t.id WHERE t.amount_cents IN (-398491, -304484) AND l.class NOT IN ('card_payment', 'card_payment_sent')`).get();
   ok('settlement debits never misclassed as expense', misclassed.n === 0);
 }
 
