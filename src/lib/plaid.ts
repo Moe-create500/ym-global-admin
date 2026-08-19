@@ -51,7 +51,15 @@ export async function createLinkToken(opts: { accessToken?: string } = {}): Prom
     // bank (drives card_statements automatically). Update-mode relinks request
     // it as additional consent so existing items gain the scope on re-auth.
     ...(opts.accessToken
-      ? { access_token: opts.accessToken, additional_consented_products: ['liabilities'] }
+      ? {
+          access_token: opts.accessToken,
+          additional_consented_products: ['liabilities'],
+          // When the bank drops accounts from an item (NO_ACCOUNTS husk),
+          // re-auth alone can't restore them — the user must RE-SELECT the
+          // accounts in the popup. Without this flag the reconnect looks
+          // successful but the item stays hollow (found 2026-08-19).
+          update: { account_selection_enabled: true },
+        }
       : { products: ['transactions'], additional_consented_products: ['liabilities'] }),
   };
   const d = await plaidPost('/link/token/create', body);

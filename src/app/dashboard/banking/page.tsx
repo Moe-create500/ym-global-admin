@@ -274,7 +274,14 @@ function BankingContent() {
               const data = await res.json();
               if (data.error) alert('Error: ' + data.error);
             } else {
-              // Update mode: token unchanged — just pull fresh data
+              // Update mode: token unchanged — reactivate the item (it may
+              // have been auto-deactivated as a husk) then pull fresh data
+              if (reconnect?.accountId) {
+                await fetch('/api/plaid/reactivate', {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ accountId: reconnect.accountId }),
+                }).catch(() => {});
+              }
               await fetch('/api/banking/sync', { method: 'POST' });
             }
             loadAccounts();
