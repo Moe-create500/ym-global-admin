@@ -281,6 +281,19 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
   // ShipSourced store id for merchant rules (XE transfers = SS China stock)
   const ssStoreId: string | null = (db.prepare("SELECT id FROM stores WHERE name = 'ShipSourced'").get() as any)?.id || null;
 
+  // Self-healing: a pending older than 3 days whose identical posted twin
+  // exists is a superseded duplicate (the bank replaced it; older feeds never
+  // sent the removal). One economic event, one row — the posted one wins.
+  const healed = db.prepare(`
+    DELETE FROM bank_transactions WHERE id IN (
+      SELECT p.id FROM bank_transactions p
+      WHERE p.status = 'pending' AND p.date < date('now', '-3 days')
+        AND EXISTS (SELECT 1 FROM bank_transactions q WHERE q.bank_account_id = p.bank_account_id
+          AND q.status = 'posted' AND q.amount_cents = p.amount_cents
+          AND ABS(julianday(q.date) - julianday(p.date)) <= 3 AND q.description = p.description))
+  `).run();
+  if (healed.changes > 0) console.log(`[txn-scan] healed ${healed.changes} superseded pending twin(s)`);
+
   // Funding sub-card aliases (·2976 → Platinum account): learn new ones from
   // this window's evidence, then load the full map for card comparisons.
   learnFundingCards(db);
