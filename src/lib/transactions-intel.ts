@@ -902,15 +902,19 @@ export function getPayPlan(db: DatabaseType.Database) {
     // (BofA shows ACH payments as a pending+posted pair — counting both
     // would double-subtract). Recomputed every sync → walks to PAID ✓.
     let remainingStmtCents: number | null = null;
+    // Manual entries often lack a statement date — assume the typical ~24-day
+    // close→due gap so payments still subtract instead of freezing the number
+    const effStmtDate = stmt?.statement_date
+      || (stmt?.due_date ? new Date(new Date(stmt.due_date + 'T12:00:00Z').getTime() - 24 * 86400000).toISOString().slice(0, 10) : null);
     if (stmt?.statement_balance_cents != null) {
       let paidSince = 0;
-      if (stmt.statement_date) {
+      if (effStmtDate) {
         paidSince = ((db.prepare(`
           SELECT COALESCE(SUM(t.amount_cents), 0) c
           FROM bank_transactions t
           WHERE t.bank_account_id = ? AND t.amount_cents > 0
             AND t.status = 'posted' AND t.date > ?
-        `).get(meta.id, stmt.statement_date) as any)?.c || 0);
+        `).get(meta.id, effStmtDate) as any)?.c || 0);
         paidSince += ((db.prepare(`
           SELECT COALESCE(SUM(p.amount_cents), 0) c
           FROM bank_transactions p
@@ -922,7 +926,7 @@ export function getPayPlan(db: DatabaseType.Database) {
                 AND q.amount_cents = p.amount_cents
                 AND ABS(julianday(q.date) - julianday(p.date)) <= 3
             )
-        `).get(meta.id, stmt.statement_date) as any)?.c || 0);
+        `).get(meta.id, effStmtDate) as any)?.c || 0);
       }
       remainingStmtCents = Math.max(0, stmt.statement_balance_cents - paidSince);
     }
@@ -953,6 +957,9 @@ export function getPayPlan(db: DatabaseType.Database) {
       minPaymentCents: stmt?.min_payment_cents ?? null,
       stmtSource: stmt ? (stmt.source || 'manual') : null,
       stmtUpdatedAt: stmt?.updated_at || null,
+      // A MANUAL statement whose due date has passed is EXPIRED data, not
+      // real overdue debt — a bank-fed one past its due date is genuinely late.
+      stmtExpired: !!(stmt && (stmt.source || 'manual') !== 'plaid' && daysToDue != null && daysToDue < -1),
     };
   }).filter(Boolean) as any[];
 
@@ -1062,10 +1069,12 @@ export function getPayPlan(db: DatabaseType.Database) {
     c.shortCents = remaining;
     c.minCovered = c.minPaymentCents != null ? c.payNowCents >= c.minPaymentCents : null;
     c.verdict = !hasStatement ? 'no_statement'
+      : c.stmtExpired ? 'stmt_expired'
       : need === 0 ? 'stmt_paid'
       : c.payNowCents >= need ? 'pay_full'
       : c.payNowCents > 0 ? 'pay_partial'
       : 'not_funded';
+    if (c.verdict === 'stmt_expired') { c.payNowCents = 0; c.funding = []; c.shortCents = 0; }
   }
 
   // ── STORE-FIRST VIEW — each store owns its balances and pays them from its
@@ -1117,7 +1126,7 @@ export function getPayPlan(db: DatabaseType.Database) {
 
   // "Meet the statement" radar — the whole point of tracking remaining:
   // never let a due date arrive unmet. Buckets by urgency.
-  const withStmt = cards.filter(c => (c.remainingStmtCents ?? 0) > 0 && c.dueDate);
+  const withStmt = cards.filter(c => (c.remainingStmtCents ?? 0) > 0 && c.dueDate && !c.stmtExpired);
   const overdue = withStmt.filter(c => c.daysToDue != null && c.daysToDue < 0);
   const dueSoon = withStmt.filter(c => c.daysToDue != null && c.daysToDue >= 0 && c.daysToDue <= 7);
   const later = withStmt.filter(c => c.daysToDue != null && c.daysToDue > 7);
