@@ -894,15 +894,29 @@ export function getPayPlan(db: DatabaseType.Database) {
     // whichever store's charges happened to be oldest).
     const sinceDate = comp?.oldestUnpaidDate || new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
     const paidByStore: any[] = db.prepare(`
-      SELECT st.name AS store, SUM(p.amount_cents) AS cents
-      FROM bank_transactions p
-      JOIN txn_links l ON l.txn_id = p.id AND l.class = 'card_payment' AND l.pair_txn_id IS NOT NULL
-      JOIN bank_transactions src ON src.id = l.pair_txn_id
-      JOIN bank_accounts sa ON sa.id = src.bank_account_id AND sa.store_id IS NOT NULL
-      JOIN stores st ON st.id = sa.store_id
-      WHERE p.bank_account_id = ? AND p.amount_cents > 0 AND p.date >= ?
-      GROUP BY sa.store_id
-    `).all(meta.id, sinceDate);
+      SELECT store, SUM(cents) AS cents FROM (
+        -- two-sided proof: card credit paired to a store-owned debit
+        SELECT st.name AS store, p.amount_cents AS cents
+        FROM bank_transactions p
+        JOIN txn_links l ON l.txn_id = p.id AND l.class = 'card_payment' AND l.pair_txn_id IS NOT NULL
+        JOIN bank_transactions src ON src.id = l.pair_txn_id
+        JOIN bank_accounts sa ON sa.id = src.bank_account_id AND sa.store_id IS NOT NULL
+        JOIN stores st ON st.id = sa.store_id
+        WHERE p.bank_account_id = ? AND p.amount_cents > 0 AND p.date >= ?
+        UNION ALL
+        -- one-sided proof: the card's feed is blind, but a classified payment
+        -- debit left a store's OWN account and its description NAMES this card
+        -- ("payment to CRD 1654"). Unpaired only — the moment the card side
+        -- appears and pairs, that row leaves this branch and enters the one
+        -- above. Nothing double-counts.
+        SELECT st.name AS store, ABS(d.amount_cents) AS cents
+        FROM bank_transactions d
+        JOIN txn_links dl ON dl.txn_id = d.id AND dl.class = 'card_payment_sent' AND dl.pair_txn_id IS NULL
+        JOIN bank_accounts sa ON sa.id = d.bank_account_id AND sa.store_id IS NOT NULL
+        JOIN stores st ON st.id = sa.store_id
+        WHERE d.amount_cents < 0 AND d.date >= ? AND instr(d.description, ?) > 0
+      ) GROUP BY store
+    `).all(meta.id, sinceDate, sinceDate, meta.last_four);
     const paidMap = new Map(paidByStore.map(pb => [pb.store, pb.cents]));
     for (const [store, cents] of shares) {
       const paid = paidMap.get(store) || 0;
@@ -958,6 +972,15 @@ export function getPayPlan(db: DatabaseType.Database) {
                 AND ABS(julianday(q.date) - julianday(p.date)) <= 3
             )
         `).get(meta.id, effStmtDate) as any)?.c || 0);
+        // One-sided proof when the card's own feed is blind: unpaired payment
+        // debits from OUR checking accounts whose description names this card.
+        // Drops out automatically once the card-side credit arrives and pairs.
+        paidSince += ((db.prepare(`
+          SELECT COALESCE(SUM(ABS(d.amount_cents)), 0) c
+          FROM bank_transactions d
+          JOIN txn_links dl ON dl.txn_id = d.id AND dl.class = 'card_payment_sent' AND dl.pair_txn_id IS NULL
+          WHERE d.amount_cents < 0 AND d.date > ? AND instr(d.description, ?) > 0
+        `).get(effStmtDate, meta.last_four) as any)?.c || 0);
       }
       remainingStmtCents = Math.max(0, stmt.statement_balance_cents - paidSince);
     }
