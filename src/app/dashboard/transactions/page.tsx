@@ -358,7 +358,7 @@ export default function TransactionsPage() {
           <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
             <table className="w-full text-[12px]">
               <thead><tr className="border-b border-slate-800">
-                <th className={thc}>CARD</th><th className={thr}>LIVE BAL</th><th className={thr}>LIMIT</th><th className={thr}>UTIL</th><th className={thr}>REMAINING STMT</th><th className={thr}>DUE</th><th className={thc}>FEED</th>
+                <th className={thc}>CARD</th><th className={thr}>FULL BALANCE OWED</th><th className={thr}>LIMIT</th><th className={thr}>UTIL</th><th className={thr}>REMAINING FOR STMT</th><th className={thr}>DUE DATE</th><th className={thc}>FEED</th>
               </tr></thead>
               <tbody>
                 {rows.map((r: any) => {
@@ -867,9 +867,9 @@ export default function TransactionsPage() {
                   <table className="w-full text-[12px]">
                     <thead><tr className="border-b border-slate-800">
                       <th className={thCls}>CARD</th>
-                      <th className={thR}>STMT BAL</th>
-                      <th className={thR}>DUE</th>
-                      <th className={thR}>LIVE BAL</th>
+                      <th className={thR} title="what's still unpaid on the last statement — pay this by the due date">REMAINING FOR STMT</th>
+                      <th className={thR}>DUE DATE</th>
+                      <th className={thR} title="everything currently on the card, incl. new spend after the statement cut">FULL BALANCE OWED</th>
                       <th className={thR}>FB INC</th>
                       <th className={thR}>UTIL</th>
                       <th className={thCls}>OWED BY</th>
