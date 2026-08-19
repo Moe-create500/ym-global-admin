@@ -1032,18 +1032,18 @@ export function getPayPlan(db: DatabaseType.Database) {
     // No statement = the amount due is UNKNOWN. The card draws nothing from
     // anyone's pool until the statement is entered — money is never allocated
     // against an invented number.
-    if (!hasStatement) {
-      c.hasStatement = false;
-      c.needCents = null;
-      c.payNowCents = 0;
-      c.funding = [];
-      c.shortCents = 0;
-      c.minCovered = null;
-      c.verdict = 'no_statement';
-      continue;
-    }
-    // Pay what's actually LEFT on the statement, not what it was at cut
-    const need = c.remainingStmtCents ?? c.stmtBalanceCents;
+    // Dual-mode target — the Brain never dead-ends waiting for a statement:
+    //   statement mode — live (or current manual) statement drives the need
+    //   balance mode   — no usable statement: the LIVE balance (synced every
+    //                    30 min) IS the target, composed of known store
+    //                    charges, funded by those stores. Auto-updating by
+    //                    construction; no manual entry required.
+    const statementMode = hasStatement && !c.stmtExpired;
+    c.payMode = statementMode ? 'statement' : 'balance';
+    c.hasStatement = hasStatement;
+    const need = statementMode
+      ? (c.remainingStmtCents ?? c.stmtBalanceCents)
+      : Math.max(0, c.postedCents);
     let remaining = need;
     const funding: { source: string; cents: number }[] = [];
     for (const o of c.owners) {
@@ -1068,13 +1068,15 @@ export function getPayPlan(db: DatabaseType.Database) {
     c.funding = funding;
     c.shortCents = remaining;
     c.minCovered = c.minPaymentCents != null ? c.payNowCents >= c.minPaymentCents : null;
-    c.verdict = !hasStatement ? 'no_statement'
-      : c.stmtExpired ? 'stmt_expired'
-      : need === 0 ? 'stmt_paid'
-      : c.payNowCents >= need ? 'pay_full'
-      : c.payNowCents > 0 ? 'pay_partial'
-      : 'not_funded';
-    if (c.verdict === 'stmt_expired') { c.payNowCents = 0; c.funding = []; c.shortCents = 0; }
+    c.verdict = statementMode
+      ? (need === 0 ? 'stmt_paid'
+        : c.payNowCents >= need ? 'pay_full'
+        : c.payNowCents > 0 ? 'pay_partial'
+        : 'not_funded')
+      : (need === 0 ? 'balance_clear'
+        : c.payNowCents >= need ? 'clear_full'
+        : c.payNowCents > 0 ? 'clear_partial'
+        : 'not_funded');
   }
 
   // ── STORE-FIRST VIEW — each store owns its balances and pays them from its
