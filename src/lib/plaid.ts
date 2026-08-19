@@ -181,6 +181,25 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
               amountCents, t.payment_channel || 'other', t.pending ? 'pending' : 'posted', t.merchant_name || null);
           txns++;
         }
+        // Banks retract and amend transactions (bounced payments, corrected
+        // amounts). Ignoring these leaves phantoms in the mirror — a bounced
+        // $4,868 Amex payment sat here for 9 days overstating what was paid
+        // (2026-08-19). The mirror must always match the bank.
+        for (const t of d.modified || []) {
+          const row: any = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(t.transaction_id);
+          if (!row) continue;
+          db.prepare(`UPDATE bank_transactions SET date = ?, description = ?, amount_cents = ?, status = ?, counterparty = ? WHERE id = ?`)
+            .run(t.date, t.name || t.merchant_name || '', -Math.round((t.amount || 0) * 100),
+              t.pending ? 'pending' : 'posted', t.merchant_name || null, row.id);
+        }
+        for (const t of d.removed || []) {
+          const row: any = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(t.transaction_id);
+          if (!row) continue;
+          db.prepare('UPDATE txn_links SET pair_txn_id = NULL WHERE pair_txn_id = ?').run(row.id);
+          db.prepare('DELETE FROM txn_links WHERE txn_id = ?').run(row.id);
+          db.prepare('DELETE FROM bank_transactions WHERE id = ?').run(row.id);
+          console.log(`[plaid] removed retracted txn ${t.transaction_id} (bank reversed it)`);
+        }
         cursor = d.next_cursor;
         hasMore = !!d.has_more;
       }
