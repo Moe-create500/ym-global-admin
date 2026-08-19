@@ -967,9 +967,11 @@ export function getPayPlan(db: DatabaseType.Database) {
         JOIN txn_links dl ON dl.txn_id = d.id AND dl.class = 'card_payment_sent' AND dl.pair_txn_id IS NULL
         JOIN bank_accounts sa ON sa.id = d.bank_account_id AND sa.store_id IS NOT NULL
         JOIN stores st ON st.id = sa.store_id
-        WHERE d.amount_cents < 0 AND d.date >= ? AND instr(d.description, ?) > 0
+        WHERE d.amount_cents < 0 AND d.date >= ?
+          AND (instr(d.description, ?) > 0 OR EXISTS (
+            SELECT 1 FROM fb_funding_cards fc WHERE fc.bank_account_id = ? AND instr(d.description, fc.last4) > 0))
       ) GROUP BY store
-    `).all(meta.id, sinceDate, sinceDate, meta.last_four);
+    `).all(meta.id, sinceDate, sinceDate, meta.last_four, meta.id);
     const paidMap = new Map(paidByStore.map(pb => [pb.store, pb.cents]));
     for (const [store, cents] of shares) {
       const paid = paidMap.get(store) || 0;
@@ -1032,8 +1034,10 @@ export function getPayPlan(db: DatabaseType.Database) {
           SELECT COALESCE(SUM(ABS(d.amount_cents)), 0) c
           FROM bank_transactions d
           JOIN txn_links dl ON dl.txn_id = d.id AND dl.class = 'card_payment_sent' AND dl.pair_txn_id IS NULL
-          WHERE d.amount_cents < 0 AND d.date > ? AND instr(d.description, ?) > 0
-        `).get(effStmtDate, meta.last_four) as any)?.c || 0);
+          WHERE d.amount_cents < 0 AND d.date > ?
+            AND (instr(d.description, ?) > 0 OR EXISTS (
+              SELECT 1 FROM fb_funding_cards fc WHERE fc.bank_account_id = ? AND instr(d.description, fc.last4) > 0))
+        `).get(effStmtDate, meta.last_four, meta.id) as any)?.c || 0);
       }
       remainingStmtCents = Math.max(0, stmt.statement_balance_cents - paidSince);
     }
