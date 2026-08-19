@@ -899,15 +899,17 @@ export default function TransactionsPage() {
                                     : 'remaining statement balance — click to edit statement'}
                                   className={c.stmtBalanceCents != null ? 'text-white font-medium hover:text-blue-300' : 'text-slate-500 hover:text-blue-300 underline decoration-dotted'}>
                                   {c.stmtBalanceCents == null ? 'set'
+                                    : c.stmtExpired ? <span className="text-slate-600 line-through">{fmt2(c.remainingStmtCents ?? c.stmtBalanceCents)}</span>
                                     : c.remainingStmtCents === 0 ? <span className="text-emerald-400">PAID ✓</span>
                                     : fmt2(c.remainingStmtCents ?? c.stmtBalanceCents)}
-                                  {c.remainingStmtCents != null && c.remainingStmtCents > 0 && c.remainingStmtCents !== c.stmtBalanceCents && (
+                                  {c.stmtExpired && <span className="block text-[9px] font-normal text-amber-500">old cycle — update</span>}
+                                  {!c.stmtExpired && c.remainingStmtCents != null && c.remainingStmtCents > 0 && c.remainingStmtCents !== c.stmtBalanceCents && (
                                     <span className="block text-[9px] font-normal text-slate-500">of {fmt2(c.stmtBalanceCents)} stmt</span>
                                   )}
                                 </button>
                               </td>
-                              <td className={`${td} text-right whitespace-nowrap ${c.daysToDue == null ? 'text-slate-600' : c.daysToDue <= 3 ? 'text-red-400 font-bold' : c.daysToDue <= 7 ? 'text-amber-400' : 'text-slate-300'}`}>
-                                {c.dueDate ? `${dayLabel(c.dueDate).replace(/^\w+, /, '')} (${c.daysToDue}d)` : '—'}
+                              <td className={`${td} text-right whitespace-nowrap ${c.stmtExpired ? 'text-slate-600' : c.daysToDue == null ? 'text-slate-600' : c.daysToDue <= 3 ? 'text-red-400 font-bold' : c.daysToDue <= 7 ? 'text-amber-400' : 'text-slate-300'}`}>
+                                {c.stmtExpired ? <span className="line-through">{dayLabel(c.dueDate).replace(/^\w+, /, '')}</span> : c.dueDate ? `${dayLabel(c.dueDate).replace(/^\w+, /, '')} (${c.daysToDue}d)` : '—'}
                               </td>
                               <td className={`${td} text-right text-slate-300`}>{fmt2(c.postedCents)}</td>
                               <td className={`${td} text-right ${c.fbOwedCents > 0 ? 'text-blue-300' : 'text-slate-700'}`}>{c.fbOwedCents > 0 ? fmt2(c.fbOwedCents) : '—'}</td>
