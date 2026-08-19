@@ -170,6 +170,7 @@ const CREDIT_RULES: Array<[RegExp, TxnClass]> = [
   [/cc@google\.com|google *ads|googleads|google llc ads/i, 'google_ads'],
   [/shopify/i, 'shopify_app'],
   [/chargeflow|klaviyo|highlevel|aftership|zendesk|gorgias|triplewhale|northbeam/i, 'shopify_app'],
+  [/xe money transfer|wise us inc|alibaba|1688\.com|payoneer/i, 'supplier'],
   [/openai|claude\.ai|anthropic|higgsfield|fal features|midjourney|canva|elevenlabs|apple\.com\/bill|adobe|figma|notion|slack|zoom\.us|godaddy|namecheap|vercel|aws|amazon web serv/i, 'software'],
   [/doordash|dashpass|uber|walmart|7-eleven|instacart|starbucks|chipotle|mcdonald|boatsetter|airbnb|hotel|delta air|united air|shell oil|chevron|costco|target\b|aplpay/i, 'personal'],
 ];
@@ -276,6 +277,9 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
 
   // Likelihood curves learned from this system's own confirmed matches
   const lagCurves = learnLagCurves(db);
+
+  // ShipSourced store id for merchant rules (XE transfers = SS China stock)
+  const ssStoreId: string | null = (db.prepare("SELECT id FROM stores WHERE name = 'ShipSourced'").get() as any)?.id || null;
 
   // Funding sub-card aliases (·2976 → Platinum account): learn new ones from
   // this window's evidence, then load the full map for card comparisons.
@@ -391,6 +395,20 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
       if (!storeId) {
         const hit = storeNameMap.find(s => s.re.test(desc));
         if (hit) { storeId = hit.id; storeSource = 'description'; }
+      }
+
+      // 3b. Moe's merchant rules (2026-08-19): XE Money Transfer on ANY card
+      // = ShipSourced buying stock in China — and the CASH EQUIVALENT FEE the
+      // bank charges on each transfer belongs to the same purchase.
+      if (!storeId && ssStoreId && t.account_type === 'credit') {
+        if (/xe money transfer/i.test(desc)) {
+          storeId = ssStoreId; storeSource = 'merchant_rule';
+        } else if (/cash equivalent fee/i.test(desc)) {
+          const xe = db.prepare(`SELECT 1 FROM bank_transactions x WHERE x.bank_account_id = ?
+            AND ABS(julianday(x.date) - julianday(?)) <= 2 AND lower(x.description) LIKE '%xe money transfer%' LIMIT 1`)
+            .get(t.bank_account_id, t.date);
+          if (xe) { storeId = ssStoreId; storeSource = 'merchant_rule'; }
+        }
       }
 
       // 4. the account itself belongs to a store — checking accounts only,
