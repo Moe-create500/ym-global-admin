@@ -84,7 +84,12 @@ export async function exchangeAndImport(db: Database.Database, publicToken: stri
   for (const a of acc.accounts || []) {
     const available = Math.round(((a.balances?.available ?? a.balances?.current) || 0) * 100);
     const ledger = Math.round((a.balances?.current || 0) * 100);
+    // Match by exact plaid id, then NAME+mask (twin cards share a last4 —
+    // Gold/Platinum ·1009 — so name must break the tie), then the old
+    // inst+mask+type fallback only when nothing name-matches
     const existing: any = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(a.account_id)
+      || db.prepare('SELECT id FROM bank_accounts WHERE last_four = ? AND account_name = ? AND institution_name = ? ORDER BY updated_at DESC LIMIT 1')
+        .get(a.mask || '', a.official_name || a.name || '', institution)
       || db.prepare('SELECT id FROM bank_accounts WHERE last_four = ? AND account_type = ? AND institution_name = ? ORDER BY updated_at DESC LIMIT 1')
         .get(a.mask || '', a.type, institution);
     if (existing) {
@@ -162,36 +167,13 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
       let cursor: string | undefined = item.cursor || undefined;
       let hasMore = true;
       let guard = 0;
-      while (hasMore && guard++ < 40) {
+      while (hasMore && guard++ < 80) {
         const d = await plaidPost('/transactions/sync', { access_token: item.access_token, ...(cursor ? { cursor } : {}), count: 250 });
-        for (const t of d.added || []) {
-          const row: any = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(t.account_id);
-          if (!row) continue;
-          const desc = t.name || t.merchant_name || '';
-          const amountCents = -Math.round((t.amount || 0) * 100);
-          const existing = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(t.transaction_id)
-            || db.prepare('SELECT id FROM bank_transactions WHERE bank_account_id = ? AND date = ? AND amount_cents = ? AND description = ?')
-              .get(row.id, t.date, amountCents, desc);
-          if (existing) continue;
-          db.prepare(`INSERT INTO bank_transactions (id, bank_account_id, teller_transaction_id, date, description,
-              category, amount_cents, type, status, counterparty, running_balance_cents)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`)
-            .run(crypto.randomUUID(), row.id, t.transaction_id, t.date, desc,
-              (t.personal_finance_category?.primary || '').toLowerCase().replace(/_/g, ' ') || null,
-              amountCents, t.payment_channel || 'other', t.pending ? 'pending' : 'posted', t.merchant_name || null);
-          txns++;
-        }
-        // Banks retract and amend transactions (bounced payments, corrected
-        // amounts). Ignoring these leaves phantoms in the mirror — a bounced
-        // $4,868 Amex payment sat here for 9 days overstating what was paid
-        // (2026-08-19). The mirror must always match the bank.
-        for (const t of d.modified || []) {
-          const row: any = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(t.transaction_id);
-          if (!row) continue;
-          db.prepare(`UPDATE bank_transactions SET date = ?, description = ?, amount_cents = ?, status = ?, counterparty = ? WHERE id = ?`)
-            .run(t.date, t.name || t.merchant_name || '', -Math.round((t.amount || 0) * 100),
-              t.pending ? 'pending' : 'posted', t.merchant_name || null, row.id);
-        }
+        // ORDER MATTERS (audit 2026-08-19): a pending's removal and its posted
+        // replacement arrive in the SAME batch. Processing added first lets the
+        // content-dedupe match the still-existing pending row and skip the
+        // replacement — then removed deletes the pending and the transaction
+        // vanishes entirely. Retractions and amendments run FIRST.
         for (const t of d.removed || []) {
           const row: any = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(t.transaction_id);
           if (!row) continue;
@@ -200,15 +182,52 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
           db.prepare('DELETE FROM bank_transactions WHERE id = ?').run(row.id);
           console.log(`[plaid] removed retracted txn ${t.transaction_id} (bank reversed it)`);
         }
+        for (const t of d.modified || []) {
+          const row: any = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(t.transaction_id);
+          if (!row) continue;
+          db.prepare(`UPDATE bank_transactions SET date = ?, description = ?, amount_cents = ?, status = ?, counterparty = ? WHERE id = ?`)
+            .run(t.date, t.name || t.merchant_name || '', -Math.round((t.amount || 0) * 100),
+              t.pending ? 'pending' : 'posted', t.merchant_name || null, row.id);
+        }
+        for (const t of d.added || []) {
+          const row: any = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(t.account_id);
+          if (!row) continue;
+          const desc = t.name || t.merchant_name || '';
+          const amountCents = -Math.round((t.amount || 0) * 100);
+          if (db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(t.transaction_id)) continue;
+          const twin: any = db.prepare('SELECT id FROM bank_transactions WHERE bank_account_id = ? AND date = ? AND amount_cents = ? AND description = ?')
+            .get(row.id, t.date, amountCents, desc);
+          if (twin) {
+            // same economic event already mirrored (its pending twin, or a
+            // teller-era copy) — upgrade it in place so id and status become
+            // bank-true instead of leaving a permanent duplicate
+            db.prepare('UPDATE bank_transactions SET teller_transaction_id = ?, status = ? WHERE id = ?')
+              .run(t.transaction_id, t.pending ? 'pending' : 'posted', twin.id);
+            continue;
+          }
+          db.prepare(`INSERT INTO bank_transactions (id, bank_account_id, teller_transaction_id, date, description,
+              category, amount_cents, type, status, counterparty, running_balance_cents)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`)
+            .run(crypto.randomUUID(), row.id, t.transaction_id, t.date, desc,
+              (t.personal_finance_category?.primary || '').toLowerCase().replace(/_/g, ' ') || null,
+              amountCents, t.payment_channel || 'other', t.pending ? 'pending' : 'posted', t.merchant_name || null);
+          txns++;
+        }
         cursor = d.next_cursor;
         hasMore = !!d.has_more;
       }
+      if (hasMore) console.error(`[plaid] WARNING: ${item.institution_name} hit the 80-page sync cap with more remaining — next sync continues from saved cursor`);
       db.prepare("UPDATE plaid_items SET cursor = ?, updated_at = datetime('now') WHERE item_id = ?").run(cursor || null, item.item_id);
       reportSource(db, `bank:plaid:${item.item_id}`, { ok: true, records: txns, label: `Bank — ${item.institution_name || 'Plaid item'}`, cadenceMin: 120 });
     } catch (e: any) {
       const msg = String(e?.message || e);
       errors.push(`plaid ${item.institution_name || item.item_id}: ${msg.slice(0, 160)}`);
       reportSource(db, `bank:plaid:${item.item_id}`, { ok: false, error: msg, label: `Bank — ${item.institution_name || 'Plaid item'}`, cadenceMin: 120 });
+      if (/NO_ACCOUNTS/i.test(msg)) {
+        // empty husk connection — polling it forever is pure noise
+        db.prepare("UPDATE plaid_items SET status = 'inactive', updated_at = datetime('now') WHERE item_id = ?").run(item.item_id);
+        console.log(`[plaid] item ${item.institution_name || item.item_id} returned NO_ACCOUNTS — deactivated (relink to restore)`);
+      }
       if (/ITEM_LOGIN_REQUIRED|ITEM_LOCKED|ACCESS_NOT_GRANTED/i.test(msg)) {
         db.prepare("UPDATE bank_accounts SET last_sync_error = 'CONNECTION EXPIRED — reconnect this bank via Connect Bank' WHERE teller_enrollment_id = ?").run(item.item_id);
       }

@@ -1,6 +1,7 @@
 // Teller bank sync shared by the 30-min scheduled loop (instrumentation.ts)
 // and the /api/cron/sync route. Balances + last 200 transactions per account.
 
+import { reportSource } from '@/lib/source-registry';
 import { getDb } from '@/lib/db';
 import { getAccountBalance, getAccountTransactions } from '@/lib/teller';
 import crypto from 'crypto';
@@ -114,5 +115,6 @@ export async function syncBankAccounts(): Promise<{ accounts_synced: number; tra
     errors.push(`plaid sync: ${String(e?.message || e).slice(0, 150)}`);
   }
 
+  reportSource(db, 'bank:teller:all', { ok: errors.length === 0, records: totalTxns, error: errors.slice(0, 2).join(' | '), label: 'Bank — Teller (legacy)', cadenceMin: 120 });
   return { accounts_synced: synced, transactions_imported: totalTxns, errors };
 }

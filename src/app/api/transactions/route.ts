@@ -22,84 +22,8 @@ export async function GET(req: NextRequest) {
   }
   if (view === 'cards') return NextResponse.json({ cards: getCardIntel(db, days || 30), clarity: getCardClarity(db) });
   if (view === 'incoming') {
-    // Incoming Cash tab — money on its way to the banks: cash sitting at
-    // Shopify, reserved funds, and the payout schedule (what lands, when)
-    const shopifyBalances: any[] = db.prepare(`
-      SELECT a.id, a.account_name, s.name AS store_name,
-             COALESCE(a.balance_available_cents, a.balance_ledger_cents, 0) AS available_cents,
-             a.balance_updated_at
-      FROM bank_accounts a LEFT JOIN stores s ON s.id = a.store_id
-      WHERE a.status = 'active' AND a.institution_name LIKE '%Shopify%'
-      ORDER BY available_cents DESC
-    `).all();
-    const reserves: any[] = db.prepare(`
-      SELECT s.name AS store_name, SUM(r.amount_cents) AS cents
-      FROM reserves r JOIN stores s ON s.id = r.store_id
-      GROUP BY r.store_id HAVING cents > 0 ORDER BY cents DESC
-    `).all();
-    // Payout schedule from each store's Shopify payout ledger
-    const today = new Date().toISOString().slice(0, 10);
-    const horizon = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
-    const upcoming: any[] = [];
-    const seen = new Set<string>();
-    const evRows: any[] = db.prepare(`
-      SELECT e.store_id, s.name AS store_name, e.rows_json
-      FROM cfo_evidence e JOIN stores s ON s.id = e.store_id WHERE e.kind = 'shopify_payouts'
-    `).all();
-    for (const ev of evRows) {
-      let rows: any[] = [];
-      try { rows = JSON.parse(ev.rows_json || '[]'); } catch { continue; }
-      for (const r of rows) {
-        const date = r.payout_date || r.date;
-        const cents = r.net_cents ?? r.amount_cents;
-        if (!date || !cents) continue;
-        const status = r.payout_status || 'scheduled';
-        // future-dated payouts, plus recent non-paid ones (in transit)
-        if (!(date >= today && date <= horizon) && !(status !== 'paid' && date >= new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10))) continue;
-        const k = `${ev.store_id}|${r.reference || ''}|${date}|${cents}`;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        upcoming.push({ store: ev.store_name, date, cents, status });
-      }
-    }
-    upcoming.sort((a, b) => a.date.localeCompare(b.date) || b.cents - a.cents);
-    // What actually landed in the banks (deposits matched to payouts), last 7d
-    const landed: any[] = db.prepare(`
-      SELECT t.date, s.name AS store_name, SUM(t.amount_cents) AS cents
-      FROM bank_transactions t
-      JOIN txn_links l ON l.txn_id = t.id AND l.class = 'shopify_payout'
-      LEFT JOIN stores s ON s.id = l.store_id
-      WHERE t.amount_cents > 0 AND t.status = 'posted' AND t.date >= date('now', '-7 days')
-      GROUP BY t.date, l.store_id ORDER BY t.date DESC
-    `).all();
-    const in7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
-    // One row per store — where its cash IS across the whole pipeline
-    const perStore = new Map<string, any>();
-    const row = (store: string) => {
-      if (!perStore.has(store)) perStore.set(store, { store, atShopifyCents: 0, reservedCents: 0, upcoming7Cents: 0, landed7Cents: 0, nextPayout: null });
-      return perStore.get(store);
-    };
-    for (const b of shopifyBalances) row(b.store_name || b.account_name).atShopifyCents += b.available_cents;
-    for (const r of reserves) row(r.store_name).reservedCents += r.cents;
-    for (const u of upcoming) {
-      const s = row(u.store);
-      if (u.date <= in7) s.upcoming7Cents += u.cents;
-      if (!s.nextPayout || u.date < s.nextPayout.date) s.nextPayout = { date: u.date, cents: u.cents, status: u.status };
-    }
-    for (const l of landed) if (l.store_name) row(l.store_name).landed7Cents += l.cents;
-    const stores = [...perStore.values()]
-      .map(s => ({ ...s, totalIncomingCents: s.atShopifyCents + s.reservedCents + s.upcoming7Cents }))
-      .sort((a, b) => b.totalIncomingCents - a.totalIncomingCents);
-
-    return NextResponse.json({
-      stores, upcoming, landed,
-      totals: {
-        atShopifyCents: shopifyBalances.reduce((s, b) => s + b.available_cents, 0),
-        reservesCents: reserves.reduce((s, r) => s + r.cents, 0),
-        upcoming7Cents: upcoming.filter(u => u.date <= in7).reduce((s, u) => s + u.cents, 0),
-        landed7Cents: landed.reduce((s, l) => s + l.cents, 0),
-      },
-    });
+    const { getIncomingCash } = await import('@/lib/incoming-cash');
+    return NextResponse.json(getIncomingCash(db));
   }
   if (view === 'adspend') {
     // Ad Spends tab — per store/platform: yesterday, 7d, 30d, plus each FB

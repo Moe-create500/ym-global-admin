@@ -43,6 +43,13 @@ export async function register() {
           const { getDb } = await import('@/lib/db');
           const scan = runTransactionScan(getDb(), { days: 45 });
           if (scan.classified > 0) bankNote += `, ${scan.classified} txns reconciled`;
+          // Fresh data invalidates the Brain's speed cache immediately — a
+          // cached number must never outlive its source truth (audit 2026-08-19)
+          const { dropBrainCache } = await import('@/lib/brain-cache');
+          dropBrainCache();
+          // Daily brain snapshot — powers "what changed since yesterday"
+          const { takeBrainSnapshot } = await import('@/lib/brain-insights');
+          try { takeBrainSnapshot(getDb()); } catch (e) { console.error('[auto-sync] snapshot error:', e); }
           // Daily DEEP re-scan: the force pass re-evaluates existing links
           // with everything the matcher has learned since (funding-card
           // aliases, lag curves) — fully autonomous, no Scan button needed.

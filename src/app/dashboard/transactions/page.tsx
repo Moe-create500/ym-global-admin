@@ -92,7 +92,11 @@ function ClassChip({ cls }: { cls: string | null }) {
 }
 
 export default function TransactionsPage() {
-  const [tab, setTab] = useState<'cards' | 'payplan' | 'truth' | 'ledger' | 'payments' | 'banks' | 'cc' | 'payroll' | 'adspend' | 'incoming'>('payplan');
+  const [tab, setTab] = useState<'command' | 'cards' | 'payplan' | 'truth' | 'ledger' | 'payments' | 'banks' | 'cc' | 'payroll' | 'adspend' | 'incoming'>('command');
+  const [command, setCommand] = useState<any>(null);
+  const [askQ, setAskQ] = useState('');
+  const [askA, setAskA] = useState<any>(null);
+  const [asking, setAsking] = useState(false);
   const [accounts, setAccounts] = useState<{ banks: any[]; creditCards: any[] } | null>(null);
   const [adSpend, setAdSpend] = useState<{ spend: any[]; fbUnbilled: any[] } | null>(null);
   const [incoming, setIncoming] = useState<any>(null);
@@ -209,6 +213,7 @@ export default function TransactionsPage() {
     }
     if (tab === 'adspend') fetch('/api/transactions?view=adspend').then(r => r.json()).then(setAdSpend).catch(() => {});
     if (tab === 'incoming') fetch('/api/transactions?view=incoming').then(r => r.json()).then(setIncoming).catch(() => {});
+    if (tab === 'command') fetch('/api/brain').then(r => r.json()).then(setCommand).catch(() => {});
     if (tab === 'payroll' && !payPlan) loadPayPlan();
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (tab === 'ledger') loadLedger(); }, [tab, loadLedger]);
@@ -297,7 +302,7 @@ export default function TransactionsPage() {
       )}
 
       <div className="flex gap-1 mb-4 border-b border-slate-800">
-        {([['payplan', '⚡ Operations'], ['banks', '🏦 Bank Accounts'], ['cc', '💳 Credit Cards'], ['payroll', '👥 Payroll'], ['adspend', '📣 Ad Spends'], ['incoming', '💰 Incoming Cash'], ['payments', 'Payments'], ['cards', 'Card Intelligence'], ['truth', 'Source of Truth'], ['ledger', 'Ledger']] as const).map(([k, label]) => (
+        {([['command', '🧠 Command'], ['payplan', '⚡ Operations'], ['banks', '🏦 Bank Accounts'], ['cc', '💳 Credit Cards'], ['payroll', '👥 Payroll'], ['adspend', '📣 Ad Spends'], ['incoming', '💰 Incoming Cash'], ['payments', 'Payments'], ['cards', 'Card Intelligence'], ['truth', 'Source of Truth'], ['ledger', 'Ledger']] as const).map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${tab === k ? 'border-blue-500 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>
             {label}
@@ -383,6 +388,110 @@ export default function TransactionsPage() {
                 })}
               </tbody>
             </table>
+          </div>
+        );
+      })()}
+
+      {tab === 'command' && (() => {
+        if (!command) return <p className="text-slate-500 text-sm py-8">The Brain is thinking…</p>;
+        const f = command.forward;
+        const ask = async () => {
+          if (!askQ.trim() || asking) return;
+          setAsking(true); setAskA(null);
+          try {
+            const r = await fetch('/api/brain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: askQ }) });
+            setAskA(await r.json());
+          } catch { setAskA({ answer: 'ask failed — try again' }); }
+          setAsking(false);
+        };
+        const coCard = (label: string, p: any, cashNow: any) => (
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex-1 min-w-[280px]">
+            <p className="text-[10px] uppercase tracking-widest text-slate-500">{label}</p>
+            <p className="text-3xl font-bold text-emerald-400 mt-1">{fmt(p.safeToDeployCents)}</p>
+            <p className="text-[11px] text-slate-500">SAFE TO DEPLOY — survives every known obligation for 14d</p>
+            <div className="mt-2 space-y-0.5 text-[11px]">
+              <p className="flex justify-between text-slate-400"><span>usable now</span><span className="tabular-nums text-slate-200">{fmt(cashNow.usableCents)}</span></p>
+              <p className="flex justify-between text-slate-400"><span>lowest committed point (14d)</span><span className={`tabular-nums ${p.lowestCommitted14.cents < p.floorCents ? 'text-red-400 font-bold' : 'text-slate-200'}`}>{p.lowestCommitted14.cents < 0 ? '−' : ''}{fmt(p.lowestCommitted14.cents)} · {p.lowestCommitted14.date.slice(5)}</span></p>
+              <p className="flex justify-between text-slate-500"><span>likely path low (14d)</span><span className="tabular-nums">{p.lowest14.cents < 0 ? '−' : ''}{fmt(p.lowest14.cents)}</span></p>
+            </div>
+            <p className="mt-2 text-[9px] text-slate-600 leading-relaxed" title={p.assumptions.join('\n')}>assumptions: {p.assumptions[0]} · hover for all</p>
+          </div>
+        );
+        return (
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-3">
+              {coCard('YM GLOBAL VENTURES', f.ymgv, f.cashNow.ymgv)}
+              {coCard('SHIPSOURCED', f.shipsourced, f.cashNow.shipsourced)}
+              <div className={`rounded-xl p-4 flex-1 min-w-[280px] border ${command.trust.trustworthy && command.integrity.ok ? 'bg-emerald-950/20 border-emerald-800/40' : 'bg-red-950/30 border-red-800/50'}`}>
+                <p className="text-[10px] uppercase tracking-widest text-slate-500">Verified</p>
+                <p className={`text-xl font-bold mt-1 ${command.integrity.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {command.integrity.ok ? 'INTEGRITY ✓' : `${command.integrity.failures.length} INTEGRITY ERROR${command.integrity.failures.length > 1 ? 'S' : ''}`}
+                </p>
+                {command.integrity.failures.map((x: any, i: number) => (
+                  <p key={i} className="text-[11px] text-red-300 mt-1">⚠ {x.detail}</p>
+                ))}
+                <p className={`text-[11px] mt-1 ${command.trust.trustworthy ? 'text-emerald-300' : 'text-amber-400'}`}>{command.trust.trustworthy ? 'all feeds current' : command.trust.summary}</p>
+                {command.changed?.available && (
+                  <div className="mt-2 border-t border-slate-800 pt-1.5">
+                    <p className="text-[9px] uppercase tracking-widest text-slate-600">since {command.changed.from}</p>
+                    {command.changed.changes.slice(0, 4).map((c: any, i: number) => (
+                      <p key={i} className="flex justify-between text-[11px] text-slate-400"><span>{c.metric}</span><span className={`tabular-nums ${c.deltaCents > 0 ? 'text-emerald-300' : 'text-red-300'}`}>{c.deltaCents > 0 ? '+' : '−'}{fmt(c.deltaCents)}</span></p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Recommendation — what to do next, and why */}
+            <div className="bg-slate-900 border border-blue-800/50 rounded-xl px-4 py-3">
+              <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-1">🧠 Brain recommendation <span className="text-slate-600 normal-case">· confidence {command.recommendation.confidence}</span></p>
+              <p className="text-white font-semibold">{command.recommendation.title}{command.recommendation.cents > 0 ? ` — ${fmt(command.recommendation.cents)}` : ''}</p>
+              <p className="text-sm text-blue-300 mt-0.5">→ {command.recommendation.action}</p>
+              <p className="text-[11px] text-slate-500 mt-1">why: {command.recommendation.why}</p>
+            </div>
+
+            <div className="grid lg:grid-cols-2 gap-3">
+              {/* Risks, ranked */}
+              <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+                <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">Biggest risks — ranked</p>
+                {command.risks.length === 0 ? <p className="px-3 py-3 text-xs text-emerald-400">nothing ranked — clear skies</p> :
+                  command.risks.map((r: any) => (
+                    <div key={r.rank} className="px-3 py-2 border-b border-slate-800/40">
+                      <p className="text-[12px] text-slate-200 font-medium">#{r.rank} {r.title} {r.cents > 0 && <span className="text-amber-400">{fmt(r.cents)}</span>}</p>
+                      <p className="text-[11px] text-slate-500">{r.why}</p>
+                      <p className="text-[11px] text-blue-300">→ {r.action}</p>
+                    </div>
+                  ))}
+              </div>
+              {/* What's about to happen */}
+              <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+                <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">What&apos;s about to happen — next 14 days</p>
+                {command.forward.timeline.length === 0 ? <p className="px-3 py-3 text-xs text-slate-500">no dated events on the books</p> :
+                  command.forward.timeline.map((e: any, i: number) => (
+                    <p key={i} className="px-3 py-1.5 flex justify-between text-[12px] border-b border-slate-800/40">
+                      <span className="text-slate-400">{e.date.slice(5)} <span className="text-slate-300">{e.label}</span> <span className={`text-[9px] px-1 rounded ${e.kind === 'committed' ? 'bg-blue-500/15 text-blue-300' : 'bg-slate-700/60 text-slate-500'}`}>{e.kind}</span> {e.company === 'shipsourced' && <span className="text-[9px] px-1 rounded bg-purple-500/15 text-purple-400">SS</span>}</span>
+                      <span className={`tabular-nums font-medium ${e.cents > 0 ? 'text-emerald-300' : 'text-red-300'}`}>{e.cents > 0 ? '+' : '−'}{fmt(e.cents)}</span>
+                    </p>
+                  ))}
+              </div>
+            </div>
+
+            {/* Ask the Brain */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3">
+              <div className="flex gap-2">
+                <input value={askQ} onChange={e => setAskQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') ask(); }}
+                  placeholder={'Ask the Brain — "where is my money" · "what must I pay this week" · "can I spend $30k" · "biggest risk"'}
+                  className="flex-1 bg-slate-950 border border-slate-700 focus:border-blue-500 rounded-lg px-3 py-2 text-sm text-white outline-none" />
+                <button onClick={ask} disabled={asking} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-semibold rounded-lg">{asking ? '…' : 'Ask'}</button>
+              </div>
+              {askA && (
+                <div className="mt-2 text-sm text-slate-200 bg-slate-950/60 border border-slate-800 rounded-lg px-3 py-2">
+                  {askA.answer}
+                  {askA.facts?.assumptions && <p className="text-[10px] text-slate-500 mt-1">assumptions: {askA.facts.assumptions.join(' · ')}</p>}
+                </div>
+              )}
+              <p className="text-[9px] text-slate-600 mt-1.5">answers are computed from live facts — the Brain never invents a number; scenarios never touch the books</p>
+            </div>
           </div>
         );
       })()}
