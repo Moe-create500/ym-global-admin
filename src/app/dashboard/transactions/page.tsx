@@ -933,7 +933,10 @@ export default function TransactionsPage() {
                                     <div>
                                       <p className="text-[9px] uppercase tracking-wider text-slate-600 mb-1">Traced card debt · by store</p>
                                       {c.why.tracedStores.length ? c.why.tracedStores.map((o: any) => (
-                                        <p key={o.store} className="flex justify-between text-slate-300"><span>{o.store}</span><span className="tabular-nums text-white">{fmt2(o.owesCents)}</span></p>
+                                        <p key={o.store} className="flex justify-between text-slate-300">
+                                          <span>{o.store}{o.paidRecentlyCents > 0 && <span className="text-emerald-500 text-[10px]"> · paid {fmt2(o.paidRecentlyCents)} ✓</span>}</span>
+                                          <span className="tabular-nums text-white">{fmt2(o.owesCents)}</span>
+                                        </p>
                                       )) : <p className="text-slate-600">none traced</p>}
                                       {c.why.untracedCents > 0 && <p className="flex justify-between text-slate-500"><span>untraced</span><span className="tabular-nums">{fmt2(c.why.untracedCents)}</span></p>}
                                     </div>

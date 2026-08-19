@@ -857,11 +857,32 @@ export function getPayPlan(db: DatabaseType.Database) {
     // Store shares of this card's unpaid balance
     const shares = new Map<string, number>();
     for (const g of comp?.groups || []) shares.set(g.store, (shares.get(g.store) || 0) + g.cents);
+    // A store that PAID toward this card from its own bank account stops
+    // owing that much — the paired payment's source account identifies the
+    // payer (Areya pays from Areya's checking → Areya's share drops, not
+    // whichever store's charges happened to be oldest).
+    const sinceDate = comp?.oldestUnpaidDate || new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+    const paidByStore: any[] = db.prepare(`
+      SELECT st.name AS store, SUM(p.amount_cents) AS cents
+      FROM bank_transactions p
+      JOIN txn_links l ON l.txn_id = p.id AND l.class = 'card_payment' AND l.pair_txn_id IS NOT NULL
+      JOIN bank_transactions src ON src.id = l.pair_txn_id
+      JOIN bank_accounts sa ON sa.id = src.bank_account_id AND sa.store_id IS NOT NULL
+      JOIN stores st ON st.id = sa.store_id
+      WHERE p.bank_account_id = ? AND p.amount_cents > 0 AND p.date >= ?
+      GROUP BY sa.store_id
+    `).all(meta.id, sinceDate);
+    const paidMap = new Map(paidByStore.map(pb => [pb.store, pb.cents]));
+    for (const [store, cents] of shares) {
+      const paid = paidMap.get(store) || 0;
+      if (paid > 0) shares.set(store, Math.max(0, cents - paid));
+    }
     const owners = [...shares.entries()]
       .map(([store, cents]) => {
         const flow = storeFlow.get(store);
         return {
           store, owesCents: cents,
+          paidRecentlyCents: paidMap.get(store) || 0,     // its own payments toward this card since oldest unpaid
           storeCommittedCents: flow?.committed ?? null,   // null = store not in payout projection
           storeProjectedCents: flow?.projected ?? null,
           covered: flow ? flow.committed >= cents : null, // that store's real cashflow covers its share
