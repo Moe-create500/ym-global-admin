@@ -43,6 +43,15 @@ export async function register() {
           const { getDb } = await import('@/lib/db');
           const scan = runTransactionScan(getDb(), { days: 45 });
           if (scan.classified > 0) bankNote += `, ${scan.classified} txns reconciled`;
+          // Daily DEEP re-scan: the force pass re-evaluates existing links
+          // with everything the matcher has learned since (funding-card
+          // aliases, lag curves) — fully autonomous, no Scan button needed.
+          const g = globalThis as any;
+          if (!g.__lastDeepScanAt || Date.now() - g.__lastDeepScanAt > 24 * 60 * 60 * 1000) {
+            g.__lastDeepScanAt = Date.now();
+            const deep = runTransactionScan(getDb(), { days: 120, force: true });
+            console.log(`[auto-sync] daily deep scan: ${deep.scanned} scanned, ${deep.invoiceMatched} invoice-matched, ${deep.paymentsPaired} payment pairs`);
+          }
         } catch (e) {
           console.error(`[auto-sync] ${label} txn scan error:`, e);
         }
