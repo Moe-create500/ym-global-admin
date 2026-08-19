@@ -856,7 +856,8 @@ export default function TransactionsPage() {
           </div>
           <div className="grid lg:grid-cols-2 gap-4">
             {cards.map(c => {
-              const charges = (c.drivers || []).reduce((s: number, r: any) => s + r.cents, 0);
+              const owed = (c.drivers || []).reduce((s: number, r: any) => s + r.cents, 0);
+              const charges = (c.activityByClass || []).reduce((s: number, r: any) => s + r.cents, 0);
               const paid = (c.payments || []).reduce((s: number, r: any) => s + r.cents, 0);
               const cl = clarity?.perCard?.[c.id];
               return (
@@ -897,19 +898,25 @@ export default function TransactionsPage() {
                     </div>
                   )}
                   <div className="flex gap-4 mt-3 text-xs">
-                    <span className="text-amber-400">+{fmt(charges)} charged · {cardDays}d</span>
-                    <span className="text-emerald-400">−{fmt(paid)} paid</span>
+                    <span className="text-slate-500">activity {cardDays}d: <span className="text-amber-400">+{fmt(charges)} charged</span> <span className="text-emerald-400">−{fmt(paid)} paid</span></span>
                   </div>
-                  <div className="mt-3 space-y-1">
+                  <p className="mt-3 text-[10px] uppercase tracking-wider text-slate-500">Still owed now — unpaid charges composing the balance</p>
+                  <div className="mt-1 space-y-1">
                     {(c.drivers || []).slice(0, 5).map((r: any) => (
                       <div key={r.class} className="flex items-center justify-between text-xs">
                         <ClassChip cls={r.class} />
                         <div className="flex-1 mx-2 h-1.5 bg-slate-800 rounded overflow-hidden">
-                          <div className="h-full bg-blue-500/60" style={{ width: `${charges ? Math.round(100 * r.cents / charges) : 0}%` }} />
+                          <div className="h-full bg-blue-500/60" style={{ width: `${owed ? Math.round(100 * r.cents / owed) : 0}%` }} />
                         </div>
                         <span className="text-slate-300 w-16 text-right">{fmt(r.cents)}</span>
                       </div>
                     ))}
+                    {c.unexplainedCents > 0 && (
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-700/60 text-slate-400">unexplained</span>
+                        <span className="text-slate-500 w-16 text-right">{fmt(c.unexplainedCents)}</span>
+                      </div>
+                    )}
                   </div>
                   {(c.byStore || []).length > 0 && (
                     <div className="mt-3 flex flex-wrap gap-1.5">

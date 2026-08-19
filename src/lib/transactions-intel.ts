@@ -578,13 +578,33 @@ export function getCardIntel(db: DatabaseType.Database, days: number) {
     WHERE t.bank_account_id = ? AND t.date >= date('now', ?) AND l.class = 'card_payment'
     ORDER BY t.date DESC LIMIT 12
   `);
-  return cards.map(c => ({
-    ...c,
-    drivers: byClass.all(c.id, d),
-    byStore: byStore.all(c.id, d),
-    topMerchants: topMerchants.all(c.id, d),
-    payments: payments.all(c.id, d),
-  }));
+  // What's STILL OWED (the unpaid composition of today's balance) is the
+  // headline truth — 30d activity totals include money already paid off and
+  // must never masquerade as debt. One source: the truth walk.
+  const truth = getTruth(db, Math.max(days || 30, 90));
+  const compById = new Map(truth.composition.map((t: any) => [t.id, t]));
+  return cards.map(c => {
+    const comp: any = compById.get(c.id);
+    const owedByClass = new Map<string, { class: string; cents: number; n: number }>();
+    const owedByStore = new Map<string, number>();
+    for (const g of comp?.groups || []) {
+      if (!owedByClass.has(g.class)) owedByClass.set(g.class, { class: g.class, cents: 0, n: 0 });
+      const e = owedByClass.get(g.class)!;
+      e.cents += g.cents; e.n += g.n;
+      owedByStore.set(g.store, (owedByStore.get(g.store) || 0) + g.cents);
+    }
+    return {
+      ...c,
+      // OWED NOW — unpaid charges composing the current balance
+      drivers: [...owedByClass.values()].sort((a, b) => b.cents - a.cents),
+      byStore: [...owedByStore.entries()].map(([store, cents]) => ({ store, cents })).sort((a, b) => b.cents - a.cents).slice(0, 8),
+      unexplainedCents: comp?.unexplainedCents || 0,
+      // 30d activity kept as context (charged/paid line), never as debt
+      activityByClass: byClass.all(c.id, d),
+      topMerchants: topMerchants.all(c.id, d),
+      payments: payments.all(c.id, d),
+    };
+  });
 }
 
 /** Card clarity — the "why is there debt and what clears it" layer.
