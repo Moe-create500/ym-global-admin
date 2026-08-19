@@ -331,18 +331,25 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Build balance sheet
+  // Build balance sheet.
+  // 3PL mode (ShipSourced): no Shopify money lines — payments come in via
+  // Stripe, so the pending-payout asset is the Stripe balance instead. The
+  // "carrier prepaid deposit" line was removed entirely (Moe 2026-08-19:
+  // nobody prepays carriers — a paid>invoiced gap is unapplied invoices, not
+  // an asset).
+  const is3pl = !!ssFinance;
+  const stripePayoutCents = ssFinance?.stripeBalanceCents || 0;
   const assets = {
     cash_bank_cents: bankTotal,
-    cash_shopify_cents: shopifyBalance,
-    shopify_payout_cents: shopifyPayout,
+    cash_shopify_cents: is3pl ? 0 : shopifyBalance,
+    shopify_payout_cents: is3pl ? 0 : shopifyPayout,
+    stripe_payout_cents: stripePayoutCents,
     reserves_cents: reservesTotal,
     inventory_cents: inventoryAssetCents,
     loans_receivable_cents: loans.lent_remaining_cents,
     ar_clients_cents: ssFinance?.arTotalCents || 0,
-    carrier_prepaid_cents: ssFinance?.carrierPrepaidCents || 0,
-    total_cents: bankTotal + shopifyBalance + shopifyPayout + reservesTotal + inventoryAssetCents + loans.lent_remaining_cents
-      + (ssFinance?.arTotalCents || 0) + (ssFinance?.carrierPrepaidCents || 0),
+    total_cents: bankTotal + (is3pl ? 0 : shopifyBalance + shopifyPayout) + stripePayoutCents + reservesTotal + inventoryAssetCents + loans.lent_remaining_cents
+      + (ssFinance?.arTotalCents || 0),
   };
 
   const liabilities = {

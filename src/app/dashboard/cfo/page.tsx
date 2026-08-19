@@ -1002,7 +1002,20 @@ function CFOContent() {
                     </tr>
                   )}
 
+                  {/* 3PL mode: payments come in via Stripe — show the Stripe payout balance instead of Shopify rows */}
+                  {(data.details as any).ssFinance && (
+                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className="px-5 py-3 text-white font-medium">Stripe Payout Balance</td>
+                      <td className="px-5 py-3 text-slate-400 text-xs">
+                        <span className="text-[9px] bg-emerald-900/60 text-emerald-300 px-1.5 py-0.5 rounded mr-2 font-semibold">● LIVE</span>
+                        money at Stripe not yet paid out — available {cents((data.details as any).ssFinance?.stripeBalance?.availableCents || 0)} + pending {cents((data.details as any).ssFinance?.stripeBalance?.pendingCents || 0)}
+                      </td>
+                      <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents((data.assets as any).stripe_payout_cents || 0)}</td>
+                    </tr>
+                  )}
+
                   {/* Shopify Balance */}
+                  {!(data.details as any).ssFinance && (
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">Shopify Balance</td>
                     <td className="px-5 py-3">
@@ -1029,8 +1042,10 @@ function CFOContent() {
                     </td>
                     <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(data.assets.cash_shopify_cents)}</td>
                   </tr>
+                  )}
 
                   {/* Shopify Payout */}
+                  {!(data.details as any).ssFinance && (
                   <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-medium">Shopify Payout</td>
                     <td className="px-5 py-3">
@@ -1057,6 +1072,7 @@ function CFOContent() {
                     </td>
                     <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(data.assets.shopify_payout_cents)}</td>
                   </tr>
+                  )}
 
                   {/* Reserves — live single row when connected; manual rows otherwise */}
                   {data.details.shopify_live?.source === 'shopify_api' && (
@@ -1180,16 +1196,6 @@ function CFOContent() {
                         {((data.details as any).ssFinance?.arClients || []).length > 6 && ` +${((data.details as any).ssFinance?.arClients || []).length - 6} more`}
                       </td>
                       <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents((data.assets as any).ar_clients_cents)}</td>
-                    </tr>
-                  )}
-                  {/* 3PL mode: prepaid deposit sitting with the carrier */}
-                  {(data.assets as any).carrier_prepaid_cents > 0 && (
-                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium">Carrier Prepaid Deposit</td>
-                      <td className="px-5 py-3 text-slate-400 text-xs">
-                        Paid to carriers ahead of invoices — {((data.details as any).ssFinance?.carrier || []).map((c: any) => `${c.carrierType}: paid ${cents(c.paidCents)} vs invoiced ${cents(c.invoicedCents)}`).join(' · ')}
-                      </td>
-                      <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents((data.assets as any).carrier_prepaid_cents)}</td>
                     </tr>
                   )}
 

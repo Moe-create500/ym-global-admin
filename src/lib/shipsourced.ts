@@ -354,6 +354,8 @@ export interface SSFinanceSummary {
   carrier: { carrierType: string; invoicedCents: number; paidCents: number; balanceCents: number }[];
   carrierOwedCents: number;
   carrierPrepaidCents: number;
+  stripeBalanceCents?: number;
+  stripeBalance?: { availableCents: number; pendingCents: number } | null;
   asOf: string;
 }
 
