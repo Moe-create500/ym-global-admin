@@ -119,6 +119,34 @@ export async function exchangeAndImport(db: Database.Database, publicToken: stri
   return { imported, institution };
 }
 
+
+/** Re-attach a (re)linked item's accounts to our rows — relinks can rotate
+ *  Plaid account ids. Match by current id, then NAME+mask, then inst+mask+type.
+ *  Only updates identity/balance fields; never touches store/company. */
+export async function reattachItemAccounts(db: Database.Database, itemId: string): Promise<{ reattached: number; total: number }> {
+  const item: any = db.prepare('SELECT item_id, access_token, institution_name FROM plaid_items WHERE item_id = ?').get(itemId);
+  if (!item) throw new Error('item not found');
+  const acc = await plaidPost('/accounts/get', { access_token: item.access_token });
+  let reattached = 0;
+  for (const a of acc.accounts || []) {
+    const existing: any = db.prepare('SELECT id, teller_account_id FROM bank_accounts WHERE teller_account_id = ?').get(a.account_id)
+      || db.prepare('SELECT id, teller_account_id FROM bank_accounts WHERE last_four = ? AND account_name = ? AND institution_name = ? ORDER BY updated_at DESC LIMIT 1')
+        .get(a.mask || '', a.official_name || a.name || '', item.institution_name)
+      || db.prepare('SELECT id, teller_account_id FROM bank_accounts WHERE last_four = ? AND account_type = ? AND institution_name = ? ORDER BY updated_at DESC LIMIT 1')
+        .get(a.mask || '', a.type, item.institution_name);
+    if (!existing) continue;
+    db.prepare(`UPDATE bank_accounts SET teller_account_id = ?, teller_enrollment_id = ?, access_token = ?, provider = 'plaid',
+        status = 'active', last_sync_error = NULL,
+        balance_available_cents = ?, balance_ledger_cents = ?, balance_updated_at = datetime('now'), updated_at = datetime('now')
+      WHERE id = ?`)
+      .run(a.account_id, item.item_id, item.access_token,
+        Math.round(((a.balances?.available ?? a.balances?.current) || 0) * 100),
+        Math.round((a.balances?.current || 0) * 100), existing.id);
+    if (existing.teller_account_id !== a.account_id) reattached++;
+  }
+  return { reattached, total: (acc.accounts || []).length };
+}
+
 /** Sync every active Plaid item: balances + cursor-based transaction sync.
  *  Plaid sign convention is inverted (positive = outflow) — we store inflow-positive. */
 export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_synced: number; transactions_imported: number; errors: string[] }> {
