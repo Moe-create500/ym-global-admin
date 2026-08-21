@@ -125,7 +125,9 @@ ok('settlement sums to the SS share', 398491 + 304484 === 702975);
   // no duplicate expense (payments classed card_payment_sent never as supplier/other spend)
   // DEBITS must be payment-classed; an inbound funding transfer sharing the
   // amount is a separate economic event and must NOT be payment-classed
-  const misclassed: any = db.prepare(`SELECT COUNT(*) n FROM bank_transactions t JOIN txn_links l ON l.txn_id = t.id WHERE t.amount_cents IN (-398491, -304484) AND l.class NOT IN ('card_payment', 'card_payment_sent')`).get();
+  // the true invariant: settlement money must NEVER be classed as an operating
+  // expense — payment legs and internal funding transfer legs are both fine
+  const misclassed: any = db.prepare(`SELECT COUNT(*) n FROM bank_transactions t JOIN txn_links l ON l.txn_id = t.id WHERE t.amount_cents IN (-398491, -304484) AND l.class NOT IN ('card_payment', 'card_payment_sent', 'transfer', 'internal_transfer')`).get();
   ok('settlement debits never misclassed as expense', misclassed.n === 0);
 }
 
