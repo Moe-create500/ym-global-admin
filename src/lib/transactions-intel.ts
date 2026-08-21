@@ -1040,6 +1040,12 @@ export function getPayPlan(db: DatabaseType.Database) {
         `).get(effStmtDate, meta.last_four, meta.id) as any)?.c || 0);
       }
       remainingStmtCents = Math.max(0, stmt.statement_balance_cents - paidSince);
+      // Invariant: the statement's unpaid part can never exceed the whole
+      // card's live balance. When a card's txn feed is sparse (payments the
+      // issuer received are invisible to the subtraction), the live balance
+      // is the honest upper bound — auto-corrects instead of overstating.
+      const liveBal = Math.abs(cl.postedCents || 0);
+      if (liveBal > 0 && remainingStmtCents > liveBal) remainingStmtCents = liveBal;
     }
     return {
       id: meta.id,

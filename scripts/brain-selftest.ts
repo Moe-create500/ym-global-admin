@@ -47,6 +47,7 @@ for (const c of truth.composition) {
 for (const c of payPlan.cards) {
   if (c.stmtBalanceCents != null && c.remainingStmtCents != null) {
     ok(`remaining ≤ statement ·${c.last4}`, c.remainingStmtCents >= 0 && c.remainingStmtCents <= c.stmtBalanceCents + 1);
+    if (c.postedCents > 0) ok(`remaining ≤ live balance ·${c.last4}`, c.remainingStmtCents <= c.postedCents + 1, `${c.remainingStmtCents} vs ${c.postedCents}`);
   }
 }
 
