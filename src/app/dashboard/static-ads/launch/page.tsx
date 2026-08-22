@@ -460,6 +460,22 @@ export default function LaunchFlowPage() {
   }, []);
   useEffect(() => { if (storeId) loadVideoPool(storeId, productId); }, [storeId, productId, loadVideoPool]);
 
+  const [kaloQuery, setKaloQuery] = useState('');
+  async function pullKalodataApi() {
+    if (!kaloQuery.trim()) { setVidMsg('Type a keyword (product name) to pull winners from Kalodata'); return; }
+    setVidUploading(true); setVidMsg('');
+    const res = await fetch('/api/kalodata', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'pull_videos', storeId, productId: productId || undefined, keyword: kaloQuery.trim(), count: 30, dateRange: 'last7Day' }),
+    });
+    const d = await res.json();
+    setVidMsg(res.ok
+      ? `Kalodata API: ${d.found} winners found · ${d.imported} new in pool (${d.skipped} already known) — top revenue $${Math.round(d.topVideos?.[0]?.revenue || 0)}`
+      : (d.error || 'Kalodata pull failed'));
+    setVidUploading(false);
+    loadVideoPool(storeId, productId);
+  }
+
   async function uploadKalodata(file: File) {
     setVidUploading(true); setVidMsg('');
     const fd = new FormData();
@@ -1526,7 +1542,18 @@ export default function LaunchFlowPage() {
                 </div>
               </div>
               <div>
-                <label className={labelCls}>Import Kalodata export (.xlsx){productId ? ' — stored for the selected product' : ' — pick a product below to bind the videos to it'}</label>
+                <label className={labelCls}>⚡ Pull winners from Kalodata API — no export file needed</label>
+                <div className="flex gap-2">
+                  <input value={kaloQuery} onChange={e => setKaloQuery(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') void pullKalodataApi(); }}
+                    placeholder='keyword, e.g. "beef tallow" — pulls top-revenue TikToks (7d) straight into the pool'
+                    className={inputCls} />
+                  <button onClick={() => void pullKalodataApi()} disabled={vidUploading}
+                    className="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg whitespace-nowrap">
+                    Pull
+                  </button>
+                </div>
+                <label className={`${labelCls} mt-3`}>…or import Kalodata export (.xlsx){productId ? ' — stored for the selected product' : ' — pick a product below to bind the videos to it'}</label>
                 <input type="file" accept=".xlsx" disabled={vidUploading}
                   onChange={e => { const f = e.target.files?.[0]; if (f) void uploadKalodata(f); e.target.value = ''; }}
                   className="w-full text-xs text-slate-400 file:bg-slate-800 file:border-0 file:text-slate-200 file:rounded-lg file:px-3 file:py-2 file:mr-3" />
