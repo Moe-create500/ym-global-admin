@@ -31,6 +31,9 @@ export const ASSET_KEYS = [
   'reserves_cents',
   'inventory_cents',
   'loans_receivable_cents',
+  'stripe_payout_cents',
+  'ar_clients_cents',
+  'manual_assets_cents',
 ] as const;
 
 export const LIABILITY_KEYS = [
@@ -41,6 +44,10 @@ export const LIABILITY_KEYS = [
   'app_invoices_due_cents',
   'loans_payable_cents',
   'manual_cc_cents',
+  'payments_in_flight_cents',
+  'carrier_owed_cents',
+  'client_credits_cents',
+  'manual_liabilities_cents',
 ] as const;
 
 // Bank-transaction category patterns that represent owner capital movements (not P&L events).
@@ -116,6 +123,13 @@ const HUMAN_LABEL: Record<string, string> = {
   fulfillment_estimated_cents: 'Fulfillment (estimated)',
   ad_spend_pending_cents: 'Ad invoices unpaid',
   fb_pending_balance_cents: 'FB unbilled balance',
+  stripe_payout_cents: 'Stripe payout (in transit)',
+  ar_clients_cents: 'A/R — clients',
+  manual_assets_cents: 'Manual assets',
+  payments_in_flight_cents: 'Payments in flight',
+  carrier_owed_cents: 'Carrier invoices owed',
+  client_credits_cents: 'Client credit balances',
+  manual_liabilities_cents: 'Manual liabilities',
   app_invoices_due_cents: 'App invoices due',
   loans_payable_cents: 'Loans payable',
   manual_cc_cents: 'Manual credit cards',
@@ -543,6 +557,44 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
       details: { payments: inTransitPayments.map(pmt => ({
         id: pmt.id, date: pmt.date, amount_cents: pmt.amount_cents, description: pmt.description, matched: false,
       })) } });
+  }
+
+  // Sibling-entity funding: cash that left THIS store's accounts to pay other
+  // entities' obligations — transfers to accounts owned by a different store/
+  // company, and card payments to company cards BEYOND this store's own
+  // modeled ad/app invoices. Real equity movement, not expense — previously
+  // the single largest residual source (Purebite 2026-08: ~$14k excess card
+  // payments + $22.6k transfers out looked like vanished profit).
+  {
+    const xfersOut = (db.prepare(`
+      SELECT COALESCE(SUM(ABS(bt.amount_cents)), 0) t
+      FROM bank_transactions bt
+      JOIN bank_accounts ba ON ba.id = bt.bank_account_id AND ba.store_id = ?
+      JOIN txn_links l ON l.txn_id = bt.id AND l.class IN ('transfer', 'internal_transfer')
+      WHERE bt.amount_cents < 0 AND bt.status = 'posted' AND bt.date >= ? AND bt.date <= ?
+    `).get(storeId, periodStart, periodEnd) as any).t;
+    const xfersIn = (db.prepare(`
+      SELECT COALESCE(SUM(bt.amount_cents), 0) t
+      FROM bank_transactions bt
+      JOIN bank_accounts ba ON ba.id = bt.bank_account_id AND ba.store_id = ?
+      JOIN txn_links l ON l.txn_id = bt.id AND l.class IN ('transfer', 'internal_transfer')
+      WHERE bt.amount_cents > 0 AND bt.status = 'posted' AND bt.date >= ? AND bt.date <= ?
+    `).get(storeId, periodStart, periodEnd) as any).t;
+    const cardOut = (db.prepare(`
+      SELECT COALESCE(SUM(ABS(bt.amount_cents)), 0) t
+      FROM bank_transactions bt
+      JOIN bank_accounts ba ON ba.id = bt.bank_account_id AND ba.store_id = ?
+      JOIN txn_links l ON l.txn_id = bt.id AND l.class = 'card_payment_sent'
+      WHERE bt.amount_cents < 0 AND bt.status = 'posted' AND bt.date >= ? AND bt.date <= ?
+    `).get(storeId, periodStart, periodEnd) as any).t;
+    // card payments already explained through ad/app invoice payment flows
+    const modeledCardOut = Math.min(cardOut, (base.flows?.ad_paid || 0) + (base.flows?.app_paid || 0));
+    const excessCardOut = cardOut - modeledCardOut;
+    const net = xfersIn - xfersOut - excessCardOut;
+    if (net !== 0) {
+      items.push({ key: 'sibling_funding', label: 'Transfers & card payments to sibling entities', amount_cents: net, kind: 'capital',
+        note: `Cash moved across entity lines, not spent: transfers out ${fmt(-xfersOut)} · transfers in ${fmt(xfersIn)} · card payments beyond this store's own ad/app invoices ${fmt(-excessCardOut)} (of ${fmt(cardOut)} total card payments). This pays YM/ShipSourced company obligations from this store's cash — equity relocates, P&L is untouched.` });
+    }
   }
 
   // Shopify revenue-to-cash timing: P&L accrues revenue daily, but cash appears as
