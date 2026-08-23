@@ -339,6 +339,17 @@ export async function GET(req: NextRequest) {
   // an asset).
   const is3pl = !!ssFinance;
   const stripePayoutCents = ssFinance?.stripeBalanceCents || 0;
+
+  // Manual balance-sheet items — Moe-entered assets/liabilities the feeds
+  // can't see (equipment, deposits, one-off owed amounts)
+  db.exec(`CREATE TABLE IF NOT EXISTS manual_balance_items (
+    id TEXT PRIMARY KEY, store_id TEXT NOT NULL, side TEXT NOT NULL CHECK(side IN ('asset','liability')),
+    label TEXT NOT NULL, amount_cents INTEGER NOT NULL, note TEXT,
+    created_at TEXT DEFAULT (datetime('now')))`);
+  const manualItems: any[] = db.prepare('SELECT * FROM manual_balance_items WHERE store_id = ? ORDER BY created_at').all(storeId);
+  const manualAssetsCents = manualItems.filter(m => m.side === 'asset').reduce((s2, m) => s2 + m.amount_cents, 0);
+  const manualLiabCents = manualItems.filter(m => m.side === 'liability').reduce((s2, m) => s2 + m.amount_cents, 0);
+
   const assets = {
     cash_bank_cents: bankTotal,
     cash_shopify_cents: is3pl ? 0 : shopifyBalance,
@@ -348,8 +359,9 @@ export async function GET(req: NextRequest) {
     inventory_cents: inventoryAssetCents,
     loans_receivable_cents: loans.lent_remaining_cents,
     ar_clients_cents: ssFinance?.arTotalCents || 0,
+    manual_assets_cents: manualAssetsCents,
     total_cents: bankTotal + (is3pl ? 0 : shopifyBalance + shopifyPayout) + stripePayoutCents + reservesTotal + inventoryAssetCents + loans.lent_remaining_cents
-      + (ssFinance?.arTotalCents || 0),
+      + (ssFinance?.arTotalCents || 0) + manualAssetsCents,
   };
 
   const liabilities = {
@@ -363,8 +375,9 @@ export async function GET(req: NextRequest) {
     payments_in_flight_cents: paymentsInFlightCents,
     carrier_owed_cents: ssFinance?.carrierOwedCents || 0,
     client_credits_cents: ssFinance?.clientCreditsCents || 0,
+    manual_liabilities_cents: manualLiabCents,
     total_cents: fulfillment.balance_cents + fulfillment.estimated_cents + adSpend.balance_due_cents + fbPendingBalanceCents + appInvoices.balance_due_cents + loans.borrowed_remaining_cents + manualCCTotal + paymentsInFlightCents
-      + (ssFinance?.carrierOwedCents || 0) + (ssFinance?.clientCreditsCents || 0),
+      + (ssFinance?.carrierOwedCents || 0) + (ssFinance?.clientCreditsCents || 0) + manualLiabCents,
   };
 
   const equity = assets.total_cents - liabilities.total_cents;
@@ -387,6 +400,7 @@ export async function GET(req: NextRequest) {
       inventory,
       appInvoices,
       loans,
+      manualItems,
       bankAccounts: bankAccounts.map((a: any) => {
         if (a.account_type === 'credit') {
           const creditLimit = a.credit_limit_cents || ((a.balance_available_cents || 0) + (a.balance_ledger_cents || 0));
@@ -487,10 +501,32 @@ export async function PATCH(req: NextRequest) {
 
 // POST: Save a snapshot of current state
 export async function POST(req: NextRequest) {
-  const { storeId, assets_cents, liabilities_cents, equity_cents, data } = await req.json();
+  const body = await req.json();
+  const { storeId, assets_cents, liabilities_cents, equity_cents, data } = body;
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
 
   const db = getDb();
+
+  // Manual balance-sheet items: {storeId, action:'add_manual_item', side, label, amountCents, note?}
+  //                             {storeId, action:'delete_manual_item', itemId}
+  if (body.action === 'add_manual_item') {
+    if (!['asset', 'liability'].includes(body.side) || !body.label || !Number.isFinite(Number(body.amountCents))) {
+      return NextResponse.json({ error: 'side (asset|liability), label, amountCents required' }, { status: 400 });
+    }
+    db.exec(`CREATE TABLE IF NOT EXISTS manual_balance_items (
+      id TEXT PRIMARY KEY, store_id TEXT NOT NULL, side TEXT NOT NULL CHECK(side IN ('asset','liability')),
+      label TEXT NOT NULL, amount_cents INTEGER NOT NULL, note TEXT,
+      created_at TEXT DEFAULT (datetime('now')))`);
+    const id = crypto.randomUUID();
+    db.prepare('INSERT INTO manual_balance_items (id, store_id, side, label, amount_cents, note) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, storeId, body.side, String(body.label).slice(0, 80), Math.round(Number(body.amountCents)), body.note ? String(body.note).slice(0, 200) : null);
+    return NextResponse.json({ success: true, id });
+  }
+  if (body.action === 'delete_manual_item') {
+    if (!body.itemId) return NextResponse.json({ error: 'itemId required' }, { status: 400 });
+    const r = db.prepare('DELETE FROM manual_balance_items WHERE id = ? AND store_id = ?').run(body.itemId, storeId);
+    return NextResponse.json({ success: true, deleted: r.changes });
+  }
 
   // FRESHNESS GATE: a snapshot is a reconciliation input — both Shopify (payments) and
   // ShipSourced (orders/fulfillment charges) must be current at the same moment, or the

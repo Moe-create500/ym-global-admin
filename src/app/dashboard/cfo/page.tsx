@@ -617,6 +617,59 @@ function CFOContent() {
     setOverviewLoading(false);
   }
 
+  const [miSide, setMiSide] = useState<'asset' | 'liability' | null>(null);
+  const [miLabel, setMiLabel] = useState('');
+  const [miAmount, setMiAmount] = useState('');
+  const addManualItem = async () => {
+    if (!miSide || !miLabel.trim() || !parseFloat(miAmount)) return;
+    await fetch('/api/cfo', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeId, action: 'add_manual_item', side: miSide, label: miLabel.trim(), amountCents: Math.round(parseFloat(miAmount) * 100) }) });
+    setMiSide(null); setMiLabel(''); setMiAmount('');
+    loadData();
+  };
+  const deleteManualItem = async (itemId: string) => {
+    await fetch('/api/cfo', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeId, action: 'delete_manual_item', itemId }) });
+    loadData();
+  };
+  const manualRows = (side: 'asset' | 'liability') => {
+    const items = ((data?.details as any)?.manualItems || []).filter((m: any) => m.side === side);
+    const color = side === 'asset' ? 'text-emerald-400' : 'text-red-400';
+    return (
+      <>
+        {items.map((m: any) => (
+          <tr key={m.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+            <td className="px-5 py-3 text-white font-medium">{m.label} <span className="text-slate-600 text-[10px]">manual</span></td>
+            <td className="px-5 py-3 text-slate-400 text-xs">{m.note || 'manually entered'} · <button onClick={() => deleteManualItem(m.id)} className="text-red-500/60 hover:text-red-400">remove</button></td>
+            <td className={`px-5 py-3 text-right font-medium ${color}`}>{cents(m.amount_cents)}</td>
+          </tr>
+        ))}
+        {miSide === side ? (
+          <tr className="border-b border-slate-800/50 bg-slate-800/20">
+            <td className="px-5 py-3">
+              <input autoFocus value={miLabel} onChange={e => setMiLabel(e.target.value)} placeholder={side === 'asset' ? 'e.g. Equipment / Deposit' : 'e.g. Owed to supplier'}
+                className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white text-xs" />
+            </td>
+            <td className="px-5 py-3">
+              <input type="number" step="0.01" value={miAmount} onChange={e => setMiAmount(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void addManualItem(); }} placeholder="$ amount"
+                className="w-28 bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white text-xs" />
+            </td>
+            <td className="px-5 py-3 text-right whitespace-nowrap">
+              <button onClick={() => void addManualItem()} className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded mr-2">add</button>
+              <button onClick={() => setMiSide(null)} className="text-xs text-slate-500">cancel</button>
+            </td>
+          </tr>
+        ) : (
+          <tr className="border-b border-slate-800/50">
+            <td className="px-5 py-3" colSpan={3}>
+              <button onClick={() => setMiSide(side)} className="text-xs text-blue-400 hover:text-blue-300">+ Add {side === 'asset' ? 'Asset' : 'Liability'}</button>
+            </td>
+          </tr>
+        )}
+      </>
+    );
+  };
+
   async function loadData() {
     setLoading(true);
     const res = await fetch(`/api/cfo?storeId=${storeId}`);
@@ -1199,6 +1252,8 @@ function CFOContent() {
                     </tr>
                   )}
 
+                  {manualRows('asset')}
+
                   {/* Total */}
                   <tr className="bg-slate-800/30">
                     <td className="px-5 py-3 text-white font-bold" colSpan={2}>Total Assets</td>
@@ -1478,6 +1533,8 @@ function CFOContent() {
                       <td className="px-5 py-3" />
                     </tr>
                   )}
+
+                  {manualRows('liability')}
 
                   {/* Total */}
                   <tr className="bg-slate-800/30">

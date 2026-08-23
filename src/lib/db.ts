@@ -41,6 +41,32 @@ export function getDb(): Database.Database {
     if (!baCols.find((c: any) => c.name === 'credit_limit_cents')) {
       _db.exec("ALTER TABLE bank_accounts ADD COLUMN credit_limit_cents INTEGER DEFAULT 0");
     }
+    // Orders identity = number + DATE. The original UNIQUE(store_id,
+    // order_number) made colliding numbers (store migrations re-use them)
+    // block ALL imports for that store — Purebite froze at zero August orders
+    // while 390 sat unshipped (2026-08-23). Rebuild once, data preserved.
+    try {
+      const ddl: any = _db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'orders'").get();
+      if (ddl?.sql && ddl.sql.includes('UNIQUE("store_id", "order_number")') && !ddl.sql.includes('"order_date")')) {
+        const newDdl = ddl.sql
+          .replace('UNIQUE("store_id", "order_number")', 'UNIQUE("store_id", "order_number", "order_date")')
+          .replace(/CREATE TABLE (IF NOT EXISTS )?"orders"/, 'CREATE TABLE "orders_new"');
+        _db.exec('PRAGMA foreign_keys=OFF');
+        _db.exec('BEGIN');
+        _db.exec(newDdl);
+        _db.exec('INSERT INTO orders_new SELECT * FROM orders');
+        _db.exec('DROP TABLE orders');
+        _db.exec('ALTER TABLE orders_new RENAME TO orders');
+        _db.exec('CREATE INDEX IF NOT EXISTS "idx_orders_store_date" ON "orders"("store_id", "order_date")');
+        _db.exec('CREATE INDEX IF NOT EXISTS "idx_orders_store_number" ON "orders"("store_id", "order_number")');
+        _db.exec('CREATE INDEX IF NOT EXISTS "idx_orders_store_source" ON "orders"("store_id", "source")');
+        _db.exec('CREATE INDEX IF NOT EXISTS "idx_orders_store_financial" ON "orders"("store_id", "financial_status")');
+        _db.exec('COMMIT');
+        _db.exec('PRAGMA foreign_keys=ON');
+        console.log('[db] orders uniqueness migrated to (store_id, order_number, order_date)');
+      }
+    } catch (e) { console.error('[db] orders identity migration failed:', e); }
+
     if (!baCols.find((c: any) => c.name === 'cfo_hidden')) {
       _db.exec("ALTER TABLE bank_accounts ADD COLUMN cfo_hidden INTEGER DEFAULT 0");
     }
