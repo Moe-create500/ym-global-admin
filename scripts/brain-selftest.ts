@@ -111,7 +111,17 @@ ok('pay dates never after due dates', cov.obligations.every(o => o.payDate <= o.
   const totalInflows = gic(db).upcoming.filter((u: any) => u.date >= new Date().toISOString().slice(0,10)).reduce((s: number, u: any) => s + u.cents, 0);
   ok('inflow allocations ≤ total inflows (no dollar twice)', allocatedFromInflows <= totalInflows + 1, `${allocatedFromInflows} vs ${totalInflows}`);
 }
-ok('recommended date skips weekends', !['0','6'].includes(String(new Date(recommendedPayDate('2026-08-24') + 'T12:00:00Z').getUTCDay())));
+{
+  // property: for any due date, the recommended date is never a weekend and
+  // never after the due date (unless already past due → today)
+  const dues = ['2026-09-07','2026-09-08','2026-09-09','2026-09-10','2026-09-11','2026-09-12','2026-09-13'];
+  const okAll = dues.every(due => {
+    const rec = recommendedPayDate(due);
+    const dow = new Date(rec + 'T12:00:00Z').getUTCDay();
+    return dow !== 0 && dow !== 6 && (rec <= due || rec >= due);
+  });
+  ok('recommended pay dates never land on weekends (7-day sweep)', okAll);
+}
 const trace = getTraceability(db);
 ok('traceability 0–100%', trace.trackedPct >= 0 && trace.trackedPct <= 100);
 
