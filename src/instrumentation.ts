@@ -63,6 +63,19 @@ export async function register() {
           console.error(`[auto-sync] ${label} txn scan error:`, e);
         }
 
+        // Order-level pull from ShipSourced — number+date identity. This lived
+        // ONLY behind the dashboard-on-load route, so order tables froze the
+        // moment nobody had a tab open (Purebite: zero August orders while SS
+        // held 390 unshipped — found 2026-08-23). Now part of the loop.
+        try {
+          const { pullNewOrdersAllStores } = await import('@/lib/order-pull');
+          const pr = await pullNewOrdersAllStores();
+          if (pr.imported > 0) bankNote += `, ${pr.imported} orders pulled`;
+          if (pr.errors.length > 0) console.error(`[auto-sync] ${label}: order-pull errors: ${pr.errors.slice(0, 3).join(' | ').slice(0, 300)}`);
+        } catch (e) {
+          console.error(`[auto-sync] ${label} order pull error:`, e);
+        }
+
         // Fulfillment-status refresh vs ShipSourced — keeps the CFO unfulfilled
         // estimate honest (order sync only inserts, never updates statuses)
         let statusNote = 'statuses skipped';
