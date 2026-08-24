@@ -88,6 +88,15 @@ export async function exchangeAndImport(db: Database.Database, publicToken: stri
     ON CONFLICT(item_id) DO UPDATE SET access_token = excluded.access_token, status = 'active', updated_at = datetime('now')`)
     .run(itemId, accessToken, institution);
 
+  // One institution, one connection. Duplicate items for the same login make
+  // the BANK revoke the older consent (Amex had 3 Plaid + 7 Teller consents
+  // fighting — every fresh link killed the previous one, 2026-08-24). When a
+  // fresh link lands, older active items for the same institution retire so
+  // our side never runs the war either.
+  const dupes = db.prepare(`UPDATE plaid_items SET status = 'inactive', updated_at = datetime('now')
+    WHERE institution_name = ? AND item_id != ? AND status = 'active'`).run(institution, itemId);
+  if (dupes.changes > 0) console.log(`[plaid] retired ${dupes.changes} older ${institution} item(s) — one institution, one connection`);
+
   let imported = 0;
   for (const a of acc.accounts || []) {
     const available = Math.round(((a.balances?.available ?? a.balances?.current) || 0) * 100);
