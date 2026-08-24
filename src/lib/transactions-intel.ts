@@ -850,7 +850,23 @@ export function getTruth(db: DatabaseType.Database, days: number) {
 export function getPaymentsView(db: DatabaseType.Database, days: number) {
   ensureTxnIntelTables(db);
   const d = `-${Math.min(days || 60, 365)} days`;
-  return db.prepare(`
+  // SUBMITTED payments (logged intents from FB Invoices / Brain) with their
+  // bank-verification status — the operator must see what they submitted,
+  // not only what the bank already confirmed (2026-08-24).
+  const recMap: Record<string, any> = reconcileLoggedPayments(db, Math.min(days || 60, 120));
+  const submitted = (db.prepare(`
+    SELECT p.id, p.date, p.amount_cents cents, p.card_last4, p.category, p.notes, s.name store
+    FROM card_payments_log p LEFT JOIN stores s ON s.id = p.store_id
+    WHERE p.date != 'N/A' AND p.date >= date('now', ?)
+    ORDER BY p.date DESC LIMIT 60
+  `).all(d) as any[]).map(pmt => ({
+    ...pmt,
+    status: recMap[pmt.id]?.status || 'unknown',
+    bankAccount: recMap[pmt.id]?.bankAccount || null,
+    bankLast4: recMap[pmt.id]?.bankLast4 || null,
+    bankDate: recMap[pmt.id]?.bankDate || null,
+  }));
+  const bank = db.prepare(`
     SELECT t.id, t.date, ABS(t.amount_cents) cents,
            ca.institution_name card_institution, ca.account_name card_name, ca.last_four card_last4,
            l.pair_txn_id, pa.account_name from_account, pa.last_four from_last4
@@ -862,6 +878,7 @@ export function getPaymentsView(db: DatabaseType.Database, days: number) {
     WHERE t.date >= date('now', ?)
     ORDER BY t.date DESC LIMIT 200
   `).all(d);
+  return { bank, submitted };
 }
 
 /** Pay Cards decision engine — WHICH cards can be paid, funded by WHAT.

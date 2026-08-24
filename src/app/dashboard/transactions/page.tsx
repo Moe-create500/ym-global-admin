@@ -160,7 +160,11 @@ export default function TransactionsPage() {
 
   const loadSummary = useCallback(() => fetch('/api/transactions?view=summary').then(r => r.json()).then(setSummary), []);
   const loadCards = useCallback(() => fetch(`/api/transactions?view=cards&days=${cardDays}`).then(r => r.json()).then(d => { setCards(d.cards || []); setClarity(d.clarity || null); }), [cardDays]);
-  const loadPayments = useCallback(() => fetch('/api/transactions?view=payments&days=90').then(r => r.json()).then(d => setPayments(d.payments || [])), []);
+  const [submittedPayments, setSubmittedPayments] = useState<any[]>([]);
+  const loadPayments = useCallback(() => fetch('/api/transactions?view=payments&days=90').then(r => r.json()).then(d => {
+    setPayments(d.payments?.bank || d.payments || []);
+    setSubmittedPayments(d.payments?.submitted || []);
+  }), []);
   const loadLedger = useCallback(() => {
     const p = new URLSearchParams({ view: 'ledger', days: '90' });
     if (fAccount) p.set('accountId', fAccount);
@@ -382,6 +386,9 @@ export default function TransactionsPage() {
                       <td className={`${tdc} text-right ${util == null ? 'text-slate-600' : util >= 100 ? 'text-red-400 font-bold' : util >= 70 ? 'text-amber-400' : 'text-slate-400'}`}>{util != null ? `${util}%` : '—'}</td>
                       <td className={`${tdc} text-right font-medium ${p?.remainingStmtCents === 0 ? 'text-emerald-400' : p?.remainingStmtCents != null ? 'text-white' : 'text-slate-600'}`}>
                         {p?.stmtBalanceCents == null ? '—' : p.remainingStmtCents === 0 ? 'PAID ✓' : fmt(p.remainingStmtCents ?? p.stmtBalanceCents)}
+                        {(p?.inFlightLoggedCents || 0) > 0 && (p?.remainingStmtCents || 0) > 0 && (
+                          <span className="block text-[9px] font-normal text-blue-300">−{fmt(p.inFlightLoggedCents)} sent ⏳</span>
+                        )}
                       </td>
                       <td className={`${tdc} text-right whitespace-nowrap ${p?.daysToDue == null ? 'text-slate-600' : p.daysToDue < 0 ? 'text-red-400 font-bold' : p.daysToDue <= 3 ? 'text-red-400' : p.daysToDue <= 7 ? 'text-amber-400' : 'text-slate-300'}`}>
                         {p?.dueDate ? `${p.dueDate.slice(5)} (${p.daysToDue < 0 ? `${-p.daysToDue}d late` : `${p.daysToDue}d`})` : '—'}
@@ -1412,7 +1419,36 @@ export default function TransactionsPage() {
       )}
 
       {tab === 'payments' && (
+        <div className="space-y-3">
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">Submitted payments — what you logged, and whether the bank took it</p>
+          <table className="w-full text-xs">
+            <thead><tr className="text-left text-slate-500 border-b border-slate-800">
+              <th className="px-3 py-2">Date</th><th className="px-3 py-2">Store</th><th className="px-3 py-2">Card</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Bank status</th><th className="px-3 py-2 text-right">Amount</th>
+            </tr></thead>
+            <tbody>
+              {submittedPayments.map(sp => (
+                <tr key={sp.id} className="border-b border-slate-800/50">
+                  <td className="px-3 py-1.5 text-slate-400">{sp.date}</td>
+                  <td className="px-3 py-1.5 text-slate-200">{sp.store || '—'}</td>
+                  <td className="px-3 py-1.5 text-slate-300">··{sp.card_last4}</td>
+                  <td className="px-3 py-1.5 text-slate-500">{sp.category}</td>
+                  <td className="px-3 py-1.5">
+                    {sp.status === 'confirmed' && <span className="text-emerald-400">✓ confirmed — left {sp.bankAccount} ··{sp.bankLast4} {sp.bankDate}</span>}
+                    {sp.status === 'pending' && <span className="text-blue-300">debit pending at bank</span>}
+                    {sp.status === 'too_recent' && <span className="text-blue-300">in flight ⏳ — awaiting bank debit</span>}
+                    {sp.status === 'not_taken' && <span className="text-red-400 font-semibold">⚠ NOT TAKEN — no bank debit found</span>}
+                    {sp.status === 'unknown' && <span className="text-slate-600">—</span>}
+                  </td>
+                  <td className="px-3 py-1.5 text-right text-slate-200 font-medium">{fmt2(sp.cents)}</td>
+                </tr>
+              ))}
+              {!submittedPayments.length && <tr><td colSpan={6} className="px-3 py-4 text-center text-slate-500">no submitted payments in window</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">Bank-verified payments — credits confirmed on cards</p>
           <table className="w-full text-xs">
             <thead><tr className="text-left text-slate-500 border-b border-slate-800">
               <th className="px-3 py-2">Date</th><th className="px-3 py-2">Card</th><th className="px-3 py-2">Paid from</th><th className="px-3 py-2 text-right">Amount</th>
@@ -1429,6 +1465,7 @@ export default function TransactionsPage() {
               {!payments.length && <tr><td colSpan={4} className="px-3 py-8 text-center text-slate-500">No card payments in window — run a scan</td></tr>}
             </tbody>
           </table>
+        </div>
         </div>
       )}
     </div>
