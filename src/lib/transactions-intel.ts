@@ -934,6 +934,17 @@ export function getPayPlan(db: DatabaseType.Database) {
     FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'
   `).all();
 
+  // Logged payments still in flight (no bank debit yet) — the Brain must SHOW
+  // money already sent toward a card, or an overdue flag lies to the operator
+  // ("system didn't recognize my payment", 2026-08-24). status too_recent only:
+  // once the debit appears (even pending), the bank-side math takes over.
+  const recMap: Record<string, any> = reconcileLoggedPayments(db, 30);
+  const inFlightLogs: any[] = db.prepare(`
+    SELECT id, card_last4, amount_cents FROM card_payments_log
+    WHERE date != 'N/A' AND date >= date('now', '-30 days')
+  `).all().filter((l: any) => recMap[l.id]?.status === 'too_recent');
+  const payFundingMap = getFundingCardMap(db);
+
   const cards = cardsMeta.map(meta => {
     const cl = clarity.perCard[meta.id];
     const comp: any = compByCardId.get(meta.id);
@@ -1077,6 +1088,10 @@ export function getPayPlan(db: DatabaseType.Database) {
       // A MANUAL statement whose due date has passed is EXPIRED data, not
       // real overdue debt — a bank-fed one past its due date is genuinely late.
       stmtExpired: !!(stmt && (stmt.source || 'manual') !== 'plaid' && daysToDue != null && daysToDue < -1),
+      // money already sent toward this card, awaiting its bank debit
+      inFlightLoggedCents: inFlightLogs
+        .filter(l => l.card_last4 === meta.last_four || payFundingMap.get(l.card_last4) === meta.id)
+        .reduce((s2, l) => s2 + l.amount_cents, 0),
     };
   }).filter(Boolean) as any[];
 

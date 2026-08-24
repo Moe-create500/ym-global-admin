@@ -958,6 +958,7 @@ export default function TransactionsPage() {
             const cAction = (c: any) => {
               const fundStr = (c.funding || []).map((f: any) => `${f.source} ${fmt2(f.cents)}`).join(' + ');
               if (c.verdict === 'stmt_paid') return { t: 'STMT PAID ✓', c: 'text-emerald-400 font-bold', tip: `statement ${fmt2(c.stmtBalanceCents)} fully covered by payments since ${c.stmtDate || 'statement date'}` };
+              if ((c.inFlightLoggedCents || 0) >= (c.remainingStmtCents ?? c.needCents ?? 0) && (c.remainingStmtCents ?? 0) > 0) return { t: `SENT ${fmt2(c.inFlightLoggedCents)} ⏳`, c: 'text-blue-300 font-bold', tip: 'payment(s) already sent covering the remaining statement — waiting for the bank debit to post; confirms automatically' };
               if (c.verdict === 'balance_clear') return { t: 'BALANCE CLEAR ✓', c: 'text-emerald-400 font-bold', tip: 'live balance is zero' };
               if (c.verdict === 'clear_full') return { t: `CLEAR ${fmt2(c.payNowCents)}`, c: 'text-emerald-400 font-bold', tip: `no live statement feed — target is the LIVE balance (auto-updates every sync), funded by: ${fundStr}` };
               if (c.verdict === 'clear_partial') return { t: `CLEAR ${fmt2(c.payNowCents)} · SHORT ${fmt2(c.shortCents)}`, c: 'text-amber-400 font-bold', tip: `no live statement feed — target is the LIVE balance; funded by: ${fundStr}` };
@@ -1062,7 +1063,8 @@ export default function TransactionsPage() {
                     <tbody>
                       {brainCards.map((c: any) => {
                         const a = cAction(c);
-                        const owners = c.owners.filter((o: any) => o.store !== '(unattributed)').map((o: any) => o.store).join(', ');
+                        const owners = c.owners.filter((o: any) => o.store !== '(unattributed)' && o.owesCents > 0).map((o: any) => o.store).join(', ');
+                        const paidOff = c.owners.filter((o: any) => o.store !== '(unattributed)' && o.owesCents === 0 && (o.paidRecentlyCents || 0) > 0).map((o: any) => o.store);
                         const editing = openCard === c.id;
                         return (
                           <Fragment key={c.id}>
@@ -1085,6 +1087,9 @@ export default function TransactionsPage() {
                                     : c.remainingStmtCents === 0 ? <span className="text-emerald-400">PAID ✓</span>
                                     : fmt2(c.remainingStmtCents ?? c.stmtBalanceCents)}
                                   {c.stmtExpired && <span className="block text-[9px] font-normal text-amber-500">old cycle — update</span>}
+                                  {(c.inFlightLoggedCents || 0) > 0 && !c.stmtExpired && (
+                                    <span className="block text-[9px] font-normal text-blue-300">−{fmt2(c.inFlightLoggedCents)} sent · in flight ⏳</span>
+                                  )}
                                   {!c.stmtExpired && c.remainingStmtCents != null && c.remainingStmtCents > 0 && c.remainingStmtCents !== c.stmtBalanceCents && (
                                     <span className="block text-[9px] font-normal text-slate-500">of {fmt2(c.stmtBalanceCents)} stmt</span>
                                   )}
@@ -1096,7 +1101,10 @@ export default function TransactionsPage() {
                               <td className={`${td} text-right text-slate-300`}>{fmt2(c.postedCents)}</td>
                               <td className={`${td} text-right ${c.fbOwedCents > 0 ? 'text-blue-300' : 'text-slate-700'}`}>{c.fbOwedCents > 0 ? fmt2(c.fbOwedCents) : '—'}</td>
                               <td className={`${td} text-right ${(c.utilization || 0) >= 100 ? 'text-red-400 font-bold' : (c.utilization || 0) >= 70 ? 'text-amber-400' : 'text-slate-400'}`}>{c.utilization != null ? `${c.utilization}%` : '—'}</td>
-                              <td className={`${td} text-slate-400 max-w-[130px] truncate`} title={owners}>{owners || <span className="text-slate-600">untraced</span>}</td>
+                              <td className={`${td} text-slate-400 max-w-[150px]`} title={`${owners}${paidOff.length ? ` · paid off: ${paidOff.join(', ')}` : ''}`}>
+                                <span className="block truncate">{owners || <span className="text-slate-600">untraced</span>}</span>
+                                {paidOff.length > 0 && <span className="block truncate text-[9px] text-emerald-500">{paidOff.join(', ')} ✓paid</span>}
+                              </td>
                               <td className={`${td} text-right whitespace-nowrap ${a.c}`} title={a.tip}>
                                 {a.t}
                                 {c.funding?.length > 0 && c.payNowCents > 0 && (
