@@ -67,6 +67,14 @@ export default function CreditCardsPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
   const [tellerReady, setTellerReady] = useState(false);
+  // Script onLoad never re-fires on client-side navigation — poll for the SDK
+  // (same fix as Banking's Connect button, 2026-08-10)
+  useEffect(() => {
+    if ((window as any).Plaid) { setTellerReady(true); return; }
+    const t = setInterval(() => { if ((window as any).Plaid) { setTellerReady(true); clearInterval(t); } }, 500);
+    const stop = setTimeout(() => clearInterval(t), 15000);
+    return () => { clearInterval(t); clearTimeout(stop); };
+  }, []);
   const [connecting, setConnecting] = useState(false);
 
   // Transaction view
@@ -194,7 +202,7 @@ export default function CreditCardsPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white">Credit Cards</h1>
-          <p className="text-sm text-slate-400 mt-1">American Express accounts — synced via Teller</p>
+          <p className="text-sm text-slate-400 mt-1">American Express accounts — live via Plaid</p>
         </div>
         <div className="flex items-center gap-3">
           <button
