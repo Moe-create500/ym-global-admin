@@ -161,8 +161,8 @@ console.log('[products]');
     // line-item revenue reconciles to order subtotals (sample store, ±5% for edits)
     const pb: any = db.prepare("SELECT id FROM stores WHERE name = 'Purebite'").get();
     const li = getProductRevenue(db, { storeId: pb.id, days: 14 }).reduce((s2: number, r: any) => s2 + r.revenue_cents, 0);
-    const sub: any = db.prepare("SELECT COALESCE(SUM(subtotal_cents),0) t FROM orders WHERE store_id = ? AND order_date >= date('now','-14 days') AND fulfillment_status != 'cancelled' AND line_items IS NOT NULL").get(pb.id);
-    ok('line items ≈ order subtotals (Purebite 14d)', sub.t === 0 || Math.abs(li - sub.t) / sub.t < 0.10, `${li} vs ${sub.t}`);
+    const sub: any = db.prepare("SELECT COALESCE(SUM(COALESCE(net_revenue_cents, total_cents)),0) t FROM orders WHERE store_id = ? AND order_date >= date('now','-14 days') AND fulfillment_status != 'cancelled' AND line_items IS NOT NULL AND json_valid(line_items)").get(pb.id);
+    ok('product revenue sums to order net revenue (Purebite 14d)', sub.t === 0 || Math.abs(li - sub.t) / sub.t < 0.01, `${li} vs ${sub.t}`);
   }
   const tests = getActiveTests(db);
   ok('every test has a verdict + why', (tests.tests || []).every((t: any) => t.verdict && t.why));

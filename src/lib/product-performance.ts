@@ -67,7 +67,15 @@ export function backfillLaunches(db: DatabaseType.Database): { added: number } {
   return { added };
 }
 
-const norm = (s: string) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+// ™ survives as literal "TM" in ASCII exports — "PureBite™" and "PureBiteTM"
+// are the same product and MUST collapse to one identity (word-final tm/r
+// after a letter is a trademark artifact, not a word)
+const norm = (s: string) => String(s || '')
+  .toLowerCase()
+  .replace(/[™®©]/g, '')
+  .replace(/(?<=[a-z])tm\b/g, '')
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim();
 
 /** Revenue per product per store from real order line items. product_key =
  *  sku when present, else normalized item name. Fulfillment cost allocated by
@@ -77,23 +85,39 @@ export function getProductRevenue(db: DatabaseType.Database, opts: { storeId?: s
   const where = opts.storeId ? 'AND o.store_id = ?' : '';
   const params: any[] = [d];
   if (opts.storeId) params.push(opts.storeId);
+  // Line prices are PRE-discount — summing them overstates revenue (caught by
+  // selftest: +48% on Purebite). Truth: allocate each order's NET revenue by
+  // line-value share, so discounts/refunds are honored and product revenue
+  // sums exactly to order revenue.
   const rows: any[] = db.prepare(`
+    WITH ols AS (
+      SELECT o2.id AS oid, SUM(COALESCE(json_extract(li2.value, '$.qty'), 1) * COALESCE(json_extract(li2.value, '$.priceCents'), 0)) AS line_sum
+      FROM orders o2, json_each(o2.line_items) li2
+      WHERE o2.line_items IS NOT NULL AND json_valid(o2.line_items)
+        AND o2.order_date >= date('now', ?)
+      GROUP BY o2.id
+    )
     SELECT o.store_id, s.name AS store_name, o.order_date,
       COALESCE(NULLIF(json_extract(li.value, '$.sku'), ''), lower(json_extract(li.value, '$.name'))) AS product_key,
       json_extract(li.value, '$.name') AS product_name,
       SUM(COALESCE(json_extract(li.value, '$.qty'), 1)) AS units,
-      SUM(COALESCE(json_extract(li.value, '$.qty'), 1) * COALESCE(json_extract(li.value, '$.priceCents'), 0)) AS revenue_cents,
-      SUM(CASE WHEN o.subtotal_cents > 0
-        THEN CAST(o.ss_charge_cents * (COALESCE(json_extract(li.value, '$.qty'), 1) * COALESCE(json_extract(li.value, '$.priceCents'), 0)) AS REAL) / o.subtotal_cents
+      SUM(CASE WHEN ols.line_sum > 0
+        THEN CAST(COALESCE(o.net_revenue_cents, o.total_cents, 0) AS REAL)
+          * (COALESCE(json_extract(li.value, '$.qty'), 1) * COALESCE(json_extract(li.value, '$.priceCents'), 0)) / ols.line_sum
+        ELSE 0 END) AS revenue_cents,
+      SUM(CASE WHEN ols.line_sum > 0
+        THEN CAST(o.ss_charge_cents AS REAL)
+          * (COALESCE(json_extract(li.value, '$.qty'), 1) * COALESCE(json_extract(li.value, '$.priceCents'), 0)) / ols.line_sum
         ELSE 0 END) AS fulfillment_cents,
       COUNT(DISTINCT o.id) AS orders
     FROM orders o
-    JOIN stores s ON s.id = o.store_id, json_each(o.line_items) li
+    JOIN stores s ON s.id = o.store_id
+    JOIN ols ON ols.oid = o.id, json_each(o.line_items) li
     WHERE o.line_items IS NOT NULL AND json_valid(o.line_items)
       AND o.order_date >= date('now', ?) AND o.fulfillment_status != 'cancelled' ${where}
     GROUP BY o.store_id, o.order_date, product_key
-  `).all(...params);
-  return rows.map(r => ({ ...r, fulfillment_cents: Math.round(r.fulfillment_cents || 0) }));
+  `).all(params[0], ...params);
+  return rows.map(r => ({ ...r, revenue_cents: Math.round(r.revenue_cents || 0), fulfillment_cents: Math.round(r.fulfillment_cents || 0) }));
 }
 
 /** Spend per product via launch registry (exact) + name matching (inferred).
