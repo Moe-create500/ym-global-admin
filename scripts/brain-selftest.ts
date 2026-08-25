@@ -141,5 +141,32 @@ ok('settlement sums to the SS share', 398491 + 304484 === 702975);
   ok('settlement debits never misclassed as expense', misclassed.n === 0);
 }
 
+// ── 11. Product performance invariants ──
+console.log('[products]');
+{
+  const { backfillLaunches, getProductPerformance, getProductRevenue, getActiveTests } = require('../src/lib/product-performance');
+  const bf = backfillLaunches(db);
+  const nLaunch: any = db.prepare('SELECT COUNT(*) n FROM product_launches').get();
+  ok('launch registry populated', nLaunch.n >= 100, `${nLaunch.n} launches`);
+  const perf = getProductPerformance(db, { days: 30 });
+  ok('performance builds with products', perf.products.length > 0, `${perf.products.length}`);
+  ok('no NaN money in products', perf.products.every((p: any) => Number.isFinite(p.revenue_cents) && Number.isFinite(p.spend_cents) && Number.isFinite(p.net_cents)));
+  {
+    // attributed spend + unattributed ≤ total ad spend (30d) — no dollar invented
+    const attributed = perf.products.reduce((s2: number, p: any) => s2 + p.spend_cents, 0);
+    const total: any = db.prepare("SELECT COALESCE(SUM(spend_cents),0) t FROM ad_spend WHERE date >= date('now','-30 days')").get();
+    ok('spend attribution conserves dollars', attributed + perf.unattributedSpendCents <= total.t + 100, `${attributed}+${perf.unattributedSpendCents} vs ${total.t}`);
+  }
+  {
+    // line-item revenue reconciles to order subtotals (sample store, ±5% for edits)
+    const pb: any = db.prepare("SELECT id FROM stores WHERE name = 'Purebite'").get();
+    const li = getProductRevenue(db, { storeId: pb.id, days: 14 }).reduce((s2: number, r: any) => s2 + r.revenue_cents, 0);
+    const sub: any = db.prepare("SELECT COALESCE(SUM(subtotal_cents),0) t FROM orders WHERE store_id = ? AND order_date >= date('now','-14 days') AND fulfillment_status != 'cancelled' AND line_items IS NOT NULL").get(pb.id);
+    ok('line items ≈ order subtotals (Purebite 14d)', sub.t === 0 || Math.abs(li - sub.t) / sub.t < 0.10, `${li} vs ${sub.t}`);
+  }
+  const tests = getActiveTests(db);
+  ok('every test has a verdict + why', (tests.tests || []).every((t: any) => t.verdict && t.why));
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

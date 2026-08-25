@@ -111,6 +111,21 @@ export function getRisks(db: DatabaseType.Database, payPlan: any, forward: any) 
       action: 'check Shopify payout status / bank feed for this store',
     });
   }
+  // Product tests burning money with no signal — the operator decides, the
+  // Brain refuses to let it burn silently
+  try {
+    const { getActiveTests } = require('@/lib/product-performance');
+    for (const t of (getActiveTests(db).tests || [])) {
+      if (t.verdict === 'kill_candidate') {
+        risks.push({
+          title: `Product test failing: ${String(t.title).slice(0, 40)} (${t.store_name})`,
+          cents: t.spend_cents, urgencyDays: 1, company: 'ymgv',
+          why: t.why, action: 'pause the campaign or change creative/offer — burn continues daily until acted on',
+        });
+      }
+    }
+  } catch { /* product engine must never break risks */ }
+
   // Declining FB funding cards (ads die)
   for (const c of payPlan?.cards || []) {
     if (c.declining) risks.push({ title: `FB declining charges on ·${c.last4}`, cents: c.fbOwedCents || 0, urgencyDays: 0, company: 'ymgv', why: 'Facebook reports the funding card declining — ad accounts will pause', action: 'pay the card down or swap the funding card' });

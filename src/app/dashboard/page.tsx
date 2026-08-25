@@ -207,6 +207,7 @@ function DashboardContent() {
   const storeId = searchParams.get('storeId') || '';
 
   const [stores, setStores] = useState<Store[]>([]);
+  const [productPerf, setProductPerf] = useState<any>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [sparklines, setSparklines] = useState<Record<string, SparkPoint[]>>({});
   const [totals, setTotals] = useState<Totals | null>(null);
@@ -352,6 +353,8 @@ function DashboardContent() {
       if (gen !== loadGenRef.current) return;
 
       setStores(storesData.stores || []);
+      // product-level truth (tests + top products) — non-blocking
+      fetch('/api/products/performance?days=30').then(r => r.json()).then(setProductPerf).catch(() => {});
       setAlerts(storesData.alerts || []);
       setSparklines(storesData.sparklines || {});
       setTotals(pnlData.totals || null);
@@ -610,6 +613,47 @@ function DashboardContent() {
         </div>
       )}
 
+      {/* Product tests — every recent Launch Flow product, tracked to a verdict */}
+      {!storeId && (productPerf?.tests?.length || 0) > 0 && (
+        <div className="mb-6">
+          <div className="flex items-center gap-3 mb-3">
+            <h2 className="text-sm font-semibold text-white">🧪 Product Tests</h2>
+            <span className="text-xs text-slate-500">{productPerf.tests.length} active · {productPerf.thresholds.testDays}d window · scale ≥{productPerf.thresholds.targetRoas}x · kill &lt;{productPerf.thresholds.killFloor}x after {'$'}{Math.round(productPerf.thresholds.killMinSpendCents / 100)}</span>
+            {(productPerf.unattributedSpendCents || 0) > 0 && (
+              <span className="text-[10px] text-slate-600" title="ad spend not mapped to any product — campaigns launched outside Launch Flow without a product name in the campaign title">
+                unattributed ads (30d): {centsCompact(productPerf.unattributedSpendCents)}
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {productPerf.tests.map((t: any) => {
+              const chip = t.verdict === 'scale' ? ['SCALE 🟢', 'border-emerald-700/60', 'text-emerald-400']
+                : t.verdict === 'kill_candidate' ? ['KILL? 🔴', 'border-red-700/60', 'text-red-400']
+                : t.verdict === 'not_spending' ? ['NOT SPENDING ⏸', 'border-slate-700', 'text-slate-400']
+                : ['WATCH 🟡', 'border-amber-700/50', 'text-amber-400'];
+              return (
+                <div key={`${t.store_id}:${t.product_id}`} className={`bg-slate-900 border ${chip[1]} rounded-xl p-3`} title={t.why}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-white truncate" title={t.title}>{t.title}</p>
+                      <p className="text-[10px] text-slate-500">{t.store_name} · day {t.days_in}/{productPerf.thresholds.testDays} · launched {t.launch_date.slice(5)}{t.launch_count > 1 ? ` · ${t.launch_count} launches` : ''}</p>
+                    </div>
+                    <span className={`text-[10px] font-bold whitespace-nowrap ${chip[2]}`}>{chip[0]}</span>
+                  </div>
+                  <div className="mt-2 grid grid-cols-4 gap-2 text-center">
+                    <div><p className="text-[9px] uppercase text-slate-600">Spend</p><p className="text-xs font-bold text-orange-300">{centsCompact(t.spend_cents)}</p></div>
+                    <div><p className="text-[9px] uppercase text-slate-600">Revenue</p><p className="text-xs font-bold text-emerald-400">{centsCompact(t.revenue_cents)}</p></div>
+                    <div><p className="text-[9px] uppercase text-slate-600">Orders</p><p className="text-xs font-bold text-white">{t.orders}</p></div>
+                    <div><p className="text-[9px] uppercase text-slate-600">ROAS</p><p className={`text-xs font-bold ${t.roas == null ? 'text-slate-600' : t.roas >= productPerf.thresholds.targetRoas ? 'text-emerald-400' : t.roas < productPerf.thresholds.killFloor ? 'text-red-400' : 'text-amber-400'}`}>{t.roas != null ? `${t.roas}x` : '—'}</p></div>
+                  </div>
+                  <p className="mt-1.5 text-[10px] text-slate-500 leading-snug">{t.why}{!t.spend_exact && t.spend_cents > 0 ? ' · spend match: inferred from campaign names' : ''}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Per-Store Summary */}
       {!storeId && (
         <div className="mb-6">
@@ -715,6 +759,13 @@ function DashboardContent() {
                         {(store.mtd_ad_spend || 0) > 0 && <> &middot; {centsCompact(store.mtd_ad_spend || 0)} ad spend</>}
                       </span>
                     </div>
+                    {productPerf?.topByStore?.[store.id] && (
+                      <div className="mt-1 text-[10px] text-slate-400 truncate" title={productPerf.topByStore[store.id].title}>
+                        <span className="text-slate-600">top:</span> <span className="text-slate-300">{productPerf.topByStore[store.id].title.slice(0, 30)}</span>
+                        <span className="text-emerald-400 font-medium"> {centsCompact(productPerf.topByStore[store.id].revenue_cents)}</span>
+                        <span className="text-slate-600"> · {productPerf.topByStore[store.id].units}u</span>
+                      </div>
+                    )}
                     <div className="mt-2 flex items-center gap-2 flex-wrap">
                       <span className={`inline-flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded ${
                         store.fb_connected ? 'bg-emerald-900/40 text-emerald-400' : 'bg-slate-800 text-slate-500'
