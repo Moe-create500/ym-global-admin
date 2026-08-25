@@ -116,11 +116,12 @@ export function getRisks(db: DatabaseType.Database, payPlan: any, forward: any) 
   try {
     const { getActiveTests } = require('@/lib/product-performance');
     for (const t of (getActiveTests(db).tests || [])) {
-      if (t.verdict === 'kill_candidate') {
+      if (t.verdict === 'kill_candidate' && t.running_by_spend) {
         risks.push({
-          title: `Product test failing: ${String(t.title).slice(0, 40)} (${t.store_name})`,
+          title: `Product test failing AND still spending: ${String(t.title).slice(0, 36)} (${t.store_name})`,
           cents: t.spend_cents, urgencyDays: 1, company: 'ymgv',
-          why: t.why, action: 'pause the campaign or change creative/offer — burn continues daily until acted on',
+          why: `${t.why} — last spend ${t.last_spend_date}`,
+          action: 'pause the campaign or change creative/offer — burn continues daily until acted on',
         });
       }
     }

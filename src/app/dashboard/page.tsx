@@ -629,6 +629,7 @@ function DashboardContent() {
             {productPerf.tests.map((t: any) => {
               const chip = t.verdict === 'scale' ? ['SCALE 🟢', 'border-emerald-700/60', 'text-emerald-400']
                 : t.verdict === 'kill_candidate' ? ['KILL? 🔴', 'border-red-700/60', 'text-red-400']
+                : t.verdict === 'stopped' ? ['STOPPED ⏹', 'border-slate-700', 'text-slate-500']
                 : t.verdict === 'not_spending' ? ['NOT SPENDING ⏸', 'border-slate-700', 'text-slate-400']
                 : ['WATCH 🟡', 'border-amber-700/50', 'text-amber-400'];
               return (
@@ -638,7 +639,13 @@ function DashboardContent() {
                       <p className="text-sm font-semibold text-white truncate" title={t.title}>{t.title}</p>
                       <p className="text-[10px] text-slate-500">{t.store_name} · day {t.days_in}/{productPerf.thresholds.testDays} · launched {t.launch_date.slice(5)}{t.launch_count > 1 ? ` · ${t.launch_count} launches` : ''}</p>
                     </div>
-                    <span className={`text-[10px] font-bold whitespace-nowrap ${chip[2]}`}>{chip[0]}</span>
+                    <span className="flex flex-col items-end gap-0.5">
+                      <span className={`text-[10px] font-bold whitespace-nowrap ${chip[2]}`}>{chip[0]}</span>
+                      <span className={`text-[9px] whitespace-nowrap ${t.running ? 'text-emerald-500' : 'text-slate-600'}`}
+                        title={t.running_source === 'facebook' ? `Facebook says: ${(t.campaign_statuses || []).join(', ')}` : `inferred from spend (last: ${t.last_spend_date || 'never'})`}>
+                        {t.running ? '▶ running' : '⏸ not running'}{t.running_source === 'facebook' ? '' : ' *'}
+                      </span>
+                    </span>
                   </div>
                   <div className="mt-2 grid grid-cols-4 gap-2 text-center">
                     <div><p className="text-[9px] uppercase text-slate-600">Spend</p><p className="text-xs font-bold text-orange-300">{centsCompact(t.spend_cents)}</p></div>

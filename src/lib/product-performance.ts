@@ -280,6 +280,20 @@ export function getActiveTests(db: DatabaseType.Database) {
     const orders = p?.orders || 0;
     const roas = spend > 0 ? revenue / spend : null;
 
+    // Which campaigns/ad-sets belong to this test, and are they still spending?
+    const myLaunches: any[] = db.prepare(`
+      SELECT campaign_id, ad_set_id, attribution_level FROM product_launches
+      WHERE store_id = ? AND product_id = ? AND launch_date >= date('now', ?)
+    `).all(l.store_id, l.product_id, `-${testDays} days`);
+    const campaignIds = [...new Set(myLaunches.map(x => x.campaign_id).filter(Boolean))];
+    const adSetIds = [...new Set(myLaunches.filter(x => x.attribution_level === 'adset').map(x => x.ad_set_id).filter(Boolean))];
+    const lastSpend: any = campaignIds.length ? db.prepare(`
+      SELECT MAX(date) d FROM ad_spend
+      WHERE (campaign_id IN (${campaignIds.map(() => '?').join(',')})${adSetIds.length ? ` OR ad_set_id IN (${adSetIds.map(() => '?').join(',')})` : ''})
+    `).get(...campaignIds, ...adSetIds) : { d: null };
+    const yesterday = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+    const runningBySpend = !!lastSpend?.d && lastSpend.d >= yesterday;
+
     let verdict = 'watch';
     let why = `day ${daysIn}/${testDays} — accumulating signal`;
     if (spend >= killMinSpend && (roas ?? 0) < killFloor) {
@@ -292,6 +306,13 @@ export function getActiveTests(db: DatabaseType.Database) {
       verdict = 'not_spending';
       why = 'launched but no attributed spend yet — campaigns paused or spend not flowing';
     }
+    // A failing test whose campaigns already STOPPED spending is resolved,
+    // not an alarm — nagging about paused campaigns trains the operator to
+    // ignore the strip.
+    if (verdict === 'kill_candidate' && !runningBySpend) {
+      verdict = 'stopped';
+      why = `${why} — no spend since ${lastSpend?.d || 'launch'}; campaigns appear stopped`;
+    }
     return {
       store_id: l.store_id,
       store_name: p?.store_name || ((db.prepare('SELECT name FROM stores WHERE id = ?').get(l.store_id) as any)?.name),
@@ -301,6 +322,8 @@ export function getActiveTests(db: DatabaseType.Database) {
       spend_cents: spend, revenue_cents: revenue, orders, units: p?.units || 0,
       roas: roas != null ? Math.round(roas * 100) / 100 : null,
       spend_exact: p?.spend_exact ?? false,
+      campaign_ids: campaignIds, ad_set_ids: adSetIds,
+      last_spend_date: lastSpend?.d || null, running_by_spend: runningBySpend,
       verdict, why,
     };
   }).sort((a, b) => b.spend_cents - a.spend_cents);
