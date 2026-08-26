@@ -208,6 +208,9 @@ function DashboardContent() {
 
   const [stores, setStores] = useState<Store[]>([]);
   const [productPerf, setProductPerf] = useState<any>(null);
+  const [testsOpen, setTestsOpen] = useState(false);
+  useEffect(() => { try { setTestsOpen(localStorage.getItem('ym_tests_open') === '1'); } catch {} }, []);
+  const toggleTests = () => setTestsOpen(v => { try { localStorage.setItem('ym_tests_open', v ? '0' : '1'); } catch {} return !v; });
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [sparklines, setSparklines] = useState<Record<string, SparkPoint[]>>({});
   const [totals, setTotals] = useState<Totals | null>(null);
@@ -616,16 +619,31 @@ function DashboardContent() {
       {/* Product tests — every recent Launch Flow product, tracked to a verdict */}
       {!storeId && (productPerf?.tests?.length || 0) > 0 && (
         <div className="mb-6">
-          <div className="flex items-center gap-3 mb-3">
+          <button onClick={toggleTests} className="w-full flex items-center gap-3 mb-3 text-left group">
             <h2 className="text-sm font-semibold text-white">🧪 Product Tests</h2>
-            <span className="text-xs text-slate-500">{productPerf.tests.length} active · {productPerf.thresholds.testDays}d window · scale ≥{productPerf.thresholds.targetRoas}x · kill &lt;{productPerf.thresholds.killFloor}x after {'$'}{Math.round(productPerf.thresholds.killMinSpendCents / 100)}</span>
+            <span className={`text-slate-500 text-xs transition-transform ${testsOpen ? 'rotate-90' : ''}`}>▶</span>
+            <span className="text-xs text-slate-500">{productPerf.tests.length} active</span>
+            {(() => {
+              const burning = productPerf.tests.filter((t: any) => t.verdict === 'kill_candidate' && t.running);
+              const scaling = productPerf.tests.filter((t: any) => t.verdict === 'scale');
+              return (
+                <>
+                  {burning.length > 0 && <span className="text-[10px] font-bold text-red-400 bg-red-900/30 px-1.5 py-0.5 rounded">🔴 {burning.length} burning {centsCompact(burning.reduce((s2: number, t: any) => s2 + t.spend_cents, 0))}</span>}
+                  {scaling.length > 0 && <span className="text-[10px] font-bold text-emerald-400 bg-emerald-900/30 px-1.5 py-0.5 rounded">🟢 {scaling.length} scaling</span>}
+                </>
+              );
+            })()}
+            <span className="text-[10px] text-slate-600 group-hover:text-slate-400 ml-auto">{testsOpen ? 'hide' : 'show details'}</span>
+          </button>
+          {testsOpen && <div className="flex items-center gap-3 mb-3 -mt-1">
+            <span className="text-xs text-slate-500">{productPerf.thresholds.testDays}d window · scale ≥{productPerf.thresholds.targetRoas}x · kill &lt;{productPerf.thresholds.killFloor}x after {'$'}{Math.round(productPerf.thresholds.killMinSpendCents / 100)}</span>
             {(productPerf.unattributedSpendCents || 0) > 0 && (
               <span className="text-[10px] text-slate-600" title="ad spend not mapped to any product — campaigns launched outside Launch Flow without a product name in the campaign title">
                 unattributed ads (30d): {centsCompact(productPerf.unattributedSpendCents)}
               </span>
             )}
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          </div>}
+          {testsOpen && <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {productPerf.tests.map((t: any) => {
               const chip = t.verdict === 'scale' ? ['SCALE 🟢', 'border-emerald-700/60', 'text-emerald-400']
                 : t.verdict === 'kill_candidate' ? ['KILL? 🔴', 'border-red-700/60', 'text-red-400']
@@ -657,7 +675,7 @@ function DashboardContent() {
                 </div>
               );
             })}
-          </div>
+          </div>}
         </div>
       )}
 
