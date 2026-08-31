@@ -65,15 +65,23 @@
 
 **Known-untested dangers (accepted, documented):** reversal re-matching after a payment bounces, ambiguous same-amount multi-match, Teller last-200 window under extreme volume, statement reversal mid-cycle. None currently reproduce in production data; revisit if any surfaces.
 
-## 5 · Caveats the verdict carries
+## 5 · Repair 2026-08-31 — EXECUTED (Moe-approved)
 
-0. **12 historical duplicate groups in card_payments_log** (Marroomi/Areya/SupplyLaundry/Purebite, mostly 2025–Apr 2026, several undated) — pre-guard manual entries that may be intentional repeat payments or true double-logs. User decision required; the reconciler's not-taken radar bounds the damage.
+All three approved workstreams completed and verified on production (snapshot: `prisma/dev.db.pre-repair-20260831.bak`, full before/after audit in `brain_repair_log`):
+
+1. **Rule #1**: disabled with audit note; replaced by `zelle payment from mohamed hussein` (class owner_draw, **direction=credit** — rule engine now supports direction constraints). The 3 intended owner-pull credits ($10,400) re-matched identically under the narrowed rule.
+2. **Historical corruption**: 89 payouts / **$227,744** (2025-12-24 → 2026-05-01) re-attributed ShipSourced → **Marroomi** via account-ownership evidence (·2240 is named MARROOMI); recent ~111 had already healed via the nightly guarded scan. Full 450-day force rescan; invariant gate green. Bonus finds fixed en route: **371 descriptor-rewrite pending/posted twins** healed (banks rename descriptions between pending and posted — new token-overlap heal), 2 interco credits (Zelle from SHIPSOURCED INC, eBay INDN:ShipSourced) reclassed `transfer` via new interco-credit path, and a scan-ordering bug (work list now selected after heals so healed rows can't be resurrected as orphan links).
+3. **12 duplicate groups**: 1×B kept (Purebite $2,000×2 — two distinct FB charges corroborate), 1×A superseded (Marroomi ·9275 $10,000 — only one FB charge exists), 10×E quarantined (25 rows, $205,000 — zero external corroboration, preserved + inert + surfaced in the Payments tab as an explicit warning).
+
+Post-repair: selftest **80/80**, integrity **6/6**, traceability **88.31% → 90.35%**, spine audit SPINE HOLDS (P1 warnings = known stale feeds only).
+
+## 6 · Caveats the verdict carries
 1. **12.1% of dollars are honestly untracked** — visible in the Uncategorized section, never guessed. That's the system working, but the number should trend down as rules accumulate.
 2. **Selftest is not CI** — run `npx tsx scripts/brain-selftest.ts` on the server after every deploy (deploy verification habit).
 3. **Blind feeds remain blind** — cards not linked to Teller/Plaid (FB funding cards ·2761 etc.) are covered by one-sided proof only.
 4. **Manual statements expire** — handled (EXPIRED verdict, balance-mode fallback), but Plaid-liability consent for BofA is still pending user action at the issuer.
 
-## 6 · Permanent audit tools (new)
+## 7 · Permanent audit tools (new)
 
 ```bash
 npx tsx scripts/brain-spine-audit.ts [--days 30] [--json] [--company ymgv|shipsourced]
