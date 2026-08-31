@@ -99,6 +99,22 @@ export default function TransactionsPage() {
   const [asking, setAsking] = useState(false);
   const [untracked, setUntracked] = useState<any>(null);
   const [accounts, setAccounts] = useState<{ banks: any[]; creditCards: any[] } | null>(null);
+  const [drillCard, setDrillCard] = useState<string | null>(null);
+  const [drill, setDrill] = useState<any>(null);
+  const [drillAssign, setDrillAssign] = useState<Record<string, string>>({});
+  const openDrill = async (cardId: string) => {
+    if (drillCard === cardId) { setDrillCard(null); setDrill(null); return; }
+    setDrillCard(cardId); setDrill(null);
+    const d = await fetch(`/api/transactions?view=card_drill&accountId=${cardId}`).then(r => r.json()).catch(() => null);
+    setDrill(d);
+  };
+  const assignGroup = async (g: any, storeId: string) => {
+    if (!storeId || !drillCard) return;
+    await fetch('/api/transactions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'assign_group', txnIds: g.txnIds, storeId, makeRule: true, pattern: g.merchant.toLowerCase() }) });
+    const d = await fetch(`/api/transactions?view=card_drill&accountId=${drillCard}`).then(r => r.json()).catch(() => null);
+    setDrill(d); loadPayPlan();
+  };
   const [adSpend, setAdSpend] = useState<{ spend: any[]; fbUnbilled: any[] } | null>(null);
   const [incoming, setIncoming] = useState<any>(null);
   // Company lens — the Brain knows YM and ShipSourced are different companies
