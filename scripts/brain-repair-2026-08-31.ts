@@ -99,10 +99,15 @@ const snapPath = 'prisma/dev.db.pre-repair-20260831.bak';
   }
   say(`re-attribution outcomes: ${JSON.stringify(outcome)}`);
 
-  // Invariant gate: any SS-attributed payout remaining = the repair failed
-  const ssPayouts: any = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(ABS(t.amount_cents)),0) c FROM txn_links l JOIN bank_transactions t ON t.id = l.txn_id WHERE l.store_id = ? AND l.class = 'shopify_payout'`).get(ssStore.id);
-  if (ssPayouts.n > 0) { console.error(`INVARIANT FAIL: ${ssPayouts.n} payouts ($${(ssPayouts.c / 100).toFixed(2)}) still attributed to ShipSourced`); process.exit(2); }
-  say('invariant: zero Shopify payouts attributed to ShipSourced ✓');
+  // Invariant gate: SS-attributed payouts are corruption ONLY on YM-company
+  // accounts (the wall). Payouts INTO ShipSourced's own accounts are its
+  // clients paying it via Shopify/Stripe (Elvaris/Houthe/Skinco) — legitimate.
+  const ssPayouts: any = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(ABS(t.amount_cents)),0) c
+    FROM txn_links l JOIN bank_transactions t ON t.id = l.txn_id
+    JOIN bank_accounts a ON a.id = t.bank_account_id
+    WHERE l.store_id = ? AND l.class = 'shopify_payout' AND COALESCE(a.company, 'ymgv') = 'ymgv'`).get(ssStore.id);
+  if (ssPayouts.n > 0) { console.error(`INVARIANT FAIL: ${ssPayouts.n} payouts ($${(ssPayouts.c / 100).toFixed(2)}) on YM accounts still attributed to ShipSourced`); process.exit(2); }
+  say('invariant: zero Shopify payouts on YM accounts attributed to ShipSourced ✓');
 
   // ── 3. PAYMENT-LOG DUPLICATE GROUPS ────────────────────────────────────────
   // Evidence rule (deterministic):

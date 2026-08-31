@@ -213,9 +213,13 @@ console.log('[rules-safety]');
   // NEGATIVE: no merchant rule may ever own a payout or payment leg
   const ruleOwned: any = db.prepare(`SELECT COUNT(*) n FROM txn_links l WHERE l.store_source = 'merchant_rule' AND l.class IN ('shopify_payout', 'card_payment', 'card_payment_sent', 'transfer', 'internal_transfer')`).get();
   ok('merchant rules own zero payout/payment/transfer legs', ruleOwned.n === 0, `${ruleOwned.n} rule-owned protected-class links`);
-  // NEGATIVE: ShipSourced has no Shopify store — payout attribution to it is corruption
-  const ssPayout: any = db.prepare(`SELECT COUNT(*) n FROM txn_links l JOIN stores s ON s.id = l.store_id WHERE s.name = 'ShipSourced' AND l.class = 'shopify_payout'`).get();
-  ok('zero Shopify payouts attributed to ShipSourced', ssPayout.n === 0, `${ssPayout.n}`);
+  // NEGATIVE: a payout on a YM-company account attributed to ShipSourced is
+  // corruption (the rule-#1 pattern). Payouts INTO SS's own accounts are its
+  // clients paying it via Shopify — legitimate SS revenue, excluded here.
+  const ssPayout: any = db.prepare(`SELECT COUNT(*) n FROM txn_links l JOIN stores s ON s.id = l.store_id
+    JOIN bank_transactions t ON t.id = l.txn_id JOIN bank_accounts a ON a.id = t.bank_account_id
+    WHERE s.name = 'ShipSourced' AND l.class = 'shopify_payout' AND COALESCE(a.company, 'ymgv') = 'ymgv'`).get();
+  ok('zero Shopify payouts on YM accounts attributed to ShipSourced', ssPayout.n === 0, `${ssPayout.n}`);
   // guard against future broad patterns: enabled rules carry meaningful patterns
   const broad: any[] = db.prepare(`SELECT id, pattern FROM merchant_store_rules WHERE enabled = 1 AND length(pattern) < 8`).all();
   ok('no enabled rule with a dangerously short pattern', broad.length === 0, broad.map((b: any) => `#${b.id}:${b.pattern}`).join(','));
