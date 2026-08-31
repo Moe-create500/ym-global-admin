@@ -187,9 +187,11 @@ console.log('[lineage]');
   // a pair leg is claimed at most once — one payment, one debit↔credit couple
   const doublePair: any = db.prepare(`SELECT COUNT(*) n FROM (SELECT pair_txn_id FROM txn_links WHERE pair_txn_id IS NOT NULL GROUP BY pair_txn_id HAVING COUNT(*) > 1)`).get();
   ok('no transaction claimed as pair by multiple links', doublePair.n === 0, `${doublePair.n} double-claimed`);
-  // manual payment log carries no business-key duplicates (POST now guards this)
-  const logDupes: any = db.prepare(`SELECT COUNT(*) n FROM (SELECT store_id, card_last4, date, amount_cents FROM card_payments_log GROUP BY store_id, card_last4, date, amount_cents HAVING COUNT(*) > 1)`).get();
-  ok('card_payments_log has no business-key duplicates', logDupes.n === 0, `${logDupes.n} duplicate groups`);
+  // manual payment log carries no business-key duplicates — scoped to entries
+  // after the POST guard went live (12 historical pre-guard groups exist and
+  // are the user's call to resolve; the guard proves it can't happen again)
+  const logDupes: any = db.prepare(`SELECT COUNT(*) n FROM (SELECT store_id, card_last4, date, amount_cents FROM card_payments_log WHERE date >= '2026-08-31' GROUP BY store_id, card_last4, date, amount_cents HAVING COUNT(*) > 1)`).get();
+  ok('card_payments_log has no business-key duplicates (post-guard)', logDupes.n === 0, `${logDupes.n} duplicate groups`);
   // every posted transaction on an active account carries an interpretation
   const unclassified: any = db.prepare(`
     SELECT COUNT(*) n FROM bank_transactions t

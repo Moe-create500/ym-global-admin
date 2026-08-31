@@ -353,6 +353,14 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
   const cardPayments: any[] = [];   // received on a credit card
   const paymentsSent: any[] = [];   // sent from a checking account
 
+  // Already-paired sides must never re-enter the pairing pool. On force
+  // rescans the full-classify path used to re-push paired credits, letting a
+  // second debit claim the same credit (one $2k Amex credit, two $2k debits —
+  // found 2026-08-31). One economic payment = one debit↔credit couple, ever.
+  const pairedIds = new Set<string>(
+    (db.prepare('SELECT txn_id FROM txn_links WHERE pair_txn_id IS NOT NULL').all() as any[]).map(r => r.txn_id)
+  );
+
   db.transaction(() => {
     for (const t of txns) {
       // Manual assignments are never overwritten, even on force re-scans.
@@ -441,8 +449,14 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
         if (hit) { storeId = hit.id; storeSource = 'description'; }
       }
 
-      // 3b-data. Learned merchant rules — user-confirmed patterns
-      if (!storeId && merchantRules.length) {
+      // 3b-data. Learned merchant rules — user-confirmed patterns.
+      // SPEND-LIKE CLASSES ONLY (audit 2026-08-31): a payout or payment must
+      // never be re-owned by merchant text — the "mohamed hussein" owner-pull
+      // rule matched "INDN:MOHAMED HUSSEIN" inside 200 Shopify payout deposits
+      // and rerouted $282k of Marroomi revenue to ShipSourced. Revenue
+      // attribution needs payout evidence; structural classes need pairing.
+      const RULE_ELIGIBLE = ['other', 'supplier', 'software', 'shopify_app', 'fb_ads', 'google_ads', 'personal', 'owner_draw'];
+      if (!storeId && merchantRules.length && RULE_ELIGIBLE.includes(cls)) {
         const dl = desc.toLowerCase();
         const hit = merchantRules.find(r => dl.includes(r.pattern));
         if (hit) {
@@ -486,14 +500,30 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
       if (storeId) stats.storeAttributed++;
       upsert.run(t.id, cls, storeId, storeSource, entityType, entityId, null, 'auto', matchScore, matchEvidence);
 
-      if (cls === 'card_payment') cardPayments.push(t);
-      if (cls === 'card_payment_sent') paymentsSent.push(t);
+      if (cls === 'card_payment' && !pairedIds.has(t.id)) cardPayments.push(t);
+      if (cls === 'card_payment_sent' && !pairedIds.has(t.id)) paymentsSent.push(t);
     }
 
     // ── Pair card payments with the checking transaction that funded them ──
     // Exact ABS amount, closest date within 6 days, each side used once.
     const setPair = db.prepare(`UPDATE txn_links SET pair_txn_id = ?, updated_at = datetime('now') WHERE txn_id = ?`);
     const usedSent = new Set<string>();
+
+    // Heal historical double-claims: when several debits claim one credit,
+    // reciprocity decides — the couple the credit itself points back to is the
+    // real payment; every other claim is released (one-sided proof still
+    // covers a released debit if its description names the card).
+    const multi: any[] = db.prepare(`
+      SELECT pair_txn_id credit_id FROM txn_links WHERE pair_txn_id IS NOT NULL
+      GROUP BY pair_txn_id HAVING COUNT(*) > 1`).all();
+    for (const m of multi) {
+      const back: any = db.prepare('SELECT pair_txn_id FROM txn_links WHERE txn_id = ?').get(m.credit_id);
+      const keep = back?.pair_txn_id || null;
+      const released = db.prepare(
+        `UPDATE txn_links SET pair_txn_id = NULL, updated_at = datetime('now') WHERE pair_txn_id = ? AND txn_id != COALESCE(?, txn_id || 'x')`
+      ).run(m.credit_id, keep);
+      console.log(`[txn-scan] released ${released.changes} duplicate claim(s) on credit ${m.credit_id} (kept reciprocal ${keep || 'none'})`);
+    }
     for (const cp of cardPayments) {
       const amt = Math.abs(cp.amount_cents);
       let best: any = null, bestGap = 7;

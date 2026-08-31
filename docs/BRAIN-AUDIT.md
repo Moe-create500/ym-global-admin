@@ -45,6 +45,8 @@
 
 | # | Defect | Root cause | Fix | Regression lock |
 |---|---|---|---|---|
+| P0-A | **$281,930 of Marroomi Shopify payouts (200 txns) attributed to ShipSourced** — poisoned company cash pools, incoming matrix, coverage funding | merchant rule `mohamed hussein` (created for the 8/19 owner-pull note) text-matched `INDN:MOHAMED HUSSEIN` inside every Shopify payout deposit on BofA ·2240 | merchant rules now fire on spend-like classes ONLY (never payouts/payments); rule pattern narrowed to `zelle payment from mohamed hussein`; force re-scan re-attributed the payouts | integrity check `company_separation` (inbound credits crossing the YM↔SS wall) — runs every brain GET |
+| P0-B | one Amex credit claimed by two $2,000 debits (·7917 personal + ·7878 YM GLOBAL both paired to the same 6/26 Gold-·1009 credit) — double store-credit for one payment | force rescans re-pushed already-paired credits into the pairing pool | pairing pool now excludes already-paired sides; reciprocity heal releases historical duplicate claims (credit's own back-pointer decides the real couple) | selftest: "no transaction claimed as pair by multiple links" |
 | 1 | 6 orphan txn_links | twin-heal deletes `bank_transactions` but not their links | orphan sweep every scan (links + dead pair refs) `transactions-intel.ts` | selftest §12 + integrity check `orphan_links` |
 | 2 | 8 write-routes never dropped the 60s brain cache (banking sync, plaid exchange, cron sync, CFO writes, ads import, invoices, card-payments, banking assign) | cache added later than routes | `dropBrainCache()` on every financial write | — (structural) |
 | 3 | CFO card debt = inline `limit − available`, duplicated twice, divergent from Brain | pre-Brain legacy | reads `getCardClarity` posted+holds, inline only as fallback | source-of-truth matrix |
@@ -65,6 +67,7 @@
 
 ## 5 · Caveats the verdict carries
 
+0. **12 historical duplicate groups in card_payments_log** (Marroomi/Areya/SupplyLaundry/Purebite, mostly 2025–Apr 2026, several undated) — pre-guard manual entries that may be intentional repeat payments or true double-logs. User decision required; the reconciler's not-taken radar bounds the damage.
 1. **12.1% of dollars are honestly untracked** — visible in the Uncategorized section, never guessed. That's the system working, but the number should trend down as rules accumulate.
 2. **Selftest is not CI** — run `npx tsx scripts/brain-selftest.ts` on the server after every deploy (deploy verification habit).
 3. **Blind feeds remain blind** — cards not linked to Teller/Plaid (FB funding cards ·2761 etc.) are covered by one-sided proof only.

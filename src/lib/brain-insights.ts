@@ -66,17 +66,21 @@ export function runIntegrityChecks(db: DatabaseType.Database, payPlan: any) {
     failures.push({ check: 'orphan_links', detail: `${orphans.dead || 0} links to deleted txns, ${orphans.deadPair || 0} pair refs to deleted txns` });
   else passed.push('no orphaned interpretations');
 
-  // 6. Company separation: money attributed to a store must not cross the
-  // YM ↔ ShipSourced wall except through explicit transfer/payment classes
+  // 6. Company separation: INCOMING money (credits) attributed to a store must
+  // not cross the YM ↔ ShipSourced wall — cross-attributed revenue corrupts
+  // both companies' cash pools (the "mohamed hussein" rule rerouted $282k of
+  // Marroomi payouts to SS this way). Debits crossing the wall are fine: that
+  // is the interco-funding mechanism itself (XE stock buys, Zelle to SS).
   const coDrift: any = db.prepare(`
     SELECT COUNT(*) n FROM txn_links l
     JOIN bank_transactions t ON t.id = l.txn_id
     JOIN bank_accounts a ON a.id = t.bank_account_id
     JOIN stores s ON s.id = l.store_id
-    WHERE COALESCE(a.company, 'ymgv') != CASE WHEN s.name = 'ShipSourced' THEN 'shipsourced' ELSE 'ymgv' END
-      AND l.class NOT IN ('card_payment', 'card_payment_sent', 'transfer', 'internal_transfer', 'supplier')
-  `).get(); // supplier allowed: SS stock purchases ride YM cards by design (interco debt)
-  if (coDrift?.n > 0) failures.push({ check: 'company_separation', detail: `${coDrift.n} attributions cross the YM↔SS wall without a transfer class` });
+    WHERE t.amount_cents > 0
+      AND COALESCE(a.company, 'ymgv') != CASE WHEN s.name = 'ShipSourced' THEN 'shipsourced' ELSE 'ymgv' END
+      AND l.class NOT IN ('card_payment', 'card_payment_sent', 'transfer', 'internal_transfer', 'owner_draw')
+  `).get();
+  if (coDrift?.n > 0) failures.push({ check: 'company_separation', detail: `${coDrift.n} inbound credits attributed across the YM↔SS wall` });
   else passed.push('company wall holds');
 
   return { ok: failures.length === 0, failures, passed };
