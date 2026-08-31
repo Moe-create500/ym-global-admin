@@ -160,7 +160,7 @@ export function getTraceability(db: DatabaseType.Database) {
   const r: any = db.prepare(`
     SELECT COALESCE(SUM(ABS(t.amount_cents)), 0) total,
            COALESCE(SUM(CASE WHEN l.store_id IS NOT NULL OR l.entity_id IS NOT NULL OR l.pair_txn_id IS NOT NULL
-             OR COALESCE(l.class, 'other') NOT IN ('other', 'supplier') THEN ABS(t.amount_cents) ELSE 0 END), 0) tracked
+             OR COALESCE(l.class, 'other') NOT IN ('other', 'supplier', 'software', 'shopify_app', 'fb_ads', 'google_ads', 'personal') THEN ABS(t.amount_cents) ELSE 0 END), 0) tracked
     FROM bank_transactions t LEFT JOIN txn_links l ON l.txn_id = t.id
     WHERE t.status = 'posted' AND t.date >= date('now', '-90 days')
   `).get();
@@ -169,7 +169,7 @@ export function getTraceability(db: DatabaseType.Database) {
     FROM bank_transactions t LEFT JOIN txn_links l ON l.txn_id = t.id
     WHERE t.status = 'posted' AND t.date >= date('now', '-90 days')
       AND l.store_id IS NULL AND l.entity_id IS NULL AND l.pair_txn_id IS NULL
-      AND COALESCE(l.class, 'other') IN ('other', 'supplier')
+      AND COALESCE(l.class, 'other') IN ('other', 'supplier', 'software', 'shopify_app', 'fb_ads', 'google_ads', 'personal')
   `).get();
   return {
     totalCents: r.total, trackedCents: r.tracked,

@@ -98,6 +98,7 @@ export default function TransactionsPage() {
   const [askA, setAskA] = useState<any>(null);
   const [asking, setAsking] = useState(false);
   const [untracked, setUntracked] = useState<any>(null);
+  const [untrackedAssign, setUntrackedAssign] = useState<Record<string, string>>({});
   const [accounts, setAccounts] = useState<{ banks: any[]; creditCards: any[] } | null>(null);
   const [drillCard, setDrillCard] = useState<string | null>(null);
   const [drill, setDrill] = useState<any>(null);
@@ -558,31 +559,40 @@ export default function TransactionsPage() {
               </div>
             )}
 
-            {/* UNTRACKED — the resolution queue */}
+            {/* UNCATEGORIZED — every ownerless dollar, until assigned */}
             {untracked && (
               <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
                 <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800 flex flex-wrap gap-x-4">
-                  <span>Untracked money — resolve it</span>
-                  <span className="text-slate-500 normal-case">traceability <span className={untracked.traceability.trackedPct >= 95 ? 'text-emerald-400' : 'text-amber-400'}>{untracked.traceability.trackedPct}%</span> of {fmt(untracked.traceability.totalCents)} (90d) · untracked {fmt(untracked.traceability.untrackedCents)} in {untracked.traceability.untrackedCount} txns</span>
+                  <span>❓ Uncategorized — needs an owner before its card can be met</span>
+                  <span className="text-slate-500 normal-case">traceability <span className={untracked.traceability.trackedPct >= 95 ? 'text-emerald-400' : 'text-amber-400'}>{untracked.traceability.trackedPct}%</span> · uncategorized {fmt(untracked.traceability.untrackedCents)} in {untracked.traceability.untrackedCount} txns (90d)</span>
                 </p>
-                {untracked.queue.length === 0 ? <p className="px-3 py-3 text-xs text-emerald-400">nothing unresolved ✓</p> :
-                  untracked.queue.slice(0, 8).map((u: any) => (
-                    <div key={u.id} className="px-3 py-1.5 border-b border-slate-800/40 flex flex-wrap items-center gap-x-3">
-                      <span className="text-[11px] text-slate-500 w-16">{u.date.slice(5)}</span>
-                      <span className="text-[12px] text-slate-300 flex-1 min-w-[180px] truncate" title={u.description}>{u.description}</span>
-                      <span className="tabular-nums text-white text-[12px] font-medium">{fmt(Math.abs(u.amount_cents))}</span>
-                      <span className="text-[11px] text-slate-500">{u.account}</span>
-                      {u.candidate ? (
-                        <button
-                          onClick={async () => {
-                            await fetch('/api/transactions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ txnId: u.id, storeId: u.candidate.storeId, makeRule: true, pattern: u.suggestedPattern }) });
-                            fetch('/api/transactions?view=untracked').then(r => r.json()).then(setUntracked).catch(() => {});
-                          }}
-                          title={u.candidate.evidence}
-                          className="text-[11px] px-2 py-0.5 rounded bg-blue-600/20 border border-blue-600/40 text-blue-300 hover:bg-blue-600/40">
-                          ✓ {u.candidate.store} ({u.candidate.confidence}%) + rule
-                        </button>
-                      ) : <span className="text-[10px] text-slate-600">no strong evidence — assign in Ledger</span>}
+                {untracked.queue.length === 0 ? <p className="px-3 py-3 text-xs text-emerald-400">everything has an owner ✓</p> :
+                  untracked.queue.slice(0, 12).map((u: any) => (
+                    <div key={u.merchant} className="px-3 py-1.5 border-b border-slate-800/40 flex flex-wrap items-center gap-x-3">
+                      <span className="text-[12px] text-slate-200 font-medium w-52 truncate" title={u.sample}>{u.merchant} <span className="text-slate-500 font-normal">×{u.n}</span></span>
+                      <span className="tabular-nums text-white text-[12px] font-medium w-20 text-right">{fmt(u.cents)}</span>
+                      <span className="text-[10px] text-slate-500 flex-1 min-w-[120px] truncate">{u.classes.join(', ')} · {u.accounts.join(' · ')} · last {u.lastDate.slice(5)}</span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <select value={untrackedAssign[u.merchant] || ''} onChange={e => setUntrackedAssign(prev => ({ ...prev, [u.merchant]: e.target.value }))}
+                          className="bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-white">
+                          <option value="">{u.candidate ? `→ ${u.candidate.store} (${u.candidate.confidence}%)` : 'assign to…'}</option>
+                          {(summary?.stores || []).map((st: any) => <option key={st.id} value={st.id}>{st.name}</option>)}
+                        </select>
+                        {(untrackedAssign[u.merchant] || u.candidate) && (
+                          <button
+                            onClick={async () => {
+                              const sid = untrackedAssign[u.merchant] || u.candidate?.storeId;
+                              if (!sid) return;
+                              await fetch('/api/transactions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'assign_group', txnIds: u.txnIds, storeId: sid, makeRule: true, pattern: u.suggestedPattern }) });
+                              fetch('/api/transactions?view=untracked').then(r => r.json()).then(setUntracked).catch(() => {});
+                              loadPayPlan();
+                            }}
+                            title={u.candidate?.evidence || 'assign all charges in this group + create a permanent rule'}
+                            className="text-[11px] px-2 py-0.5 rounded bg-blue-600/20 border border-blue-600/40 text-blue-300 hover:bg-blue-600/40">
+                            ✓ all {u.n} + rule
+                          </button>
+                        )}
+                      </span>
                     </div>
                   ))}
               </div>

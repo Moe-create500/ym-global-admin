@@ -104,41 +104,57 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(drill);
   }
   if (view === 'untracked') {
-    // The resolution queue: biggest unexplained dollars first, each with the
-    // strongest available candidate (merchant history vote) — never a guess,
-    // always evidence with counts. Confirming teaches a durable rule.
+    // UNCATEGORIZED — every ownerless dollar, one bucket, until assigned.
+    // Classes that structurally need no store owner (payments, transfers,
+    // interest, owner draws) are excluded; everything else without a store,
+    // entity match or pair is unfinished business. Grouped by merchant so
+    // "HIGGSFIELD ×18" is ONE decision with one rule, not eighteen clicks.
     const rows: any[] = db.prepare(`
-      SELECT t.id, t.date, t.description, t.amount_cents,
+      SELECT t.id, t.date, t.description, t.amount_cents, COALESCE(l.class, 'other') AS class,
              a.institution_name || ' ·' || a.last_four AS account, COALESCE(a.company, 'ymgv') AS company
       FROM bank_transactions t
       JOIN bank_accounts a ON a.id = t.bank_account_id AND a.status = 'active'
       LEFT JOIN txn_links l ON l.txn_id = t.id
       WHERE t.status = 'posted' AND t.date >= date('now', '-90 days')
         AND l.store_id IS NULL AND l.entity_id IS NULL AND l.pair_txn_id IS NULL
-        -- ownerless money in owner-requiring classes: pure unknowns AND
-        -- supplier spend with no store (whose stock?) both need resolution
-        AND COALESCE(l.class, 'other') IN ('other', 'supplier')
-      ORDER BY ABS(t.amount_cents) DESC LIMIT 25
+        AND COALESCE(l.class, 'other') IN ('other', 'supplier', 'software', 'shopify_app', 'fb_ads', 'google_ads', 'personal')
+      ORDER BY t.date DESC
     `).all();
+    const merchantOf = (desc: string) => {
+      const t = String(desc || '').replace(/\*.*/, '').replace(/[#\d].*$/, '').trim().toUpperCase();
+      return (t || String(desc || '').slice(0, 18).toUpperCase()).slice(0, 26);
+    };
+    const groups = new Map<string, any>();
+    for (const r of rows) {
+      const m = merchantOf(r.description);
+      if (!groups.has(m)) groups.set(m, { merchant: m, n: 0, cents: 0, txnIds: [], classes: new Set(), accounts: new Set(), lastDate: r.date, sample: r.description.slice(0, 44) });
+      const g = groups.get(m);
+      g.n++; g.cents += Math.abs(r.amount_cents);
+      g.txnIds.push(r.id);
+      g.classes.add(r.class); g.accounts.add(r.account);
+      if (r.date > g.lastDate) g.lastDate = r.date;
+    }
     const vote = db.prepare(`
       SELECT s.name AS store, l.store_id, COUNT(*) n
       FROM bank_transactions t
       JOIN txn_links l ON l.txn_id = t.id AND l.store_id IS NOT NULL
       JOIN stores s ON s.id = l.store_id
-      WHERE t.description LIKE ? AND t.id != ?
-      GROUP BY l.store_id ORDER BY n DESC LIMIT 2
+      WHERE t.description LIKE ? GROUP BY l.store_id ORDER BY n DESC LIMIT 2
     `);
-    const queue = rows.map(r => {
-      // merchant token: first meaningful words of the description
-      const token = String(r.description).replace(/[#*\d]/g, ' ').trim().split(/\s+/).slice(0, 2).join(' ');
-      const candidates = token.length >= 4 ? (vote.all(`%${token}%`, r.id) as any[]) : [];
-      const top = candidates[0];
-      const total = candidates.reduce((s: number, c: any) => s + c.n, 0);
-      return {
-        ...r, suggestedPattern: token.toLowerCase(),
-        candidate: top ? { store: top.store, storeId: top.store_id, evidence: `${top.n} previous "${token}" transactions attributed to ${top.store}`, confidence: total > 0 ? Math.round(100 * top.n / total) : 0 } : null,
-      };
-    });
+    const queue = [...groups.values()]
+      .sort((a, b) => b.cents - a.cents)
+      .slice(0, 25)
+      .map(g => {
+        const cands = g.merchant.length >= 4 ? (vote.all(`%${g.merchant}%`) as any[]) : [];
+        const top = cands[0];
+        const total = cands.reduce((s2: number, c: any) => s2 + c.n, 0);
+        return {
+          merchant: g.merchant, n: g.n, cents: g.cents, txnIds: g.txnIds,
+          classes: [...g.classes], accounts: [...g.accounts].slice(0, 3), lastDate: g.lastDate, sample: g.sample,
+          suggestedPattern: g.merchant.toLowerCase(),
+          candidate: top ? { store: top.store, storeId: top.store_id, evidence: `${top.n} previous "${g.merchant}" charges attributed to ${top.store}`, confidence: total > 0 ? Math.round(100 * top.n / total) : 0 } : null,
+        };
+      });
     const { getTraceability } = await import('@/lib/coverage');
     return NextResponse.json({ queue, traceability: getTraceability(db) });
   }
