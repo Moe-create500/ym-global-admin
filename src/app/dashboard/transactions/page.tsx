@@ -98,11 +98,11 @@ export default function TransactionsPage() {
   const [askA, setAskA] = useState<any>(null);
   const [asking, setAsking] = useState(false);
   const [untracked, setUntracked] = useState<any>(null);
-  const [untrackedAssign, setUntrackedAssign] = useState<Record<string, string>>({});
+  const [uncatSel, setUncatSel] = useState<any>(null);
   const [accounts, setAccounts] = useState<{ banks: any[]; creditCards: any[] } | null>(null);
   const [drillCard, setDrillCard] = useState<string | null>(null);
   const [drill, setDrill] = useState<any>(null);
-  const [drillAssign, setDrillAssign] = useState<Record<string, string>>({});
+  const [drillSel, setDrillSel] = useState<any>(null);
   const openDrill = async (cardId: string) => {
     if (drillCard === cardId) { setDrillCard(null); setDrill(null); return; }
     setDrillCard(cardId); setDrill(null);
@@ -420,42 +420,49 @@ export default function TransactionsPage() {
                             <div>
                               <div className="flex flex-wrap items-center gap-x-6 gap-y-1 mb-2">
                                 <span className="text-[11px] uppercase tracking-wider text-slate-500">What composes this balance</span>
-                                <span className="text-xs text-slate-300">{fmt(drill.postedCents)} decomposed into {drill.groups.length} merchant groups</span>
-                                {drill.unownedCents > 0 && (
-                                  <span className="text-xs font-bold text-amber-400">❓ {fmt(drill.unownedCents)} HAS NO BRAND — assign owners so the right store pays it by the due date</span>
-                                )}
+                                <span className="text-xs text-slate-300">{fmt(drill.postedCents)} · {drill.groups.length} merchant groups</span>
+                                {drill.unownedCents > 0 && <span className="text-xs font-bold text-amber-400">❓ {fmt(drill.unownedCents)} has no brand</span>}
                                 {drill.unexplainedCents > 0 && <span className="text-[10px] text-slate-600">history can&apos;t explain {fmt(drill.unexplainedCents)}</span>}
                               </div>
-                              <table className="w-full text-[11px]">
-                                <tbody>
-                                  {drill.groups.map((g: any, gi: number) => (
-                                    <tr key={gi} className={`border-b border-slate-800/40 ${!g.store_id ? 'bg-amber-950/10' : ''}`}>
-                                      <td className="px-2 py-1 text-slate-200 font-medium max-w-[220px] truncate" title={g.samples.join(' · ')}>{g.merchant}</td>
-                                      <td className="px-2 py-1 text-slate-500">{g.n}× · {g.firstDate.slice(5)}→{g.lastDate.slice(5)}</td>
-                                      <td className="px-2 py-1"><ClassChip cls={g.class} /></td>
-                                      <td className="px-2 py-1">
-                                        {g.store ? <span className="text-emerald-400">{g.store}</span> : (
-                                          <span className="inline-flex items-center gap-1.5">
-                                            <span className="text-amber-400 font-semibold">❓ no brand</span>
-                                            <select value={drillAssign[`${gi}`] || ''} onChange={e => setDrillAssign(prev => ({ ...prev, [`${gi}`]: e.target.value }))}
-                                              onClick={e => e.stopPropagation()}
-                                              className="bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-white">
-                                              <option value="">assign to…</option>
-                                              {(summary?.stores || []).map((st: any) => <option key={st.id} value={st.id}>{st.name}</option>)}
-                                            </select>
-                                            {drillAssign[`${gi}`] && (
-                                              <button onClick={e => { e.stopPropagation(); void assignGroup(g, drillAssign[`${gi}`]); }}
-                                                className="text-[10px] px-1.5 py-0.5 bg-blue-600 hover:bg-blue-500 text-white rounded font-semibold">✓ + rule</button>
-                                            )}
-                                          </span>
-                                        )}
-                                      </td>
-                                      <td className="px-2 py-1 text-right tabular-nums text-white font-medium">{fmt(g.cents)}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                              <p className="mt-1.5 text-[9px] text-slate-600">assigning a group attributes every charge in it AND creates a permanent rule — future charges from that merchant auto-attribute · groups compose the live balance exactly (newest-unpaid walk)</p>
+                              {/* ONE picker for everything: click a ❓ row, then click a brand chip.
+                                  No per-row dropdowns — instant, no lag, no clutter. */}
+                              <div className="sticky top-0 z-10 bg-slate-950/95 border border-slate-800 rounded-lg px-2 py-1.5 mb-2 flex flex-wrap items-center gap-1">
+                                <span className="text-[10px] text-slate-500 mr-1">{drillSel ? <>assign <span className="text-white font-semibold">{drillSel.merchant}</span> ({fmt(drillSel.cents)}) to:</> : 'click a ❓ row, then a brand:'}</span>
+                                {(summary?.stores || []).map((st: any) => (
+                                  <button key={st.id} disabled={!drillSel}
+                                    onClick={() => { if (drillSel) { void assignGroup(drillSel, st.id); setDrillSel(null); } }}
+                                    className={`text-[10px] px-2 py-0.5 rounded border ${drillSel ? 'border-blue-600/50 bg-blue-600/15 text-blue-200 hover:bg-blue-600/40' : 'border-slate-800 text-slate-600'}`}>
+                                    {st.name}
+                                  </button>
+                                ))}
+                                {drillSel && <button onClick={() => setDrillSel(null)} className="text-[10px] text-slate-500 ml-1">cancel</button>}
+                              </div>
+                              {(() => {
+                                const unowned = drill.groups.filter((g: any) => !g.store_id);
+                                const owned = drill.groups.filter((g: any) => g.store_id);
+                                const row = (g: any, gi: number, ownable: boolean) => (
+                                  <tr key={gi}
+                                    onClick={ownable ? () => setDrillSel(drillSel?.merchant === g.merchant ? null : g) : undefined}
+                                    className={`border-b border-slate-800/40 ${ownable ? 'cursor-pointer hover:bg-slate-800/40' : ''} ${drillSel?.merchant === g.merchant ? 'bg-blue-950/40' : ''}`}>
+                                    <td className="px-2 py-1 text-slate-200 font-medium max-w-[220px] truncate" title={g.samples.join(' · ')}>{g.merchant}</td>
+                                    <td className="px-2 py-1 text-slate-500 whitespace-nowrap">{g.n}× · {g.firstDate.slice(5)}→{g.lastDate.slice(5)}</td>
+                                    <td className="px-2 py-1"><ClassChip cls={g.class} /></td>
+                                    <td className="px-2 py-1">{g.store ? <span className="text-emerald-400">{g.store}</span> : <span className="text-amber-400 font-semibold">{drillSel?.merchant === g.merchant ? '← pick a brand above' : '❓ tap to assign'}</span>}</td>
+                                    <td className="px-2 py-1 text-right tabular-nums text-white font-medium">{fmt(g.cents)}</td>
+                                  </tr>
+                                );
+                                return (
+                                  <table className="w-full text-[11px]">
+                                    <tbody>
+                                      {unowned.length > 0 && <tr><td colSpan={5} className="px-2 pt-1 pb-0.5 text-[9px] uppercase tracking-wider text-amber-500">❓ No brand — {fmt(drill.unownedCents)}</td></tr>}
+                                      {unowned.map((g: any, gi: number) => row(g, gi, true))}
+                                      {owned.length > 0 && <tr><td colSpan={5} className="px-2 pt-2 pb-0.5 text-[9px] uppercase tracking-wider text-slate-600">Owned — {fmt(drill.postedCents - drill.unownedCents - drill.unexplainedCents)}</td></tr>}
+                                      {owned.map((g: any, gi: number) => row(g, 1000 + gi, false))}
+                                    </tbody>
+                                  </table>
+                                );
+                              })()}
+                              <p className="mt-1.5 text-[9px] text-slate-600">assigning owns every charge in the group AND creates a permanent rule — future charges auto-attribute · groups compose the live balance exactly</p>
                             </div>
                           )}
                         </td>
@@ -563,36 +570,35 @@ export default function TransactionsPage() {
             {untracked && (
               <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
                 <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800 flex flex-wrap gap-x-4">
-                  <span>❓ Uncategorized — needs an owner before its card can be met</span>
-                  <span className="text-slate-500 normal-case">traceability <span className={untracked.traceability.trackedPct >= 95 ? 'text-emerald-400' : 'text-amber-400'}>{untracked.traceability.trackedPct}%</span> · uncategorized {fmt(untracked.traceability.untrackedCents)} in {untracked.traceability.untrackedCount} txns (90d)</span>
+                  <span>❓ Uncategorized — needs an owner</span>
+                  <span className="text-slate-500 normal-case">traceability <span className={untracked.traceability.trackedPct >= 95 ? 'text-emerald-400' : 'text-amber-400'}>{untracked.traceability.trackedPct}%</span> · {fmt(untracked.traceability.untrackedCents)} in {untracked.traceability.untrackedCount} txns (90d)</span>
                 </p>
+                <div className="px-3 py-1.5 border-b border-slate-800 flex flex-wrap items-center gap-1 bg-slate-950/60">
+                  <span className="text-[10px] text-slate-500 mr-1">{uncatSel ? <>assign <span className="text-white font-semibold">{uncatSel.merchant}</span> ×{uncatSel.n} ({fmt(uncatSel.cents)}) to:</> : 'click a row, then a brand:'}</span>
+                  {(summary?.stores || []).map((st: any) => (
+                    <button key={st.id} disabled={!uncatSel}
+                      onClick={async () => {
+                        if (!uncatSel) return;
+                        const g = uncatSel; setUncatSel(null);
+                        await fetch('/api/transactions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'assign_group', txnIds: g.txnIds, storeId: st.id, makeRule: true, pattern: g.suggestedPattern }) });
+                        fetch('/api/transactions?view=untracked').then(r => r.json()).then(setUntracked).catch(() => {});
+                        loadPayPlan();
+                      }}
+                      className={`text-[10px] px-2 py-0.5 rounded border ${uncatSel ? 'border-blue-600/50 bg-blue-600/15 text-blue-200 hover:bg-blue-600/40' : 'border-slate-800 text-slate-600'}`}>
+                      {st.name}
+                    </button>
+                  ))}
+                  {uncatSel && <button onClick={() => setUncatSel(null)} className="text-[10px] text-slate-500 ml-1">cancel</button>}
+                </div>
                 {untracked.queue.length === 0 ? <p className="px-3 py-3 text-xs text-emerald-400">everything has an owner ✓</p> :
                   untracked.queue.slice(0, 12).map((u: any) => (
-                    <div key={u.merchant} className="px-3 py-1.5 border-b border-slate-800/40 flex flex-wrap items-center gap-x-3">
+                    <div key={u.merchant}
+                      onClick={() => setUncatSel(uncatSel?.merchant === u.merchant ? null : u)}
+                      className={`px-3 py-1.5 border-b border-slate-800/40 flex flex-wrap items-center gap-x-3 cursor-pointer hover:bg-slate-800/40 ${uncatSel?.merchant === u.merchant ? 'bg-blue-950/40' : ''}`}>
                       <span className="text-[12px] text-slate-200 font-medium w-52 truncate" title={u.sample}>{u.merchant} <span className="text-slate-500 font-normal">×{u.n}</span></span>
                       <span className="tabular-nums text-white text-[12px] font-medium w-20 text-right">{fmt(u.cents)}</span>
                       <span className="text-[10px] text-slate-500 flex-1 min-w-[120px] truncate">{u.classes.join(', ')} · {u.accounts.join(' · ')} · last {u.lastDate.slice(5)}</span>
-                      <span className="inline-flex items-center gap-1.5">
-                        <select value={untrackedAssign[u.merchant] || ''} onChange={e => setUntrackedAssign(prev => ({ ...prev, [u.merchant]: e.target.value }))}
-                          className="bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-white">
-                          <option value="">{u.candidate ? `→ ${u.candidate.store} (${u.candidate.confidence}%)` : 'assign to…'}</option>
-                          {(summary?.stores || []).map((st: any) => <option key={st.id} value={st.id}>{st.name}</option>)}
-                        </select>
-                        {(untrackedAssign[u.merchant] || u.candidate) && (
-                          <button
-                            onClick={async () => {
-                              const sid = untrackedAssign[u.merchant] || u.candidate?.storeId;
-                              if (!sid) return;
-                              await fetch('/api/transactions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'assign_group', txnIds: u.txnIds, storeId: sid, makeRule: true, pattern: u.suggestedPattern }) });
-                              fetch('/api/transactions?view=untracked').then(r => r.json()).then(setUntracked).catch(() => {});
-                              loadPayPlan();
-                            }}
-                            title={u.candidate?.evidence || 'assign all charges in this group + create a permanent rule'}
-                            className="text-[11px] px-2 py-0.5 rounded bg-blue-600/20 border border-blue-600/40 text-blue-300 hover:bg-blue-600/40">
-                            ✓ all {u.n} + rule
-                          </button>
-                        )}
-                      </span>
+                      <span className="text-[10px]">{u.candidate ? <span className="text-blue-300" title={u.candidate.evidence}>history says {u.candidate.store} ({u.candidate.confidence}%)</span> : <span className="text-slate-600">no evidence</span>}</span>
                     </div>
                   ))}
               </div>
