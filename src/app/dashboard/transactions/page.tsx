@@ -379,8 +379,9 @@ export default function TransactionsPage() {
                   const p: any = stmtById.get(r.id);
                   const util = r.credit_limit_cents > 0 ? Math.round(100 * Math.abs(r.ledger_cents) / r.credit_limit_cents) : null;
                   return (
-                    <tr key={r.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className={`${tdc} text-slate-200`}>{nm(r)} <span className="text-slate-600">·{r.last_four}</span> {co(r)}</td>
+                    <Fragment key={r.id}>
+                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer" onClick={() => void openDrill(r.id)}>
+                      <td className={`${tdc} text-slate-200`}>{nm(r)} <span className="text-slate-600">·{r.last_four}</span> {co(r)} <span className="text-slate-600">{drillCard === r.id ? '▾' : '▸'}</span></td>
                       <td className={`${tdc} text-right text-slate-200`}>{fmt(Math.abs(r.ledger_cents))}</td>
                       <td className={`${tdc} text-right text-slate-500`}>{r.credit_limit_cents ? fmt(r.credit_limit_cents) : '—'}</td>
                       <td className={`${tdc} text-right ${util == null ? 'text-slate-600' : util >= 100 ? 'text-red-400 font-bold' : util >= 70 ? 'text-amber-400' : 'text-slate-400'}`}>{util != null ? `${util}%` : '—'}</td>
@@ -395,6 +396,55 @@ export default function TransactionsPage() {
                       </td>
                       <td className={tdc}>{feed(r)}</td>
                     </tr>
+                    {drillCard === r.id && (
+                      <tr className="bg-slate-950/60">
+                        <td colSpan={7} className="px-4 py-3">
+                          {!drill ? <p className="text-xs text-slate-500">decomposing the balance…</p> : (
+                            <div>
+                              <div className="flex flex-wrap items-center gap-x-6 gap-y-1 mb-2">
+                                <span className="text-[11px] uppercase tracking-wider text-slate-500">What composes this balance</span>
+                                <span className="text-xs text-slate-300">{fmt(drill.postedCents)} decomposed into {drill.groups.length} merchant groups</span>
+                                {drill.unownedCents > 0 && (
+                                  <span className="text-xs font-bold text-amber-400">❓ {fmt(drill.unownedCents)} HAS NO BRAND — assign owners so the right store pays it by the due date</span>
+                                )}
+                                {drill.unexplainedCents > 0 && <span className="text-[10px] text-slate-600">history can&apos;t explain {fmt(drill.unexplainedCents)}</span>}
+                              </div>
+                              <table className="w-full text-[11px]">
+                                <tbody>
+                                  {drill.groups.map((g: any, gi: number) => (
+                                    <tr key={gi} className={`border-b border-slate-800/40 ${!g.store_id ? 'bg-amber-950/10' : ''}`}>
+                                      <td className="px-2 py-1 text-slate-200 font-medium max-w-[220px] truncate" title={g.samples.join(' · ')}>{g.merchant}</td>
+                                      <td className="px-2 py-1 text-slate-500">{g.n}× · {g.firstDate.slice(5)}→{g.lastDate.slice(5)}</td>
+                                      <td className="px-2 py-1"><ClassChip cls={g.class} /></td>
+                                      <td className="px-2 py-1">
+                                        {g.store ? <span className="text-emerald-400">{g.store}</span> : (
+                                          <span className="inline-flex items-center gap-1.5">
+                                            <span className="text-amber-400 font-semibold">❓ no brand</span>
+                                            <select value={drillAssign[`${gi}`] || ''} onChange={e => setDrillAssign(prev => ({ ...prev, [`${gi}`]: e.target.value }))}
+                                              onClick={e => e.stopPropagation()}
+                                              className="bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-white">
+                                              <option value="">assign to…</option>
+                                              {(summary?.stores || []).map((st: any) => <option key={st.id} value={st.id}>{st.name}</option>)}
+                                            </select>
+                                            {drillAssign[`${gi}`] && (
+                                              <button onClick={e => { e.stopPropagation(); void assignGroup(g, drillAssign[`${gi}`]); }}
+                                                className="text-[10px] px-1.5 py-0.5 bg-blue-600 hover:bg-blue-500 text-white rounded font-semibold">✓ + rule</button>
+                                            )}
+                                          </span>
+                                        )}
+                                      </td>
+                                      <td className="px-2 py-1 text-right tabular-nums text-white font-medium">{fmt(g.cents)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                              <p className="mt-1.5 text-[9px] text-slate-600">assigning a group attributes every charge in it AND creates a permanent rule — future charges from that merchant auto-attribute · groups compose the live balance exactly (newest-unpaid walk)</p>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })}
               </tbody>

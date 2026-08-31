@@ -1314,6 +1314,73 @@ export function getPayPlan(db: DatabaseType.Database) {
   };
 }
 
+
+/** Card drill-down: the unpaid charges behind THIS card's balance, grouped by
+ *  MERCHANT × store — the "what exactly is this remaining balance" view.
+ *  Groups without a store are the operator's to-do: dollars that need an owner
+ *  before the due date can be met by the right brand. Same walk as getTruth
+ *  (newest-first until the balance is explained), so drill = headline exactly. */
+export function getCardDrill(db: DatabaseType.Database, cardId: string) {
+  ensureTxnIntelTables(db);
+  const card: any = db.prepare(`
+    SELECT id, institution_name, account_name, nickname, last_four, balance_ledger_cents
+    FROM bank_accounts WHERE id = ? AND account_type = 'credit'
+  `).get(cardId);
+  if (!card) return null;
+  const posted = Math.abs(card.balance_ledger_cents || 0);
+  const rows: any[] = db.prepare(`
+    SELECT t.id, t.date, t.description, ABS(t.amount_cents) cents,
+           COALESCE(l.class, 'other') class, l.store_id, s.name AS store_name
+    FROM bank_transactions t
+    LEFT JOIN txn_links l ON l.txn_id = t.id
+    LEFT JOIN stores s ON s.id = l.store_id
+    WHERE t.bank_account_id = ? AND t.status != 'pending'
+      AND COALESCE(l.class, 'other') NOT IN ('card_payment')
+      AND t.date >= date('now', '-540 days')
+    ORDER BY t.date DESC, t.id DESC
+  `).all(cardId);
+
+  // merchant token: strip trailing ids/stars/numbers so "HIGGSFIELD INC." and
+  // "HIGGSFIELD" collapse; FACEBK *X7 rows collapse to FACEBK
+  const merchantOf = (desc: string) => {
+    const t = String(desc || '').replace(/\*.*/, '').replace(/[#\d].*$/, '').trim().toUpperCase();
+    return (t || String(desc || '').slice(0, 18).toUpperCase()).slice(0, 26);
+  };
+
+  let acc = 0;
+  const groups = new Map<string, any>();
+  for (const r of rows) {
+    if (acc >= posted) break;
+    const take = Math.min(r.cents, posted - acc);
+    acc += take;
+    const merchant = merchantOf(r.description);
+    const key = `${merchant}|${r.store_id || ''}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        merchant, store_id: r.store_id || null, store: r.store_name || null,
+        class: r.class, cents: 0, n: 0, txnIds: [] as string[],
+        firstDate: r.date, lastDate: r.date, samples: [] as string[],
+      });
+    }
+    const g = groups.get(key);
+    g.cents += take; g.n++;
+    g.txnIds.push(r.id);
+    if (r.date < g.firstDate) g.firstDate = r.date;
+    if (r.date > g.lastDate) g.lastDate = r.date;
+    if (g.samples.length < 2) g.samples.push(String(r.description).slice(0, 44));
+  }
+  const list = [...groups.values()].sort((a, b) => b.cents - a.cents);
+  const unownedCents = list.filter(g => !g.store_id).reduce((s2, g) => s2 + g.cents, 0);
+  return {
+    card: { id: card.id, name: card.nickname || `${card.institution_name} ${card.account_name}`, last4: card.last_four },
+    postedCents: posted,
+    explainedCents: acc,
+    unexplainedCents: Math.max(0, posted - acc),
+    unownedCents,           // dollars with NO brand — the to-do before the due date
+    groups: list,
+  };
+}
+
 /** Reconcile manually-logged card payments (card_payments_log) against real
  *  bank debits: WHICH account the money actually left, and whether the card
  *  issuer has even taken it yet. One-to-one greedy matching — exact amount,

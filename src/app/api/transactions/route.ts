@@ -95,6 +95,14 @@ export async function GET(req: NextRequest) {
       creditCards: rows.filter(r => r.account_type === 'credit'),
     });
   }
+  if (view === 'card_drill') {
+    const accountId = sp.get('accountId');
+    if (!accountId) return NextResponse.json({ error: 'accountId required' }, { status: 400 });
+    const { getCardDrill } = await import('@/lib/transactions-intel');
+    const drill = getCardDrill(db, accountId);
+    if (!drill) return NextResponse.json({ error: 'card not found' }, { status: 404 });
+    return NextResponse.json(drill);
+  }
   if (view === 'untracked') {
     // The resolution queue: biggest unexplained dollars first, each with the
     // strongest available candidate (merchant history vote) — never a guess,
@@ -331,6 +339,27 @@ export async function PATCH(req: NextRequest) {
         b.statementDate || null, b.dueDate || null,
         b.minPaymentCents != null ? Math.round(Number(b.minPaymentCents)) : null);
     return NextResponse.json({ success: true });
+  }
+
+  // Bulk group assignment from the card drill-down: give a whole merchant
+  // group an owner in one click (+ optional durable rule for the future)
+  if (b.action === 'assign_group') {
+    const ids: string[] = Array.isArray(b.txnIds) ? b.txnIds.slice(0, 500) : [];
+    if (!ids.length || !b.storeId) return NextResponse.json({ error: 'txnIds[] and storeId required' }, { status: 400 });
+    const store = db.prepare('SELECT id FROM stores WHERE id = ?').get(b.storeId);
+    if (!store) return NextResponse.json({ error: 'store not found' }, { status: 404 });
+    const up = db.prepare(`INSERT INTO txn_links (txn_id, class, store_id, store_source, confidence, updated_at)
+      VALUES (?, COALESCE((SELECT class FROM txn_links WHERE txn_id = ?), 'other'), ?, 'manual', 'manual', datetime('now'))
+      ON CONFLICT(txn_id) DO UPDATE SET store_id = excluded.store_id, store_source = 'manual', confidence = 'manual', updated_at = datetime('now')`);
+    let n = 0;
+    for (const id of ids) { up.run(id, id, b.storeId); n++; }
+    if (b.makeRule && b.pattern && String(b.pattern).trim().length >= 4) {
+      const { ensureMerchantRules } = await import('@/lib/transactions-intel');
+      ensureMerchantRules(db);
+      db.prepare(`INSERT INTO merchant_store_rules (pattern, store_id, source) VALUES (?, ?, 'user')`)
+        .run(String(b.pattern).trim().toLowerCase(), b.storeId);
+    }
+    return NextResponse.json({ success: true, assigned: n });
   }
 
   if (!b.txnId) return NextResponse.json({ error: 'txnId required' }, { status: 400 });
