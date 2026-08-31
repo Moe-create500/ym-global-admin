@@ -52,6 +52,31 @@ export async function POST(req: NextRequest) {
   const trust = getSourceHealth(db);
   const caveat = trust.trustworthy ? '' : ` ⚠ confidence reduced: ${trust.summary}`;
 
+  // "can I pay myself / pull profit $X" → same committed-scenario simulation,
+  // answered in owner-withdrawal terms. Without an amount, answers with the
+  // maximum pull that keeps the worst 14-day point at the floor.
+  const draw = q.match(/(pay (?:myself|ourselves|us|ourselfs)|pull (?:profit|money|cash)|owner (?:draw|withdrawal|pull)|withdraw)/);
+  if (draw && !/can .*(spend|order|buy|place|scale)/.test(q)) {
+    const amtM = q.match(/\$?\s*([\d][\d,\.]*)\s*(k\b)?/);
+    const co = /shipsourced|\bss\b/.test(q) ? 'shipsourced' : 'ymgv';
+    const proj = forward[co];
+    const coName = co === 'ymgv' ? 'YM' : 'ShipSourced';
+    const maxPull = Math.max(0, proj.lowestCommitted14.cents - proj.floorCents);
+    if (!amtM) {
+      return NextResponse.json({
+        answer: `${coName} can pay out up to ${fmt(maxPull)} today without the worst committed 14-day cash point (${fmt(proj.lowestCommitted14.cents)} on ${proj.lowestCommitted14.date}) dipping below the ${fmt(proj.floorCents)} floor. Log the pull as 💰 Owner Withdrawal so the books stay honest.${caveat}`,
+        facts: { scenario: 'simulation only', company: co, maxPullCents: maxPull, lowestDate: proj.lowestCommitted14.date, floorCents: proj.floorCents, assumptions: proj.assumptions },
+      });
+    }
+    const amt = Math.round(parseFloat(amtM[1].replace(/,/g, '')) * (amtM[2] ? 1000 : 1) * 100);
+    const lowAfter = proj.lowestCommitted14.cents - amt;
+    const ok = lowAfter >= proj.floorCents;
+    return NextResponse.json({
+      answer: `${ok ? 'YES' : 'NO'} — pulling ${fmt(amt)} for yourselves takes ${coName}'s worst committed 14-day point to ${lowAfter < 0 ? '−' : ''}${fmt(lowAfter)} on ${proj.lowestCommitted14.date} (floor ${fmt(proj.floorCents)}).${ok ? ' Tag the bank debit 💰 Owner Withdrawal when it lands.' : ` Max safe pull today: ${fmt(maxPull)}.`}${caveat}`,
+      facts: { scenario: 'simulation only', amountCents: amt, company: co, lowestAfterCents: lowAfter, lowestDate: proj.lowestCommitted14.date, floorCents: proj.floorCents, maxPullCents: maxPull },
+    });
+  }
+
   // "can I spend/afford/order $X" → committed-scenario simulation (never touches live books)
   const spend = q.match(/can .*(spend|afford|order|buy|place|scale).*?\$?\s*([\d][\d,\.]*)\s*(k\b)?/);
   if (spend) {

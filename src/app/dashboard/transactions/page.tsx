@@ -435,6 +435,17 @@ export default function TransactionsPage() {
                                     {st.name}
                                   </button>
                                 ))}
+                                <button disabled={!drillSel}
+                                  onClick={async () => {
+                                    if (!drillSel) return;
+                                    const g = drillSel; setDrillSel(null);
+                                    await fetch('/api/transactions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'assign_group', txnIds: g.txnIds, assignClass: 'owner_draw' }) });
+                                    const d = await fetch(`/api/transactions?view=card_drill&accountId=${drillCard}`).then(r => r.json()).catch(() => null);
+                                    setDrill(d); loadPayPlan();
+                                  }}
+                                  className={`text-[10px] px-2 py-0.5 rounded border font-semibold ${drillSel ? 'border-amber-500/60 bg-amber-500/15 text-amber-300 hover:bg-amber-500/35' : 'border-slate-800 text-slate-600'}`}>
+                                  💰 Owner Withdrawal
+                                </button>
                                 {drillSel && <button onClick={() => setDrillSel(null)} className="text-[10px] text-slate-500 ml-1">cancel</button>}
                               </div>
                               {(() => {
@@ -588,6 +599,17 @@ export default function TransactionsPage() {
                       {st.name}
                     </button>
                   ))}
+                  <button disabled={!uncatSel}
+                    onClick={async () => {
+                      if (!uncatSel) return;
+                      const g = uncatSel; setUncatSel(null);
+                      await fetch('/api/transactions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'assign_group', txnIds: g.txnIds, assignClass: 'owner_draw' }) });
+                      fetch('/api/transactions?view=untracked').then(r => r.json()).then(setUntracked).catch(() => {});
+                      loadPayPlan();
+                    }}
+                    className={`text-[10px] px-2 py-0.5 rounded border font-semibold ${uncatSel ? 'border-amber-500/60 bg-amber-500/15 text-amber-300 hover:bg-amber-500/35' : 'border-slate-800 text-slate-600'}`}>
+                    💰 Owner Withdrawal
+                  </button>
                   {uncatSel && <button onClick={() => setUncatSel(null)} className="text-[10px] text-slate-500 ml-1">cancel</button>}
                 </div>
                 {untracked.queue.length === 0 ? <p className="px-3 py-3 text-xs text-emerald-400">everything has an owner ✓</p> :

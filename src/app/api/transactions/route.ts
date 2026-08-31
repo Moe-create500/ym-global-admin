@@ -361,6 +361,17 @@ export async function PATCH(req: NextRequest) {
   // group an owner in one click (+ optional durable rule for the future)
   if (b.action === 'assign_group') {
     const ids: string[] = Array.isArray(b.txnIds) ? b.txnIds.slice(0, 500) : [];
+    // Owner withdrawal: a structural class, not a brand — profit pulls and
+    // pay-ourselves money. No store owner; the company lens carries it.
+    if (b.assignClass === 'owner_draw') {
+      if (!ids.length) return NextResponse.json({ error: 'txnIds[] required' }, { status: 400 });
+      const up = db.prepare(`INSERT INTO txn_links (txn_id, class, store_id, store_source, confidence, updated_at)
+        VALUES (?, 'owner_draw', NULL, 'manual', 'manual', datetime('now'))
+        ON CONFLICT(txn_id) DO UPDATE SET class = 'owner_draw', store_id = NULL, store_source = 'manual', confidence = 'manual', updated_at = datetime('now')`);
+      let n = 0;
+      for (const id of ids) { up.run(id); n++; }
+      return NextResponse.json({ success: true, assigned: n, class: 'owner_draw' });
+    }
     if (!ids.length || !b.storeId) return NextResponse.json({ error: 'txnIds[] and storeId required' }, { status: 400 });
     const store = db.prepare('SELECT id FROM stores WHERE id = ?').get(b.storeId);
     if (!store) return NextResponse.json({ error: 'store not found' }, { status: 404 });

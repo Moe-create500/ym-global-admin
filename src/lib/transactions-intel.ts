@@ -329,6 +329,10 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
   // this window's evidence, then load the full map for card comparisons.
   learnFundingCards(db);
   const fundingMap = getFundingCardMap(db);
+  // account id → its own last4, for twin-aware alias comparisons
+  const acctL4 = new Map<string, string>(
+    (db.prepare('SELECT id, last_four FROM bank_accounts').all() as any[]).map(r => [r.id, r.last_four])
+  );
 
   /** Score one invoice candidate against a bank txn: date-lag typicality is
    *  the dominant signal, card last-4 confirms or kills, exact amount is the
@@ -342,8 +346,14 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
     let cardScore: number;
     if (inv.card_last4 && txn.last_four) {
       // Direct last4 match, OR the invoice's funding sub-card is aliased to
-      // this txn's account (Amex sub-cards post under the account number)
-      const aliased = fundingMap.get(inv.card_last4) === txn.bank_account_id;
+      // this txn's account (Amex sub-cards post under the account number).
+      // Twin accounts (Gold ·1009 vs Platinum ·1009) share a last4, so an
+      // alias learned against one twin must also vouch for the other — the
+      // charge's physical account is a bank fact; the alias only proves the
+      // sub-card belongs to this plastic family (Elvris ·9275 case, 2026-08-31).
+      const aliasTarget = fundingMap.get(inv.card_last4);
+      const aliased = aliasTarget === txn.bank_account_id
+        || (aliasTarget != null && acctL4.get(aliasTarget) === txn.last_four);
       cardScore = (inv.card_last4 === txn.last_four || aliased) ? 1 : -1; // mismatch = hard kill
     } else cardScore = 0.5; // one side unknown — neutral
     if (cardScore < 0) return { score: 0, lag, cardMatch: false };
@@ -412,12 +422,18 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
             invoiceDate: best.inv.date, txnDate: t.date, lagDays: best.lag,
             card: best.inv.card_last4 && t.last_four
               ? (best.inv.card_last4 === t.last_four ? 'match'
-                : fundingMap.get(best.inv.card_last4) === t.bank_account_id ? 'match_via_funding_alias' : 'unknown')
+                : fundingMap.get(best.inv.card_last4) === t.bank_account_id ? 'match_via_funding_alias'
+                : acctL4.get(fundingMap.get(best.inv.card_last4) || '') === t.last_four ? 'match_via_alias_twin' : 'unknown')
               : 'partial',
             candidates: scored.length, score: Math.round(best.score * 100) / 100,
           };
+          // Store consensus: when every plausible candidate belongs to the
+          // SAME store, candidate-level ambiguity is irrelevant for store
+          // attribution — three $1,000 Marroomi invoices vs one $1,000 charge
+          // is still Marroomi's money whichever invoice it settles (2026-08-31).
+          const storeConsensus = new Set(scored.map(x => x.inv.store_id)).size === 1;
           // Accept: confident score AND clear separation from the runner-up
-          if (best.score >= 0.4 && (scored.length === 1 || margin >= 0.12)) {
+          if (best.score >= 0.4 && (scored.length === 1 || margin >= 0.12 || storeConsensus)) {
             storeId = best.inv.store_id; storeSource = 'invoice';
             entityType = isAd ? 'ad_payment' : 'shopify_invoice';
             entityId = best.inv.id;
