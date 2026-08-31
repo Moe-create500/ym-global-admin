@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import crypto from 'crypto';
+import { dropBrainCache } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,6 +48,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  dropBrainCache(); // financial write — cached answers must not outlive it
   const body = await req.json();
   const { storeId, cardLast4, date, amountCents, method, notes, platform } = body;
 
@@ -55,6 +57,20 @@ export async function POST(req: NextRequest) {
   }
 
   const db = getDb();
+
+  // No business-key uniqueness on this table — an accidental double-submit
+  // would double-credit the card and break bank pairing. Same store + card +
+  // date + amount = same payment unless the caller explicitly forces it.
+  const dupe: any = db.prepare(
+    `SELECT id FROM card_payments_log WHERE store_id = ? AND card_last4 = ? AND date = ? AND amount_cents = ?`
+  ).get(storeId, cardLast4, date, amountCents);
+  if (dupe && !body.force) {
+    return NextResponse.json({
+      error: `A payment of $${(amountCents / 100).toFixed(2)} on ··${cardLast4} for ${date} is already logged. Pass force:true if this is genuinely a second payment.`,
+      duplicateOf: dupe.id,
+    }, { status: 409 });
+  }
+
   const id = crypto.randomUUID();
 
   db.prepare(`
@@ -66,6 +82,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  dropBrainCache(); // financial write — cached answers must not outlive it
   const { searchParams } = req.nextUrl;
   const id = searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });

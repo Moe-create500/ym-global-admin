@@ -3,6 +3,7 @@ import { syncAllStores, syncFacebookAds, acquireSyncLock, releaseSyncLock, activ
 import { getDb } from '@/lib/db';
 import { getAccountBalance, getAccountTransactions } from '@/lib/teller';
 import crypto from 'crypto';
+import { dropBrainCache } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 
@@ -124,6 +125,8 @@ export async function GET(req: NextRequest) {
   } catch (e: any) {
     shopifyPayments.push({ error: (e?.message || String(e)).slice(0, 200) });
   }
+
+  dropBrainCache(); // the sync just changed financial state — no cached answer may outlive it
 
   return NextResponse.json({
     success: true,

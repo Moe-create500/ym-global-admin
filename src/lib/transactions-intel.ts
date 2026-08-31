@@ -316,6 +316,15 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
   `).run();
   if (healed.changes > 0) console.log(`[txn-scan] healed ${healed.changes} superseded pending twin(s)`);
 
+  // Lineage hygiene: interpretations must never outlive their transaction.
+  // Twin-healing and feed retractions delete bank_transactions rows; any link
+  // left pointing at a dead txn (or pairing against one) is a stale opinion
+  // that could still feed store credits — sweep both directions every scan.
+  const orphanLinks = db.prepare(`DELETE FROM txn_links WHERE txn_id NOT IN (SELECT id FROM bank_transactions)`).run();
+  const orphanPairs = db.prepare(`UPDATE txn_links SET pair_txn_id = NULL WHERE pair_txn_id IS NOT NULL AND pair_txn_id NOT IN (SELECT id FROM bank_transactions)`).run();
+  if (orphanLinks.changes > 0 || orphanPairs.changes > 0)
+    console.log(`[txn-scan] swept ${orphanLinks.changes} orphan link(s), ${orphanPairs.changes} dead pair ref(s)`);
+
   // Funding sub-card aliases (·2976 → Platinum account): learn new ones from
   // this window's evidence, then load the full map for card comparisons.
   learnFundingCards(db);

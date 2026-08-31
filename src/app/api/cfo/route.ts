@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { reconcileSnapshot } from '@/lib/cfo-reconcile';
 import crypto from 'crypto';
+import { dropBrainCache } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 
@@ -276,13 +277,25 @@ export async function GET(req: NextRequest) {
     "SELECT * FROM bank_accounts WHERE store_id = ? AND status = 'active' AND COALESCE(cfo_hidden, 0) = 0"
   ).all(storeId);
 
+  // Card debt comes from the Brain's card clarity (posted + pending holds) —
+  // the same number every other surface shows. The inline credit-limit math is
+  // only the fallback for cards the clarity engine doesn't cover.
+  let cardOwedOf = (a: any) => {
+    const creditLimit = a.credit_limit_cents || ((a.balance_available_cents || 0) + (a.balance_ledger_cents || 0));
+    return creditLimit - (a.balance_available_cents || 0);
+  };
+  try {
+    const { getCardClarity } = await import('@/lib/transactions-intel');
+    const clarityCards: any = getCardClarity(db).perCard;
+    const fallback = cardOwedOf;
+    cardOwedOf = (a: any) => {
+      const cl = clarityCards[a.id];
+      return cl ? (cl.postedCents || 0) + (cl.pendingHoldsCents || 0) : fallback(a);
+    };
+  } catch { /* clarity unavailable — inline fallback stands */ }
+
   const bankTotal = bankAccounts.reduce((s: number, a: any) => {
-    if (a.account_type === 'credit') {
-      // Use credit_limit - available to include pending charges
-      const creditLimit = a.credit_limit_cents || (a.balance_available_cents + a.balance_ledger_cents) || 0;
-      const totalOwed = creditLimit - (a.balance_available_cents || 0);
-      return s - totalOwed;
-    }
+    if (a.account_type === 'credit') return s - cardOwedOf(a);
     return s + (a.balance_available_cents || 0);
   }, 0);
 
@@ -403,12 +416,10 @@ export async function GET(req: NextRequest) {
       manualItems,
       bankAccounts: bankAccounts.map((a: any) => {
         if (a.account_type === 'credit') {
-          const creditLimit = a.credit_limit_cents || ((a.balance_available_cents || 0) + (a.balance_ledger_cents || 0));
-          const totalOwed = creditLimit - (a.balance_available_cents || 0);
           return {
             id: a.id, institution_name: a.institution_name, account_name: a.account_name,
             last_four: a.last_four, account_type: a.account_type,
-            balance_available_cents: -totalOwed,
+            balance_available_cents: -cardOwedOf(a), // same debt number the Brain shows
             balance_ledger_cents: a.balance_ledger_cents, balance_updated_at: a.balance_updated_at,
           };
         }
@@ -435,6 +446,7 @@ export async function GET(req: NextRequest) {
 
 // PATCH: Update Shopify balance, reserves (manual input)
 export async function PATCH(req: NextRequest) {
+  dropBrainCache(); // financial write — cached answers must not outlive it
   const { storeId, shopifyBalanceCents, shopifyPayoutCents, reserve, deleteReserveId, manualCC, deleteManualCCId, cfoOverride } = await req.json();
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
 
@@ -501,6 +513,7 @@ export async function PATCH(req: NextRequest) {
 
 // POST: Save a snapshot of current state
 export async function POST(req: NextRequest) {
+  dropBrainCache(); // financial write — cached answers must not outlive it
   const body = await req.json();
   const { storeId, assets_cents, liabilities_cents, equity_cents, data } = body;
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });

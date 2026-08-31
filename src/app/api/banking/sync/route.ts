@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getAccountBalance, getAccountTransactions, getAllAccountTransactions } from '@/lib/teller';
 import crypto from 'crypto';
+import { dropBrainCache } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 
 // POST: Sync balances + transactions for all or specific account
 export async function POST(req: NextRequest) {
+  dropBrainCache(); // financial write — cached answers must not outlive it
   const accountId = req.nextUrl.searchParams.get('accountId');
   const full = req.nextUrl.searchParams.get('full') === 'true';
   const db = getDb();

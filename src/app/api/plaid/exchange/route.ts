@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { exchangeAndImport, syncPlaidItems } from '@/lib/plaid';
+import { dropBrainCache } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
 
 // POST { publicToken, storeId? } → exchange + import accounts + first sync
 export async function POST(req: NextRequest) {
+  dropBrainCache(); // financial write — cached answers must not outlive it
   const body = await req.json().catch(() => ({}));
   const { publicToken } = body || {};
   if (!publicToken) return NextResponse.json({ error: 'publicToken required' }, { status: 400 });

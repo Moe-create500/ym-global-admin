@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getAccounts, getAccountBalance, getAccountTransactions } from '@/lib/teller';
 import crypto from 'crypto';
+import { dropBrainCache } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,6 +35,7 @@ export async function GET(req: NextRequest) {
 
 // POST: Enroll a bank account (called after Teller Connect)
 export async function POST(req: NextRequest) {
+  dropBrainCache(); // financial write — cached answers must not outlive it
   const { storeId, accessToken, enrollmentId } = await req.json();
 
   if (!storeId || !accessToken) {
@@ -97,6 +99,7 @@ export async function POST(req: NextRequest) {
 // DELETE: Disconnect a bank account
 // PATCH { accountId, storeId } → reassign an account to another store
 export async function PATCH(req: NextRequest) {
+  dropBrainCache(); // financial write — cached answers must not outlive it
   const { accountId, storeId } = await req.json().catch(() => ({}));
   if (!accountId || !storeId) return NextResponse.json({ error: 'accountId and storeId required' }, { status: 400 });
   const db = getDb();
@@ -116,6 +119,7 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  dropBrainCache(); // financial write — cached answers must not outlive it
   const accountId = req.nextUrl.searchParams.get('accountId');
   if (!accountId) return NextResponse.json({ error: 'accountId required' }, { status: 400 });
 

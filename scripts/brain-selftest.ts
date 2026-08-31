@@ -61,7 +61,14 @@ ok('company cash sums to account cash', Math.abs((cash.ymgv.cashCents + cash.shi
 // ── 4. Incoming cash coherence ──
 console.log('[incoming]');
 const inc = getIncomingCash(db);
-ok('upcoming7 excludes already-paid payouts', inc.totals.upcoming7Cents === inc.upcoming.filter(u => u.status !== 'paid' && u.date <= inc.upcoming.reduce(() => '9999', '') ).reduce((s, u) => s, 0) || true); // structural, checked in lib
+{
+  // real recomputation with the lib's own rule: within 7 Pacific days, never 'paid'
+  const p7 = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+  p7.setDate(p7.getDate() + 7);
+  const in7 = `${p7.getFullYear()}-${String(p7.getMonth() + 1).padStart(2, '0')}-${String(p7.getDate()).padStart(2, '0')}`;
+  const recomputed = inc.upcoming.filter(u => u.date <= in7 && u.status !== 'paid').reduce((s, u) => s + u.cents, 0);
+  ok('upcoming7 excludes already-paid payouts', inc.totals.upcoming7Cents === recomputed, `lib ${inc.totals.upcoming7Cents} vs recomputed ${recomputed}`);
+}
 ok('no negative payout amounts in schedule', inc.upcoming.every(u => u.cents > 0 || u.status === 'scheduled'));
 ok('landed daily avg finite', Number.isFinite(inc.landedDailyAvgCents));
 
@@ -118,9 +125,9 @@ ok('pay dates never after due dates', cov.obligations.every(o => o.payDate <= o.
   const okAll = dues.every(due => {
     const rec = recommendedPayDate(due);
     const dow = new Date(rec + 'T12:00:00Z').getUTCDay();
-    return dow !== 0 && dow !== 6 && (rec <= due || rec >= due);
+    return dow !== 0 && dow !== 6 && rec <= due; // future dues: recommendation is never late
   });
-  ok('recommended pay dates never land on weekends (7-day sweep)', okAll);
+  ok('recommended pay dates never weekend, never late (7-day sweep)', okAll);
 }
 const trace = getTraceability(db);
 ok('traceability 0–100%', trace.trackedPct >= 0 && trace.trackedPct <= 100);
@@ -129,7 +136,7 @@ ok('traceability 0–100%', trace.trackedPct >= 0 && trace.trackedPct <= 100);
 console.log('[ss-settlement]');
 const logged: any[] = db.prepare(`SELECT amount_cents FROM card_payments_log p JOIN stores s ON s.id = p.store_id WHERE s.name = 'ShipSourced' AND p.date = '2026-08-19' AND p.card_last4 = '1654'`).all();
 ok('both SS settlement payments logged', logged.length >= 2 && logged.some(l => l.amount_cents === 398491) && logged.some(l => l.amount_cents === 304484));
-ok('settlement sums to the SS share', 398491 + 304484 === 702975);
+ok('settlement sums to the SS share', logged.filter(l => l.amount_cents === 398491 || l.amount_cents === 304484).reduce((s, l) => s + l.amount_cents, 0) === 702975); // from DB — also proves neither leg was double-logged
 {
   // when the bank debits land+pair, SS share on 1654 must drop — assert machinery: 
   // no duplicate expense (payments classed card_payment_sent never as supplier/other spend)
@@ -166,6 +173,30 @@ console.log('[products]');
   }
   const tests = getActiveTests(db);
   ok('every test has a verdict + why', (tests.tests || []).every((t: any) => t.verdict && t.why));
+}
+
+// ── 12. Lineage integrity (2026-08-31 audit regressions) ──
+console.log('[lineage]');
+{
+  // orphan links: interpretations must never outlive their transaction
+  // (twin-healing used to delete bank rows and strand the links — swept every scan now)
+  const orphan: any = db.prepare(`SELECT COUNT(*) n FROM txn_links l LEFT JOIN bank_transactions t ON t.id = l.txn_id WHERE t.id IS NULL`).get();
+  ok('no txn_links pointing at deleted transactions', orphan.n === 0, `${orphan.n} orphans`);
+  const deadPair: any = db.prepare(`SELECT COUNT(*) n FROM txn_links WHERE pair_txn_id IS NOT NULL AND pair_txn_id NOT IN (SELECT id FROM bank_transactions)`).get();
+  ok('no pair refs pointing at deleted transactions', deadPair.n === 0, `${deadPair.n} dead pairs`);
+  // a pair leg is claimed at most once — one payment, one debit↔credit couple
+  const doublePair: any = db.prepare(`SELECT COUNT(*) n FROM (SELECT pair_txn_id FROM txn_links WHERE pair_txn_id IS NOT NULL GROUP BY pair_txn_id HAVING COUNT(*) > 1)`).get();
+  ok('no transaction claimed as pair by multiple links', doublePair.n === 0, `${doublePair.n} double-claimed`);
+  // manual payment log carries no business-key duplicates (POST now guards this)
+  const logDupes: any = db.prepare(`SELECT COUNT(*) n FROM (SELECT store_id, card_last4, date, amount_cents FROM card_payments_log GROUP BY store_id, card_last4, date, amount_cents HAVING COUNT(*) > 1)`).get();
+  ok('card_payments_log has no business-key duplicates', logDupes.n === 0, `${logDupes.n} duplicate groups`);
+  // every posted transaction on an active account carries an interpretation
+  const unclassified: any = db.prepare(`
+    SELECT COUNT(*) n FROM bank_transactions t
+    JOIN bank_accounts a ON a.id = t.bank_account_id AND a.status = 'active'
+    LEFT JOIN txn_links l ON l.txn_id = t.id
+    WHERE t.status = 'posted' AND t.date >= date('now', '-45 days') AND l.txn_id IS NULL`).get();
+  ok('every posted txn (45d) has an interpretation', unclassified.n === 0, `${unclassified.n} invisible to the Brain`);
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

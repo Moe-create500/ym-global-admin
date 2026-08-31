@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { syncShopifyPayments, getCreds } from '@/lib/shopify-sync';
+import { dropBrainCache } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
 
 // POST /api/shopify/sync { storeId } → pull payouts + transactions + disputes + balance
 export async function POST(req: NextRequest) {
+  dropBrainCache(); // financial write — cached answers must not outlive it
   const body = await req.json().catch(() => ({}));
   const { storeId } = body || {};
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });

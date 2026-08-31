@@ -41,14 +41,43 @@ export function runIntegrityChecks(db: DatabaseType.Database, payPlan: any) {
   if (dupes?.n > 0) failures.push({ check: 'duplicate_feed_ids', detail: `${dupes.n} bank feed ids appear on multiple rows` });
   else passed.push('bank feed ids unique');
 
-  // 4. A matched internal pair must never carry a store revenue attribution
+  // 4. Money classed as revenue must never be an internal movement: a
+  // shopify_payout-classed credit that is the pair leg of another transaction,
+  // or whose description reads as an account transfer, would inflate income
   const pairRev: any = db.prepare(`
     SELECT COUNT(*) n FROM txn_links l JOIN bank_transactions t ON t.id = l.txn_id
-    WHERE l.class IN ('card_payment', 'card_payment_sent', 'transfer', 'internal_transfer')
-      AND l.class = 'shopify_payout'
-  `).get(); // structurally impossible by single class column — kept as a canary
+    WHERE l.class = 'shopify_payout'
+      AND (EXISTS (SELECT 1 FROM txn_links l2 WHERE l2.pair_txn_id = l.txn_id)
+        OR LOWER(t.description) LIKE '%transfer from acct%'
+        OR LOWER(t.description) LIKE '%online transfer from%')
+  `).get();
   if (pairRev?.n > 0) failures.push({ check: 'transfer_as_revenue', detail: `${pairRev.n} internal transfers classed as revenue` });
   else passed.push('transfers never classed as revenue');
+
+  // 5. Lineage integrity: every interpretation must point at a living
+  // transaction — orphan links are stale opinions about money that no longer
+  // exists and can silently feed store credits or pair proofs
+  const orphans: any = db.prepare(`
+    SELECT SUM(CASE WHEN t.id IS NULL THEN 1 ELSE 0 END) dead,
+           SUM(CASE WHEN l.pair_txn_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM bank_transactions p WHERE p.id = l.pair_txn_id) THEN 1 ELSE 0 END) deadPair
+    FROM txn_links l LEFT JOIN bank_transactions t ON t.id = l.txn_id
+  `).get();
+  if ((orphans?.dead || 0) > 0 || (orphans?.deadPair || 0) > 0)
+    failures.push({ check: 'orphan_links', detail: `${orphans.dead || 0} links to deleted txns, ${orphans.deadPair || 0} pair refs to deleted txns` });
+  else passed.push('no orphaned interpretations');
+
+  // 6. Company separation: money attributed to a store must not cross the
+  // YM ↔ ShipSourced wall except through explicit transfer/payment classes
+  const coDrift: any = db.prepare(`
+    SELECT COUNT(*) n FROM txn_links l
+    JOIN bank_transactions t ON t.id = l.txn_id
+    JOIN bank_accounts a ON a.id = t.bank_account_id
+    JOIN stores s ON s.id = l.store_id
+    WHERE COALESCE(a.company, 'ymgv') != CASE WHEN s.name = 'ShipSourced' THEN 'shipsourced' ELSE 'ymgv' END
+      AND l.class NOT IN ('card_payment', 'card_payment_sent', 'transfer', 'internal_transfer', 'supplier')
+  `).get(); // supplier allowed: SS stock purchases ride YM cards by design (interco debt)
+  if (coDrift?.n > 0) failures.push({ check: 'company_separation', detail: `${coDrift.n} attributions cross the YM↔SS wall without a transfer class` });
+  else passed.push('company wall holds');
 
   return { ok: failures.length === 0, failures, passed };
 }
