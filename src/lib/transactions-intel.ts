@@ -229,6 +229,7 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
   const txns: any[] = db.prepare(`
     SELECT t.id, t.date, t.description, t.amount_cents, t.bank_account_id,
            a.account_type, a.store_id AS account_store_id, a.is_global, a.last_four, a.account_name,
+           COALESCE(a.company, 'ymgv') AS account_company,
            l.txn_id AS linked, l.confidence AS link_confidence
     FROM bank_transactions t
     JOIN bank_accounts a ON a.id = t.bank_account_id
@@ -325,6 +326,32 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
           AND ABS(julianday(q.date) - julianday(p.date)) <= 3 AND q.description = p.description))
   `).run();
   if (healed.changes > 0) console.log(`[txn-scan] healed ${healed.changes} superseded pending twin(s)`);
+
+  // Descriptor-rewrite twins: banks rewrite descriptions between pending and
+  // posted ("ACH CREDIT eBay … ON 08/07" → "eBay Com… DES:PAYMENTS INDN:…"),
+  // so identical-description healing misses them and the event double-counts.
+  // A stale pending with a same-account same-amount posted row within 3 days
+  // that shares a non-generic merchant token is the same economic event.
+  {
+    const GENERIC = new Set(['payment', 'payments', 'online', 'transfer', 'credit', 'debit', 'banking', 'from', 'with', 'card', 'ach', 'type', 'date', 'time', 'indn', 'confirmation']);
+    const tok = (s: any) => new Set((String(s).toLowerCase().match(/[a-z]{4,}/g) || []).filter(w => !GENERIC.has(w)));
+    const stale: any[] = db.prepare(`SELECT id, description, bank_account_id, amount_cents, date FROM bank_transactions WHERE status = 'pending' AND date < date('now', '-3 days')`).all();
+    const usedPosted = new Set<string>();
+    let rewriteHealed = 0;
+    for (const p of stale) {
+      const cands: any[] = db.prepare(`SELECT id, description FROM bank_transactions WHERE bank_account_id = ? AND status = 'posted' AND amount_cents = ? AND ABS(julianday(date) - julianday(?)) <= 3`).all(p.bank_account_id, p.amount_cents, p.date);
+      const pt = tok(p.description);
+      const twin = cands.find(q => !usedPosted.has(q.id) && [...tok(q.description)].some(w => pt.has(w)));
+      if (twin) {
+        usedPosted.add(twin.id);
+        db.prepare('DELETE FROM txn_links WHERE txn_id = ?').run(p.id);
+        db.prepare('UPDATE txn_links SET pair_txn_id = NULL WHERE pair_txn_id = ?').run(p.id);
+        db.prepare('DELETE FROM bank_transactions WHERE id = ?').run(p.id);
+        rewriteHealed++;
+      }
+    }
+    if (rewriteHealed > 0) console.log(`[txn-scan] healed ${rewriteHealed} descriptor-rewrite pending twin(s)`);
+  }
 
   // Lineage hygiene: interpretations must never outlive their transaction.
   // Twin-healing and feed retractions delete bank_transactions rows; any link
@@ -467,6 +494,18 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
           storeId = [...storeSet][0]; storeSource = 'payout_ledger';
           stats.invoiceMatched++;
         }
+      }
+
+      // 3-interco. Money ARRIVING from the sibling company is an interco
+      // transfer leg, never revenue or spend: a credit naming ShipSourced
+      // landing in a YM-company account ("Zelle payment from SHIPSOURCED INC",
+      // "eBay … INDN:ShipSourced") is SS money crossing the wall on purpose.
+      // Runs before store-name matching so the leg is classed transfer, not
+      // 'other' revenue owned by SS (2026-08-31 wall repair).
+      if (!storeId && ssStoreId && t.amount_cents > 0 && t.account_company === 'ymgv'
+          && /shipsourced/i.test(desc) && cls !== 'shopify_payout') {
+        cls = 'transfer';
+        storeId = ssStoreId; storeSource = 'interco_credit';
       }
 
       // 3. store name as a whole word in the description (payout INDN/ID carry it)
