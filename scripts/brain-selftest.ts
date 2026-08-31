@@ -233,5 +233,36 @@ console.log('[rules-safety]');
   ok('every inert payment-log row explains itself', inert.n === 0, `${inert.n} unexplained`);
 }
 
+// ── 14. Payer-aware card shares (2026-08-31: paid = discharged) ──
+console.log('[payer-netting]');
+{
+  // drill must equal headline: same retirement, same walk, same explained total
+  const { getCardDrill } = require('../src/lib/transactions-intel');
+  let drillMismatch = 0;
+  for (const c of truth.composition) {
+    if (c.postedCents <= 0) continue;
+    const drill = getCardDrill(db, c.id);
+    if (!drill) continue;
+    const truthExplained = (c.groups || []).reduce((s: number, g: any) => s + g.cents, 0);
+    if (Math.abs(drill.explainedCents - truthExplained) > 100) drillMismatch++;
+  }
+  ok('drill decomposition = headline decomposition (every card)', drillMismatch === 0, `${drillMismatch} cards diverge`);
+  // a store's share never exceeds its own gross unretired charges: the walk
+  // may only shrink a store's liability via ITS payments, never inflate it
+  let shareOverGross = 0;
+  for (const c of truth.composition) {
+    for (const g of c.groups || []) {
+      if (g.store === '(unattributed)') continue;
+      const gross: any = db.prepare(`
+        SELECT COALESCE(SUM(ABS(t.amount_cents)), 0) cents FROM bank_transactions t
+        JOIN txn_links l ON l.txn_id = t.id JOIN stores s ON s.id = l.store_id
+        WHERE t.bank_account_id = ? AND s.name = ? AND t.status != 'pending'
+          AND COALESCE(l.class,'other') NOT IN ('card_payment') AND t.date >= date('now','-540 days')`).get(c.id, g.store);
+      if (g.cents > gross.cents + 1) shareOverGross++;
+    }
+  }
+  ok('no store share exceeds its own gross charges', shareOverGross === 0, `${shareOverGross} inflated`);
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

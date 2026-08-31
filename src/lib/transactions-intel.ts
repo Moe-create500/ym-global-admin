@@ -835,6 +835,59 @@ export function getCardClarity(db: DatabaseType.Database) {
  *  B) Ad spend lifecycle per store: accrued (Insights) → billed (Meta
  *     invoices) → riding unpaid on a card → settled, plus FB's own unbilled
  *     balance and the accrued-vs-billed reconciliation gap. */
+/** Per-store payments this card's balance has already absorbed (540d):
+ *  two-sided = posted card credit paired to a debit from the store's own
+ *  account; one-sided = settled (>3d old) unpaired payment debit from the
+ *  store's account whose description names this card or a funding alias.
+ *  Keyed by store NAME. Used to retire the payer's OWN charges in the
+ *  composition walks — a store that paid its share stops owing it, instead
+ *  of the payment silently truncating whichever store's charges are oldest. */
+function absorbedPaymentsByStore(db: DatabaseType.Database, cardId: string, last4: string): Map<string, number> {
+  const rows: any[] = db.prepare(`
+    SELECT store, SUM(cents) AS cents FROM (
+      SELECT st.name AS store, p.amount_cents AS cents
+      FROM bank_transactions p
+      JOIN txn_links l ON l.txn_id = p.id AND l.class = 'card_payment' AND l.pair_txn_id IS NOT NULL
+      JOIN bank_transactions src ON src.id = l.pair_txn_id
+      JOIN bank_accounts sa ON sa.id = src.bank_account_id AND sa.store_id IS NOT NULL
+      JOIN stores st ON st.id = sa.store_id
+      WHERE p.bank_account_id = ? AND p.amount_cents > 0 AND p.status = 'posted'
+        AND p.date >= date('now', '-540 days')
+      UNION ALL
+      SELECT st.name AS store, ABS(d.amount_cents) AS cents
+      FROM bank_transactions d
+      JOIN txn_links dl ON dl.txn_id = d.id AND dl.class = 'card_payment_sent' AND dl.pair_txn_id IS NULL
+      JOIN bank_accounts sa ON sa.id = d.bank_account_id AND sa.store_id IS NOT NULL
+      JOIN stores st ON st.id = sa.store_id
+      WHERE d.amount_cents < 0 AND d.status = 'posted'
+        AND d.date >= date('now', '-540 days') AND d.date <= date('now', '-3 days')
+        AND (instr(d.description, ?) > 0 OR EXISTS (
+          SELECT 1 FROM fb_funding_cards fc WHERE fc.bank_account_id = ? AND instr(d.description, fc.last4) > 0))
+    ) GROUP BY store
+  `).all(cardId, last4, cardId);
+  return new Map(rows.map((r: any) => [r.store, r.cents || 0]));
+}
+
+/** Retire each payer's OWN charges, oldest first, against its absorbed
+ *  payments. rows arrive newest-first with a `cents` field and a store name
+ *  under `store_name`; returns new rows (never mutates), zero-cent rows kept
+ *  out. The later newest-first balance truncation then only absorbs
+ *  unattributed payments, refunds, and timing — not the payer's discharge. */
+function retirePayerCharges(rows: any[], absorbed: Map<string, number>): any[] {
+  if (!absorbed.size) return rows;
+  const budget = new Map(absorbed);
+  const out = rows.map(r => ({ ...r }));
+  for (let i = out.length - 1; i >= 0; i--) { // oldest first
+    const store = out[i].store_name;
+    const b = store ? (budget.get(store) || 0) : 0;
+    if (b <= 0) continue;
+    const take = Math.min(b, out[i].cents);
+    out[i].cents -= take;
+    budget.set(store, b - take);
+  }
+  return out.filter(r => r.cents > 0);
+}
+
 export function getTruth(db: DatabaseType.Database, days: number) {
   ensureTxnIntelTables(db);
   const d = `-${Math.min(Math.max(days || 90, 30), 365)} days`;
@@ -862,7 +915,11 @@ export function getTruth(db: DatabaseType.Database, days: number) {
 
   const composition = cards.map(c => {
     const posted = Math.abs(c.balance_ledger_cents || 0);
-    const rows: any[] = chargesQ.all(c.id);
+    // Payer-aware: a store's payments retire that store's own oldest charges
+    // (Purebite spends $30k on FB then pays $30k → Purebite's share is ZERO,
+    // and the remaining balance decomposes to the stores whose transactions
+    // are actually still unpaid — 2026-08-31, Moe's model).
+    const rows: any[] = retirePayerCharges(chargesQ.all(c.id), absorbedPaymentsByStore(db, c.id, c.last_four));
     const included: any[] = [];
     let acc = 0;
     for (const r of rows) {
@@ -1083,10 +1140,10 @@ export function getPayPlan(db: DatabaseType.Database) {
     // Store shares of this card's unpaid balance
     const shares = new Map<string, number>();
     for (const g of comp?.groups || []) shares.set(g.store, (shares.get(g.store) || 0) + g.cents);
-    // A store that PAID toward this card from its own bank account stops
-    // owing that much — the paired payment's source account identifies the
-    // payer (Areya pays from Areya's checking → Areya's share drops, not
-    // whichever store's charges happened to be oldest).
+    // NOTE (2026-08-31): the composition walk is now payer-aware — each
+    // store's absorbed payments already retired its own charges inside
+    // getTruth, so shares arrive net. Subtracting again here would discharge
+    // the payer twice. This query remains for DISPLAY (paidRecentlyCents).
     const sinceDate = comp?.oldestUnpaidDate || new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
     const paidByStore: any[] = db.prepare(`
       SELECT store, SUM(cents) AS cents FROM (
@@ -1115,9 +1172,24 @@ export function getPayPlan(db: DatabaseType.Database) {
       ) GROUP BY store
     `).all(meta.id, sinceDate, sinceDate, meta.last_four, meta.id);
     const paidMap = new Map(paidByStore.map(pb => [pb.store, pb.cents]));
-    for (const [store, cents] of shares) {
-      const paid = paidMap.get(store) || 0;
-      if (paid > 0) shares.set(store, Math.max(0, cents - paid));
+    // In-flight discharge only: payments sent in the last 3 days aren't in
+    // the walk's absorbed set yet (not settled into the balance) — subtract
+    // just that recent slice so a store that JUST paid sees its share drop
+    // immediately without waiting for settlement.
+    const inFlightByStore: any[] = db.prepare(`
+      SELECT st.name AS store, SUM(ABS(d.amount_cents)) AS cents
+      FROM bank_transactions d
+      JOIN txn_links dl ON dl.txn_id = d.id AND dl.class = 'card_payment_sent' AND dl.pair_txn_id IS NULL
+      JOIN bank_accounts sa ON sa.id = d.bank_account_id AND sa.store_id IS NOT NULL
+      JOIN stores st ON st.id = sa.store_id
+      WHERE d.amount_cents < 0 AND d.date > date('now', '-3 days')
+        AND (instr(d.description, ?) > 0 OR EXISTS (
+          SELECT 1 FROM fb_funding_cards fc WHERE fc.bank_account_id = ? AND instr(d.description, fc.last4) > 0))
+      GROUP BY st.name
+    `).all(meta.last_four, meta.id);
+    for (const fl of inFlightByStore) {
+      const cur = shares.get(fl.store) || 0;
+      if (cur > 0) shares.set(fl.store, Math.max(0, cur - fl.cents));
     }
     const owners = [...shares.entries()]
       .map(([store, cents]) => {
@@ -1442,7 +1514,7 @@ export function getCardDrill(db: DatabaseType.Database, cardId: string) {
   `).get(cardId);
   if (!card) return null;
   const posted = Math.abs(card.balance_ledger_cents || 0);
-  const rows: any[] = db.prepare(`
+  const rawRows: any[] = db.prepare(`
     SELECT t.id, t.date, t.description, ABS(t.amount_cents) cents,
            COALESCE(l.class, 'other') class, l.store_id, s.name AS store_name
     FROM bank_transactions t
@@ -1453,6 +1525,8 @@ export function getCardDrill(db: DatabaseType.Database, cardId: string) {
       AND t.date >= date('now', '-540 days')
     ORDER BY t.date DESC, t.id DESC
   `).all(cardId);
+  // Same payer-aware retirement as getTruth — drill must equal headline
+  const rows = retirePayerCharges(rawRows, absorbedPaymentsByStore(db, cardId, card.last_four));
 
   // merchant token: strip trailing ids/stars/numbers so "HIGGSFIELD INC." and
   // "HIGGSFIELD" collapse; FACEBK *X7 rows collapse to FACEBK
