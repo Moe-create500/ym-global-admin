@@ -225,18 +225,10 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
   ensureTxnIntelTables(db);
   const days = Math.min(Math.max(opts.days || 365, 7), 1100);
   const stats: ScanStats = { scanned: 0, classified: 0, storeAttributed: 0, invoiceMatched: 0, paymentsPaired: 0 };
-
-  const txns: any[] = db.prepare(`
-    SELECT t.id, t.date, t.description, t.amount_cents, t.bank_account_id,
-           a.account_type, a.store_id AS account_store_id, a.is_global, a.last_four, a.account_name,
-           COALESCE(a.company, 'ymgv') AS account_company,
-           l.txn_id AS linked, l.confidence AS link_confidence
-    FROM bank_transactions t
-    JOIN bank_accounts a ON a.id = t.bank_account_id
-    LEFT JOIN txn_links l ON l.txn_id = t.id
-    WHERE t.date >= date('now', ?)
-  `).all(`-${days} days`);
-  stats.scanned = txns.length;
+  // NOTE: the work list is selected AFTER the heal/sweep blocks below — the
+  // heals delete superseded rows, and selecting first would let the classify
+  // loop resurrect links for transactions that no longer exist (2026-08-31:
+  // 371 descriptor-rewrite twins healed, then re-linked as orphans).
 
   // Lookup maps built once — the scan itself is pure in-memory matching.
   const stores: any[] = db.prepare('SELECT id, name FROM stores').all();
@@ -361,6 +353,19 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
   const orphanPairs = db.prepare(`UPDATE txn_links SET pair_txn_id = NULL WHERE pair_txn_id IS NOT NULL AND pair_txn_id NOT IN (SELECT id FROM bank_transactions)`).run();
   if (orphanLinks.changes > 0 || orphanPairs.changes > 0)
     console.log(`[txn-scan] swept ${orphanLinks.changes} orphan link(s), ${orphanPairs.changes} dead pair ref(s)`);
+
+  // The work list — selected only now, after every heal/sweep has finished
+  const txns: any[] = db.prepare(`
+    SELECT t.id, t.date, t.description, t.amount_cents, t.bank_account_id,
+           a.account_type, a.store_id AS account_store_id, a.is_global, a.last_four, a.account_name,
+           COALESCE(a.company, 'ymgv') AS account_company,
+           l.txn_id AS linked, l.confidence AS link_confidence
+    FROM bank_transactions t
+    JOIN bank_accounts a ON a.id = t.bank_account_id
+    LEFT JOIN txn_links l ON l.txn_id = t.id
+    WHERE t.date >= date('now', ?)
+  `).all(`-${days} days`);
+  stats.scanned = txns.length;
 
   // Funding sub-card aliases (·2976 → Platinum account): learn new ones from
   // this window's evidence, then load the full map for card comparisons.
