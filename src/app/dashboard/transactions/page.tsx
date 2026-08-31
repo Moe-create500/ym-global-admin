@@ -178,9 +178,11 @@ export default function TransactionsPage() {
   const loadSummary = useCallback(() => fetch('/api/transactions?view=summary').then(r => r.json()).then(setSummary), []);
   const loadCards = useCallback(() => fetch(`/api/transactions?view=cards&days=${cardDays}`).then(r => r.json()).then(d => { setCards(d.cards || []); setClarity(d.clarity || null); }), [cardDays]);
   const [submittedPayments, setSubmittedPayments] = useState<any[]>([]);
+  const [unresolvedLogs, setUnresolvedLogs] = useState<{ n: number; cents: number } | null>(null);
   const loadPayments = useCallback(() => fetch('/api/transactions?view=payments&days=90').then(r => r.json()).then(d => {
     setPayments(d.payments?.bank || d.payments || []);
     setSubmittedPayments(d.payments?.submitted || []);
+    setUnresolvedLogs(d.payments?.unresolved || null);
   }), []);
   const loadLedger = useCallback(() => {
     const p = new URLSearchParams({ view: 'ledger', days: '90' });
@@ -1525,7 +1527,14 @@ export default function TransactionsPage() {
       {tab === 'payments' && (
         <div className="space-y-3">
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800">Submitted payments — what you logged, and whether the bank took it</p>
+          <p className="px-3 py-2 text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800 flex flex-wrap gap-x-4">
+            <span>Submitted payments — what you logged, and whether the bank took it</span>
+            {unresolvedLogs && unresolvedLogs.n > 0 && (
+              <span className="text-amber-400 normal-case" title="Historical log entries no external evidence can confirm — preserved but excluded from money math (audit 2026-08-31)">
+                ⚠ {unresolvedLogs.n} legacy entries ({fmt2(unresolvedLogs.cents)}) quarantined — uncorroborated
+              </span>
+            )}
+          </p>
           <table className="w-full text-xs">
             <thead><tr className="text-left text-slate-500 border-b border-slate-800">
               <th className="px-3 py-2">Date</th><th className="px-3 py-2">Store</th><th className="px-3 py-2">Card</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Bank status</th><th className="px-3 py-2 text-right">Amount</th>

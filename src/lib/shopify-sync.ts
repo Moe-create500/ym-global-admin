@@ -480,7 +480,7 @@ export async function reconcileAnchor(db: Database.Database, storeId: string, ne
   }
 
   const debits: any[] = D1 ? db.prepare(
-    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND date > ? AND date <= ?`
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND date > ? AND date <= ? AND COALESCE(status,'active') = 'active'`
   ).all(storeId, D1, today) : [{ t: 0 }];
   const debitSum = debits[0]?.t || 0;
 
@@ -535,7 +535,7 @@ export function anchorGuardWarnings(db: Database.Database, storeId: string, nowM
   const today = pacificDate(new Date(nowMs));
   // card debits logged after the anchor: Main is now LOWER than the books show
   const debits: any = db.prepare(
-    `SELECT COALESCE(SUM(amount_cents),0) AS t, COUNT(*) AS n FROM card_payments_log WHERE store_id = ? AND date > ?`
+    `SELECT COALESCE(SUM(amount_cents),0) AS t, COUNT(*) AS n FROM card_payments_log WHERE store_id = ? AND date > ? AND COALESCE(status,'active') = 'active'`
   ).get(storeId, anchor.anchor_date);
   if (debits?.t > 0) {
     warnings.push(`$${(debits.t / 100).toFixed(2)} of card payments (${debits.n}) logged since the Main anchor (${anchor.anchor_date}) — the real balance is likely lower. Re-anchor.`);

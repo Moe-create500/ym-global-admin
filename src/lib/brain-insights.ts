@@ -117,7 +117,7 @@ export function getRisks(db: DatabaseType.Database, payPlan: any, forward: any) 
   try {
     const { reconcileLoggedPayments } = require('@/lib/transactions-intel');
     const rec: Record<string, any> = reconcileLoggedPayments(db, 45);
-    const logs: any[] = db.prepare(`SELECT id, amount_cents, card_last4 FROM card_payments_log WHERE date != 'N/A' AND date >= date('now', '-45 days')`).all();
+    const logs: any[] = db.prepare(`SELECT id, amount_cents, card_last4 FROM card_payments_log WHERE date != 'N/A' AND date >= date('now', '-45 days') AND COALESCE(status,'active') = 'active'`).all();
     const notTaken = logs.filter(p => rec[p.id]?.status === 'not_taken');
     const cents = notTaken.reduce((s, p) => s + (p.amount_cents || 0), 0);
     if (notTaken.length > 0) {

@@ -126,7 +126,7 @@ export function gatherEvidence(db: DB, storeId: string, recon: ReconResult, reco
 
   const cardPayments = cap(db.prepare(
     `SELECT id, date, amount_cents, category, platform, card_last4, notes, created_at
-     FROM card_payments_log WHERE store_id = ? AND date != 'N/A' AND date >= ? AND date <= ? ORDER BY date`
+     FROM card_payments_log WHERE store_id = ? AND date != 'N/A' AND COALESCE(status,'active') = 'active' AND date >= ? AND date <= ? ORDER BY date`
   ).all(storeId, d1, d2), 'card_payments_log', notes);
 
   // Bank transactions on this store's accounts AND global accounts (cash can move anywhere)

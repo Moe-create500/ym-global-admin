@@ -201,5 +201,33 @@ console.log('[lineage]');
   ok('every posted txn (45d) has an interpretation', unclassified.n === 0, `${unclassified.n} invisible to the Brain`);
 }
 
+// ── 13. Rule safety + repair-2026-08-31 regressions (permanent) ──
+console.log('[rules-safety]');
+{
+  // NEGATIVE: the broad "mohamed hussein" rule stays dead forever
+  const r1: any = db.prepare(`SELECT enabled, pattern FROM merchant_store_rules WHERE id = 1`).get();
+  ok('broad rule #1 permanently disabled', !r1 || r1.enabled === 0, `enabled=${r1?.enabled}`);
+  // POSITIVE: the narrowed owner-pull rule exists, credit-direction-scoped
+  const nr: any = db.prepare(`SELECT direction, class, enabled FROM merchant_store_rules WHERE pattern = 'zelle payment from mohamed hussein'`).get();
+  ok('narrowed owner-pull rule active with direction constraint', !!nr && nr.enabled === 1 && nr.direction === 'credit' && nr.class === 'owner_draw');
+  // NEGATIVE: no merchant rule may ever own a payout or payment leg
+  const ruleOwned: any = db.prepare(`SELECT COUNT(*) n FROM txn_links l WHERE l.store_source = 'merchant_rule' AND l.class IN ('shopify_payout', 'card_payment', 'card_payment_sent', 'transfer', 'internal_transfer')`).get();
+  ok('merchant rules own zero payout/payment/transfer legs', ruleOwned.n === 0, `${ruleOwned.n} rule-owned protected-class links`);
+  // NEGATIVE: ShipSourced has no Shopify store — payout attribution to it is corruption
+  const ssPayout: any = db.prepare(`SELECT COUNT(*) n FROM txn_links l JOIN stores s ON s.id = l.store_id WHERE s.name = 'ShipSourced' AND l.class = 'shopify_payout'`).get();
+  ok('zero Shopify payouts attributed to ShipSourced', ssPayout.n === 0, `${ssPayout.n}`);
+  // guard against future broad patterns: enabled rules carry meaningful patterns
+  const broad: any[] = db.prepare(`SELECT id, pattern FROM merchant_store_rules WHERE enabled = 1 AND length(pattern) < 8`).all();
+  ok('no enabled rule with a dangerously short pattern', broad.length === 0, broad.map((b: any) => `#${b.id}:${b.pattern}`).join(','));
+  // POSITIVE: intended owner-pull credits still land as owner_draw + ShipSourced
+  const pulls: any = db.prepare(`SELECT COUNT(*) total, SUM(CASE WHEN l.class = 'owner_draw' AND s.name = 'ShipSourced' THEN 1 ELSE 0 END) tagged
+    FROM bank_transactions t JOIN txn_links l ON l.txn_id = t.id LEFT JOIN stores s ON s.id = l.store_id
+    WHERE lower(t.description) LIKE 'zelle payment from mohamed hussein%' AND t.amount_cents > 0 AND l.confidence != 'manual'`).get();
+  ok('owner-pull Zelle credits stay owner_draw/ShipSourced', pulls.total === 0 || pulls.tagged === pulls.total, `${pulls.tagged}/${pulls.total}`);
+  // superseded/quarantined payment-log rows carry zero economic weight and stay preserved
+  const inert: any = db.prepare(`SELECT COUNT(*) n FROM card_payments_log WHERE COALESCE(status,'active') != 'active' AND resolution_note IS NULL`).get();
+  ok('every inert payment-log row explains itself', inert.n === 0, `${inert.n} unexplained`);
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

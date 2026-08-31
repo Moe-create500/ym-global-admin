@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
   const cardTotals = db.prepare(`
     SELECT cp.card_last4, SUM(cp.amount_cents) as total_paid_cents, COUNT(*) as payment_count
     FROM card_payments_log cp
-    ${where}
+    ${where} AND COALESCE(cp.status,'active') = 'active'
     GROUP BY cp.card_last4
   `).all(...params);
 

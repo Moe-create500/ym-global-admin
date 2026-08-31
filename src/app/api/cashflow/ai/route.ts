@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
   const recentPayments = db.prepare(
     `SELECT s.name AS store, cp.date, cp.category, cp.amount_cents, cp.card_last4
      FROM card_payments_log cp LEFT JOIN stores s ON s.id = cp.store_id
-     WHERE cp.date >= date('now', '-30 days') ORDER BY cp.date DESC LIMIT 100`
+     WHERE cp.date >= date('now', '-30 days') AND COALESCE(cp.status,'active') = 'active' ORDER BY cp.date DESC LIMIT 100`
   ).all();
 
   const client = new Anthropic();

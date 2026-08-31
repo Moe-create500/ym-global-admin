@@ -73,6 +73,16 @@ export function ensureMerchantRules(db: DatabaseType.Database) {
     created_at TEXT DEFAULT (datetime('now')),
     last_used_at TEXT
   )`);
+  // direction: 'debit' | 'credit' | NULL(any) — text alone is too weak a key
+  // for money direction (the broad "mohamed hussein" rule matched INDN bank
+  // metadata inside inbound Shopify payouts). note: human audit trail.
+  try { db.exec("ALTER TABLE merchant_store_rules ADD COLUMN direction TEXT"); } catch { /* exists */ }
+  try { db.exec("ALTER TABLE merchant_store_rules ADD COLUMN note TEXT"); } catch { /* exists */ }
+  // card_payments_log lifecycle: 'active' rows carry economic weight;
+  // superseded duplicates and uncorroborated legacy rows are preserved but
+  // inert (repair 2026-08-31 — records are never deleted, only re-weighted)
+  try { db.exec("ALTER TABLE card_payments_log ADD COLUMN status TEXT DEFAULT 'active'"); } catch { /* exists */ }
+  try { db.exec("ALTER TABLE card_payments_log ADD COLUMN resolution_note TEXT"); } catch { /* exists */ }
 }
 
 /** last4 → bank_account_id for funding sub-cards (only aliases whose target
@@ -299,7 +309,7 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
 
   // Learned merchant rules (user confirmations become durable attribution)
   ensureMerchantRules(db);
-  const merchantRules: any[] = db.prepare('SELECT id, pattern, store_id, class FROM merchant_store_rules WHERE enabled = 1').all()
+  const merchantRules: any[] = db.prepare('SELECT id, pattern, store_id, class, direction FROM merchant_store_rules WHERE enabled = 1').all()
     .map((r: any) => ({ ...r, pattern: String(r.pattern).toLowerCase() }));
   const touchRule = db.prepare("UPDATE merchant_store_rules SET last_used_at = datetime('now') WHERE id = ?");
 
@@ -474,7 +484,8 @@ export function runTransactionScan(db: DatabaseType.Database, opts: { days?: num
       const RULE_ELIGIBLE = ['other', 'supplier', 'software', 'shopify_app', 'fb_ads', 'google_ads', 'personal', 'owner_draw'];
       if (!storeId && merchantRules.length && RULE_ELIGIBLE.includes(cls)) {
         const dl = desc.toLowerCase();
-        const hit = merchantRules.find(r => dl.includes(r.pattern));
+        const hit = merchantRules.find(r => dl.includes(r.pattern)
+          && (!r.direction || (r.direction === 'debit' ? t.amount_cents < 0 : t.amount_cents > 0)));
         if (hit) {
           storeId = hit.store_id; storeSource = 'merchant_rule';
           if (hit.class && cls === 'other') cls = hit.class;
@@ -912,7 +923,7 @@ export function getPaymentsView(db: DatabaseType.Database, days: number) {
   const submitted = (db.prepare(`
     SELECT p.id, p.date, p.amount_cents cents, p.card_last4, p.category, p.notes, s.name store
     FROM card_payments_log p LEFT JOIN stores s ON s.id = p.store_id
-    WHERE p.date != 'N/A' AND p.date >= date('now', ?)
+    WHERE p.date != 'N/A' AND p.date >= date('now', ?) AND COALESCE(p.status,'active') = 'active'
     ORDER BY p.date DESC LIMIT 60
   `).all(d) as any[]).map(pmt => ({
     ...pmt,
@@ -933,7 +944,11 @@ export function getPaymentsView(db: DatabaseType.Database, days: number) {
     WHERE t.date >= date('now', ?)
     ORDER BY t.date DESC LIMIT 200
   `).all(d);
-  return { bank, submitted };
+  // Quarantined uncertainty stays visible — evidence or silence, never hidden
+  const unresolved: any = db.prepare(`
+    SELECT COUNT(*) n, COALESCE(SUM(amount_cents), 0) cents FROM card_payments_log
+    WHERE COALESCE(status, 'active') = 'unresolved_uncorroborated'`).get();
+  return { bank, submitted, unresolved: { n: unresolved.n, cents: unresolved.cents } };
 }
 
 /** Pay Cards decision engine — WHICH cards can be paid, funded by WHAT.
@@ -1013,7 +1028,7 @@ export function getPayPlan(db: DatabaseType.Database) {
   const recMap: Record<string, any> = reconcileLoggedPayments(db, 30);
   const inFlightLogs: any[] = db.prepare(`
     SELECT id, card_last4, amount_cents FROM card_payments_log
-    WHERE date != 'N/A' AND date >= date('now', '-30 days')
+    WHERE date != 'N/A' AND date >= date('now', '-30 days') AND COALESCE(status,'active') = 'active'
   `).all().filter((l: any) => recMap[l.id]?.status === 'too_recent');
   const payFundingMap = getFundingCardMap(db);
 
@@ -1450,7 +1465,7 @@ export function reconcileLoggedPayments(db: DatabaseType.Database, days = 120) {
   const logs: any[] = db.prepare(`
     SELECT cp.id, cp.date, cp.amount_cents, cp.card_last4
     FROM card_payments_log cp
-    WHERE cp.date >= date('now', ?) AND cp.date != 'N/A'
+    WHERE cp.date >= date('now', ?) AND cp.date != 'N/A' AND COALESCE(cp.status,'active') = 'active'
     ORDER BY cp.date DESC
   `).all(`-${days} days`);
   const debits: any[] = db.prepare(`

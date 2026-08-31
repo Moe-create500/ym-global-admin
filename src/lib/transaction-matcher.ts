@@ -156,7 +156,7 @@ export function matchTransactions(
     SELECT id, date, amount_cents, card_last4,
       COALESCE(method, '') as method, category, platform
     FROM card_payments_log
-    WHERE store_id = ? AND date >= ? AND date <= ? AND date != 'N/A'
+    WHERE store_id = ? AND date >= ? AND date <= ? AND date != 'N/A' AND COALESCE(status,'active') = 'active'
   `).all(storeId, periodStart, periodEnd) as any[]);
 
   // 3. Gather SS payments in the period

@@ -351,10 +351,10 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
   // by the full amount). It belongs to the next window, where its balances will exist.
   const CARD_END_BOUNDARY = `AND (date != ? OR created_at IS NULL OR created_at <= ?)`;
   const adPaid = (db.prepare(
-    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'ad' AND date >= ? AND date <= ? ${CARD_END_BOUNDARY}`
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'ad' AND COALESCE(status,'active') = 'active' AND date >= ? AND date <= ? ${CARD_END_BOUNDARY}`
   ).get(storeId, periodStart, periodEnd, periodEnd, periodEndTs) as any).t;
   const appPaid = (db.prepare(
-    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'app' AND date >= ? AND date <= ? ${CARD_END_BOUNDARY}`
+    `SELECT COALESCE(SUM(amount_cents),0) AS t FROM card_payments_log WHERE store_id = ? AND category = 'app' AND COALESCE(status,'active') = 'active' AND date >= ? AND date <= ? ${CARD_END_BOUNDARY}`
   ).get(storeId, periodStart, periodEnd, periodEnd, periodEndTs) as any).t;
 
   // ── Owner capital movements from categorized bank transactions in the window ──
@@ -523,7 +523,7 @@ export function reconcile(db: DB, storeId: string, t1: SnapshotRow, t2: Snapshot
   const loggedPayments: { id: string; date: string; amount_cents: number; description: string }[] = db.prepare(`
     SELECT id, date, amount_cents, category || ' payment *' || COALESCE(card_last4, '?') AS description
     FROM card_payments_log
-    WHERE store_id = ? AND category IN ('ad','app') AND date != 'N/A' AND date >= ? AND date <= ?
+    WHERE store_id = ? AND category IN ('ad','app') AND COALESCE(status,'active') = 'active' AND date != 'N/A' AND date >= ? AND date <= ?
       AND (date != ? OR created_at IS NULL OR created_at <= ?)
     UNION ALL
     SELECT id, date, amount_cents, 'ShipSourced payment' AS description

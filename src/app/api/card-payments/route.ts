@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
   // Payments made to each card (app category only)
   const payments: any[] = db.prepare(`
     SELECT card_last4 as card, SUM(amount_cents) as paid_cents, COUNT(*) as payment_count
-    FROM card_payments_log WHERE store_id = ? AND category = 'app'
+    FROM card_payments_log WHERE store_id = ? AND category = 'app' AND COALESCE(status,'active') = 'active'
     GROUP BY card_last4
     ORDER BY paid_cents DESC
   `).all(storeId);
