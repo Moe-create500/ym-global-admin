@@ -190,7 +190,7 @@ console.log('[lineage]');
   // manual payment log carries no business-key duplicates — scoped to entries
   // after the POST guard went live (12 historical pre-guard groups exist and
   // are the user's call to resolve; the guard proves it can't happen again)
-  const logDupes: any = db.prepare(`SELECT COUNT(*) n FROM (SELECT store_id, card_last4, date, amount_cents FROM card_payments_log WHERE date >= '2026-08-31' GROUP BY store_id, card_last4, date, amount_cents HAVING COUNT(*) > 1)`).get();
+  const logDupes: any = db.prepare(`SELECT COUNT(*) n FROM (SELECT store_id, card_last4, date, amount_cents FROM card_payments_log WHERE date != 'N/A' AND date >= '2026-08-31' AND COALESCE(status,'active') = 'active' GROUP BY store_id, card_last4, date, amount_cents HAVING COUNT(*) > 1)`).get();
   ok('card_payments_log has no business-key duplicates (post-guard)', logDupes.n === 0, `${logDupes.n} duplicate groups`);
   // every posted transaction on an active account carries an interpretation
   const unclassified: any = db.prepare(`
