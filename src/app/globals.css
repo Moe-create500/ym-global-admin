@@ -6,9 +6,11 @@ body {
   @apply bg-slate-950 text-gray-100;
 }
 
+::selection { background: rgba(225, 78, 202, 0.35); }
+
 ::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #0f172a; }
-::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+::-webkit-scrollbar-track { background: #171826; }
+::-webkit-scrollbar-thumb { background: #3b4368; border-radius: 3px; }
 
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
