@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
     SELECT bt.id, bt.date, bt.description, bt.amount_cents, bt.status,
       bt.counterparty, bt.category, bt.custom_category,
       a.id AS account_id, a.institution_name, a.account_name, a.nickname, a.last_four, a.account_type,
-      r.category AS cls_category, r.method AS cls_method, r.confidence AS cls_confidence,
+      r.category AS cls_category, r.suggested_category, r.method AS cls_method, r.confidence AS cls_confidence,
       r.reason AS cls_reason, r.evidence_json, r.needs_review AS cls_needs_review,
       s.name AS store_name,
       pt.description AS pair_description, pt.date AS pair_date,

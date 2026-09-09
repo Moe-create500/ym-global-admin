@@ -39,6 +39,7 @@ export function ensureCategorizeSchema(db: Database.Database) {
     reason TEXT NOT NULL,
     evidence_json TEXT NOT NULL,
     needs_review INTEGER NOT NULL DEFAULT 0,
+    suggested_category TEXT,          -- sub-certain hint; NEVER counted as a category
     related_txn_id TEXT,              -- transfer/card-payment pair
     engine_version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now')));
@@ -59,6 +60,9 @@ export function ensureCategorizeSchema(db: Database.Database) {
     created_at TEXT DEFAULT (datetime('now')));
   CREATE INDEX IF NOT EXISTS idx_class_feedback_merchant ON classification_feedback(merchant_name);
 
+  `);
+  try { db.exec('ALTER TABLE classification_results ADD COLUMN suggested_category TEXT'); } catch { /* exists */ }
+  db.exec(`
   CREATE TABLE IF NOT EXISTS ai_calls (
     id TEXT PRIMARY KEY,
     purpose TEXT,

@@ -24,6 +24,7 @@ interface Txn {
   account_type: string;
   // reconciliation verdict (classification_results)
   cls_category: string | null;
+  suggested_category: string | null;
   cls_method: string | null;
   cls_confidence: number | null;
   cls_reason: string | null;
@@ -247,8 +248,9 @@ export default function TransactionsPage() {
                           </select>
                         ) : (
                           <button onClick={() => setEditing(t.id)}
-                            className={`text-[11px] px-2 py-0.5 rounded-full ${cat ? (t.custom_category ? 'bg-blue-500/10 text-blue-300' : 'bg-slate-800 text-slate-300') : 'text-slate-600 hover:text-slate-400'}`}>
-                            {cat || '+ categorize'}
+                            className={`text-[11px] px-2 py-0.5 rounded-full ${cat ? (t.custom_category ? 'bg-blue-500/10 text-blue-300' : 'bg-slate-800 text-slate-300')
+                              : t.suggested_category ? 'bg-amber-500/5 text-amber-300/70 italic' : 'text-slate-600 hover:text-slate-400'}`}>
+                            {cat || (t.suggested_category ? `suggest: ${t.suggested_category}?` : '+ categorize')}
                           </button>
                         )}
                       </td>

@@ -25,6 +25,8 @@ export interface Evidence { type: string; reference: string }
 export interface ClassificationResult {
   txn_id: string;
   category: string | null;
+  /** sub-certain hint shown as "suggest: X?" — never asserted, never counted */
+  suggested_category?: string | null;
   subcategory: string | null;
   merchant_id: string | null;
   merchant_name: string | null;
@@ -223,18 +225,19 @@ async function classifyTransaction(db: Database.Database, txn: any, opts: { allo
       hits.map(h => ({ type: 'conflicting_rule', reference: String(h.id) }))), ...{ merchant_id: base.merchant_id, merchant_name: base.merchant_name } };
   }
 
-  // ---- 6. MERCHANT KNOWLEDGE (identity-level purpose, weighted by history) -
+  // ---- 6. MERCHANT KNOWLEDGE — SUGGESTION ONLY (policy 2026-09-09: below
+  // near-certainty, nothing is asserted; "typically means X" is a hint, not
+  // a fact. category stays NULL, the hint rides in suggested_category.)
   if (merchant?.default_purpose && txn.amount_cents < 0) {
     const legacy: any = db.prepare(`
       SELECT COUNT(*) n FROM txn_links l JOIN bank_transactions bt ON bt.id = l.txn_id
       WHERE LOWER(bt.description) LIKE ? AND l.class NOT IN ('other','personal')`).get(`%${merchant.matched_alias}%`);
     const conf = legacy.n >= 20 ? 0.93 : legacy.n >= 5 ? 0.88 : 0.82;
-    const result: ClassificationResult = { ...base, category: merchant.default_purpose,
+    return { ...base, category: null, suggested_category: merchant.default_purpose,
       method: 'MERCHANT_KNOWLEDGE', confidence: conf,
-      reason: `${merchant.name} (${merchant.merchant_type}) typically means "${merchant.default_purpose}"${legacy.n ? ` — ${legacy.n} prior classified transactions agree` : ''}`,
+      reason: `${merchant.name} (${merchant.merchant_type}) typically means "${merchant.default_purpose}"${legacy.n ? ` — ${legacy.n} prior classified transactions agree` : ''} — suggestion only, not certain enough to assert`,
       evidence: [{ type: 'merchant_entity', reference: merchant.id }, ...(legacy.n ? [{ type: 'legacy_history', reference: String(legacy.n) }] : [])],
-      needs_review: conf < 0.95, related_txn_id: null };
-    return result;
+      needs_review: true, related_txn_id: null };
   }
 
   // ---- 7. LEXICAL SIMILARITY over verified feedback -----------------------
@@ -246,8 +249,8 @@ async function classifyTransaction(db: Database.Database, txn: any, opts: { allo
       WHERE ${like} GROUP BY corrected_category ORDER BY n DESC LIMIT 2`)
       .all(...tokens.slice(0, 3).map((t: string) => `%${t}%`));
     if (sims.length && sims[0].n >= 3 && (sims.length === 1 || sims[0].n >= sims[1].n * 3)) {
-      return { ...base, category: sims[0].cat, method: 'SEMANTIC_HISTORY', confidence: 0.85,
-        reason: `${sims[0].n} verified transactions with similar descriptions were "${sims[0].cat}"`,
+      return { ...base, category: null, suggested_category: sims[0].cat, method: 'SEMANTIC_HISTORY', confidence: 0.85,
+        reason: `${sims[0].n} verified transactions with similar descriptions were "${sims[0].cat}" — suggestion only`,
         evidence: [{ type: 'similar_verified', reference: `${sims[0].n} examples` }], needs_review: true };
     }
   }
@@ -256,9 +259,10 @@ async function classifyTransaction(db: Database.Database, txn: any, opts: { allo
   if (opts.allowLlm !== false) {
     const llm = await llmClassify(db, txn, { merchant, account });
     if (llm && llm.confidence >= 0.8 && VALID_CATEGORIES.includes(llm.category)) {
-      return { ...base, category: llm.category, method: 'LLM_ASSISTED',
-        confidence: Math.min(llm.confidence, 0.9), // model opinion is capped below deterministic evidence
-        reason: `LLM: ${llm.reason}`.slice(0, 300),
+      // model opinion is NEVER an assertion — suggestion only
+      return { ...base, category: null, suggested_category: llm.category, method: 'LLM_ASSISTED',
+        confidence: Math.min(llm.confidence, 0.9),
+        reason: `LLM suggests: ${llm.reason}`.slice(0, 300),
         evidence: [{ type: 'llm', reference: llm.model }], needs_review: true };
     }
   }
@@ -280,17 +284,17 @@ function classToCategory(cls: string | null): string {
 
 /** Persist a result (idempotent upsert; MANUAL results are never overwritten). */
 export function saveResult(db: Database.Database, r: ClassificationResult) {
-  db.prepare(`INSERT INTO classification_results (txn_id, category, subcategory, merchant_id, merchant_name,
+  db.prepare(`INSERT INTO classification_results (txn_id, category, suggested_category, subcategory, merchant_id, merchant_name,
       store_id, method, confidence, reason, evidence_json, needs_review, related_txn_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(txn_id) DO UPDATE SET
-      category = excluded.category, subcategory = excluded.subcategory,
+      category = excluded.category, suggested_category = excluded.suggested_category, subcategory = excluded.subcategory,
       merchant_id = excluded.merchant_id, merchant_name = excluded.merchant_name,
       store_id = excluded.store_id, method = excluded.method, confidence = excluded.confidence,
       reason = excluded.reason, evidence_json = excluded.evidence_json,
       needs_review = excluded.needs_review, related_txn_id = excluded.related_txn_id,
       created_at = datetime('now')
     WHERE classification_results.method != 'MANUAL'`)
-    .run(r.txn_id, r.category, r.subcategory, r.merchant_id, r.merchant_name, r.store_id,
+    .run(r.txn_id, r.category, r.suggested_category ?? null, r.subcategory, r.merchant_id, r.merchant_name, r.store_id,
       r.method, r.confidence, r.reason, JSON.stringify(r.evidence), r.needs_review ? 1 : 0, r.related_txn_id);
 }

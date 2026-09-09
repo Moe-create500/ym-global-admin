@@ -280,3 +280,32 @@ describe('invoice-match false positive regression (make.com bug, 2026-09-09)', (
     expect(r.method).not.toBe('INVOICE_MATCH');
   });
 });
+
+describe('100%-or-nothing policy (2026-09-09)', () => {
+  it('merchant knowledge NEVER asserts a category — suggestion only', async () => {
+    const db = freshDb();
+    acct(db, 'chk');
+    const t = txn(db, { id: 't1', acct: 'chk', desc: 'USPS PO 12345', amt: -2500 });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.method).toBe('MERCHANT_KNOWLEDGE');
+    expect(r.category).toBeNull();
+    expect(r.suggested_category).toBe('Fulfillment');
+    expect(r.needs_review).toBe(true);
+  });
+
+  it('every asserted category comes from deterministic evidence at ≥0.95 confidence', async () => {
+    const db = freshDb();
+    acct(db, 'chk'); acct(db, 'sav');
+    db.prepare("INSERT INTO ad_payments (id, platform, date, amount_cents) VALUES ('inv1','facebook','2026-09-01',13707)").run();
+    txn(db, { id: 'in', acct: 'sav', date: '2026-09-01', desc: 'DEPOSIT', amt: 310000 });
+    const cases = [
+      txn(db, { id: 'a', acct: 'chk', desc: 'FACEBK *X', amt: -13707 }),
+      txn(db, { id: 'b', acct: 'chk', date: '2026-09-01', desc: 'TRANSFER', amt: -310000 }),
+      txn(db, { id: 'c', acct: 'chk', desc: 'ACH CREDIT SHOPIFY TRANSFER', amt: 50000 }),
+    ];
+    for (const t of cases) {
+      const r = await categorizeTransaction(db, t, { allowLlm: false });
+      if (r.category) expect(r.confidence).toBeGreaterThanOrEqual(0.95);
+    }
+  });
+});
