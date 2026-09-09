@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getFundingCardMap } from '@/lib/transactions-intel';
+import { getFundingCardMap } from '@/lib/funding-cards';
 import crypto from 'crypto';
-import { dropBrainCache } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 
@@ -322,7 +321,6 @@ function parseGoogleAdsCsv(csvText: string) {
 }
 
 export async function POST(req: NextRequest) {
-  dropBrainCache(); // financial write — cached answers must not outlive it
   const body = await req.json();
   const { storeId, platform, csvText } = body;
 
@@ -562,7 +560,6 @@ export async function GET(req: NextRequest) {
 
 // PATCH: reassign an invoice to another store (wrong-box fix), or toggle card visibility
 export async function PATCH(req: NextRequest) {
-  dropBrainCache(); // financial write — cached answers must not outlive it
   const body = await req.json();
 
   // Reassign a single imported invoice to a different store
@@ -595,7 +592,6 @@ export async function PATCH(req: NextRequest) {
 // DELETE: remove one imported invoice (undo a wrong-box upload).
 // The transaction_id is freed, so re-importing the same CSV recreates it cleanly.
 export async function DELETE(req: NextRequest) {
-  dropBrainCache(); // financial write — cached answers must not outlive it
   const paymentId = req.nextUrl.searchParams.get('paymentId');
   if (!paymentId) return NextResponse.json({ error: 'paymentId required' }, { status: 400 });
   const db = getDb();

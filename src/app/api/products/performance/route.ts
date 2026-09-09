@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getProductPerformance, getActiveTests, backfillLaunches } from '@/lib/product-performance';
-import { brainCached } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,7 +40,7 @@ export async function GET(req: NextRequest) {
   const storeId = sp.get('storeId') || undefined;
   const days = Number(sp.get('days')) || 30;
 
-  const base = brainCached(`products:${storeId || 'all'}:${days}`, () => {
+  const base = (() => {
     backfillLaunches(db);
     const perf = getProductPerformance(db, { storeId, days });
     const yesterday = getProductPerformance(db, { storeId, days: 2 });
@@ -54,10 +53,10 @@ export async function GET(req: NextRequest) {
       }
     }
     return { leaderboard: perf.products.slice(0, 40), unattributedSpendCents: perf.unattributedSpendCents, tests: tests.tests, thresholds: tests.thresholds, topByStore };
-  });
+  })();
 
-  // Enrich with LIVE campaign status (cached 60s alongside the payload)
-  const statuses = await brainCached(`products:fbstatus:${storeId || 'all'}`, () => fetchCampaignStatuses(db, base.tests || []));
+  // Enrich with LIVE campaign status
+  const statuses = await fetchCampaignStatuses(db, base.tests || []);
   const tests = (base.tests || []).map((t: any) => {
     const sts = (t.campaign_ids || []).map((id: string) => statuses[id]).filter(Boolean);
     const liveKnown = sts.length > 0;

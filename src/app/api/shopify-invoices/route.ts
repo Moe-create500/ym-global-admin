@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import crypto from 'crypto';
-import { dropBrainCache } from '@/lib/brain-cache';
 import { computePnl } from '@/lib/finance-core';
 
 export const dynamic = 'force-dynamic';
@@ -230,7 +229,6 @@ function parseChargeflowCsv(lines: string[], headers: string[]) {
 
 // POST: Import invoices CSV (auto-detects Shopify or Chargeflow)
 export async function POST(req: NextRequest) {
-  dropBrainCache(); // financial write — cached answers must not outlive it
   const { storeId, csvText, source: forcedSource, employeeId, fileName, billingInfo } = await req.json();
   if (!storeId || !csvText) {
     return NextResponse.json({ error: 'storeId and csvText required' }, { status: 400 });
@@ -413,7 +411,6 @@ export async function GET(req: NextRequest) {
 
 // PATCH: Update invoice payment info (single or bulk)
 export async function PATCH(req: NextRequest) {
-  dropBrainCache(); // financial write — cached answers must not outlive it
   const body = await req.json();
 
   // Bulk update: { ids: [...], paymentMethod, cardLast4, paid, paidDate }
@@ -456,7 +453,6 @@ export async function PATCH(req: NextRequest) {
 
 // DELETE: Delete invoice and its items
 export async function DELETE(req: NextRequest) {
-  dropBrainCache(); // financial write — cached answers must not outlive it
   const { searchParams } = req.nextUrl;
   const id = searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });

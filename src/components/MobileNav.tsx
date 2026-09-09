@@ -8,7 +8,6 @@ const mobileLinks = [
   { href: '/dashboard', label: 'Home' },
   { href: '/dashboard/creatives', label: 'Creatives' },
   { href: '/dashboard/ads', label: 'Ad Spend' },
-  { href: '/dashboard/daily', label: 'Daily Clearing' },
   { href: '/dashboard/products', label: 'Products' },
 ];
 

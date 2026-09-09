@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { scanDuplicateAccounts, mergeAccounts } from '@/lib/account-identity';
-import { dropBrainCache } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +22,6 @@ export async function POST(req: NextRequest) {
   if (!Array.isArray(merges) || merges.length === 0) {
     return NextResponse.json({ error: 'merges[] required' }, { status: 400 });
   }
-  dropBrainCache(); // financial write — cached answers must not outlive it
   const db = getDb();
   const results = [];
   for (const m of merges) {

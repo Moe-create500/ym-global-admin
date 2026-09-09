@@ -35,33 +35,9 @@ export async function register() {
           console.error(`[auto-sync] ${label} bank sync error:`, e);
         }
 
-        // Reconcile freshly imported bank transactions (incremental — only
-        // touches unlinked rows, sub-second) so Transactions stays current
-        // without anyone pressing Scan.
-        try {
-          const { runTransactionScan } = await import('@/lib/transactions-intel');
-          const { getDb } = await import('@/lib/db');
-          const scan = runTransactionScan(getDb(), { days: 45 });
-          if (scan.classified > 0) bankNote += `, ${scan.classified} txns reconciled`;
-          // Fresh data invalidates the Brain's speed cache immediately — a
-          // cached number must never outlive its source truth (audit 2026-08-19)
-          const { dropBrainCache } = await import('@/lib/brain-cache');
-          dropBrainCache();
-          // Daily brain snapshot — powers "what changed since yesterday"
-          const { takeBrainSnapshot } = await import('@/lib/brain-insights');
-          try { takeBrainSnapshot(getDb()); } catch (e) { console.error('[auto-sync] snapshot error:', e); }
-          // Daily DEEP re-scan: the force pass re-evaluates existing links
-          // with everything the matcher has learned since (funding-card
-          // aliases, lag curves) — fully autonomous, no Scan button needed.
-          const g = globalThis as any;
-          if (!g.__lastDeepScanAt || Date.now() - g.__lastDeepScanAt > 24 * 60 * 60 * 1000) {
-            g.__lastDeepScanAt = Date.now();
-            const deep = runTransactionScan(getDb(), { days: 120, force: true });
-            console.log(`[auto-sync] daily deep scan: ${deep.scanned} scanned, ${deep.invoiceMatched} invoice-matched, ${deep.paymentsPaired} payment pairs`);
-          }
-        } catch (e) {
-          console.error(`[auto-sync] ${label} txn scan error:`, e);
-        }
+        // Brain engine removed 2026-09-09 (Moe: full teardown) — transaction
+        // classification scans/snapshots no longer run here. The replacement
+        // classification layer lands with the canonical-ledger rebuild.
 
         // Order-level pull from ShipSourced — number+date identity. This lived
         // ONLY behind the dashboard-on-load route, so order tables froze the

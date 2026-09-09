@@ -17,7 +17,15 @@
 //   · spend that matches nothing stays UNATTRIBUTED and is reported as such
 
 import type DatabaseType from 'better-sqlite3';
-import { getBrainConfig } from '@/lib/forward-cash';
+
+// brain_config numeric reader (inlined when the Brain engine was removed 2026-09-09)
+function getBrainConfig(db: DatabaseType.Database, key: string, fallback: number): number {
+  try {
+    const row: any = db.prepare('SELECT value FROM brain_config WHERE key = ?').get(key);
+    const n = row ? Number(row.value) : NaN;
+    return Number.isFinite(n) ? n : fallback;
+  } catch { return fallback; }
+}
 
 export function ensureProductPerfTables(db: DatabaseType.Database) {
   db.exec(`CREATE TABLE IF NOT EXISTS product_launches (

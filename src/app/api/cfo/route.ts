@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { reconcileSnapshot } from '@/lib/cfo-reconcile';
 import crypto from 'crypto';
-import { dropBrainCache } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 
@@ -280,19 +279,12 @@ export async function GET(req: NextRequest) {
   // Card debt comes from the Brain's card clarity (posted + pending holds) —
   // the same number every other surface shows. The inline credit-limit math is
   // only the fallback for cards the clarity engine doesn't cover.
-  let cardOwedOf = (a: any) => {
+  // Card owed = limit − available (Brain card-clarity refinement removed
+  // 2026-09-09 with the engine teardown; bank-reported numbers stand).
+  const cardOwedOf = (a: any) => {
     const creditLimit = a.credit_limit_cents || ((a.balance_available_cents || 0) + (a.balance_ledger_cents || 0));
     return creditLimit - (a.balance_available_cents || 0);
   };
-  try {
-    const { getCardClarity } = await import('@/lib/transactions-intel');
-    const clarityCards: any = getCardClarity(db).perCard;
-    const fallback = cardOwedOf;
-    cardOwedOf = (a: any) => {
-      const cl = clarityCards[a.id];
-      return cl ? (cl.postedCents || 0) + (cl.pendingHoldsCents || 0) : fallback(a);
-    };
-  } catch { /* clarity unavailable — inline fallback stands */ }
 
   const bankTotal = bankAccounts.reduce((s: number, a: any) => {
     if (a.account_type === 'credit') return s - cardOwedOf(a);
@@ -316,20 +308,11 @@ export async function GET(req: NextRequest) {
   // cash overstates the position (the exact mis-accounting that kept showing
   // up as reconciliation residuals). Source: this store's logged card
   // payments (last 21 days) with no matching bank debit yet.
-  let paymentsInFlightCents = 0;
-  let paymentsInFlightRows: any[] = [];
-  try {
-    const { reconcileLoggedPayments } = await import('@/lib/transactions-intel');
-    const recon = reconcileLoggedPayments(db, 21);
-    const recent: any[] = db.prepare(`
-      SELECT id, date, amount_cents, card_last4 FROM card_payments_log
-      WHERE store_id = ? AND date != 'N/A' AND date >= date('now', '-21 days')
-    `).all(storeId);
-    paymentsInFlightRows = recent
-      .filter(p => ['too_recent', 'not_taken'].includes((recon as any)[p.id]?.status))
-      .map(p => ({ date: p.date, amount_cents: p.amount_cents, card_last4: p.card_last4, status: (recon as any)[p.id].status }));
-    paymentsInFlightCents = paymentsInFlightRows.reduce((s, p) => s + p.amount_cents, 0);
-  } catch { /* best-effort — the sheet must still render */ }
+  // Brain engine removed 2026-09-09 — in-flight detection (logged payment
+  // with no matching bank debit) returns empty until the canonical-ledger
+  // rebuild restores reconciliation. The sheet renders without the offset.
+  const paymentsInFlightCents = 0;
+  const paymentsInFlightRows: any[] = [];
 
   // ── 3PL mode (ShipSourced store): banks & cards stay identical, but the
   // business lines come from ShipSourced's own books — A/R from client
@@ -446,7 +429,6 @@ export async function GET(req: NextRequest) {
 
 // PATCH: Update Shopify balance, reserves (manual input)
 export async function PATCH(req: NextRequest) {
-  dropBrainCache(); // financial write — cached answers must not outlive it
   const { storeId, shopifyBalanceCents, shopifyPayoutCents, reserve, deleteReserveId, manualCC, deleteManualCCId, cfoOverride } = await req.json();
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
 
@@ -513,7 +495,6 @@ export async function PATCH(req: NextRequest) {
 
 // POST: Save a snapshot of current state
 export async function POST(req: NextRequest) {
-  dropBrainCache(); // financial write — cached answers must not outlive it
   const body = await req.json();
   const { storeId, assets_cents, liabilities_cents, equity_cents, data } = body;
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import crypto from 'crypto';
-import { dropBrainCache } from '@/lib/brain-cache';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,19 +35,14 @@ export async function GET(req: NextRequest) {
     GROUP BY cp.card_last4
   `).all(...params);
 
-  // Bank reconciliation: which account each logged payment actually left,
-  // and whether the card issuer has taken it yet.
-  let bankRecon: Record<string, any> = {};
-  try {
-    const { reconcileLoggedPayments } = await import('@/lib/transactions-intel');
-    bankRecon = reconcileLoggedPayments(db);
-  } catch { /* recon is best-effort — the log list must still render */ }
+  // Brain engine removed 2026-09-09 — logged-payment bank reconciliation
+  // returns empty until the canonical-ledger rebuild restores it.
+  const bankRecon: Record<string, any> = {};
 
   return NextResponse.json({ payments, cardTotals, bankRecon });
 }
 
 export async function POST(req: NextRequest) {
-  dropBrainCache(); // financial write — cached answers must not outlive it
   const body = await req.json();
   const { storeId, cardLast4, date, amountCents, method, notes, platform } = body;
 
@@ -82,7 +76,6 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  dropBrainCache(); // financial write — cached answers must not outlive it
   const { searchParams } = req.nextUrl;
   const id = searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
