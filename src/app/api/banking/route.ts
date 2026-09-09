@@ -4,6 +4,7 @@ import { getAccounts, getAccountBalance, getAccountTransactions } from '@/lib/te
 import crypto from 'crypto';
 import { dropBrainCache } from '@/lib/brain-cache';
 import { deriveConnectionState, evidenceFromPlaidItem, ensureConnectionSchema } from '@/lib/connection-state';
+import { findCanonicalMatch, ensureIdentitySchema } from '@/lib/account-identity';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,6 +58,8 @@ export async function GET(req: NextRequest) {
       ? db.prepare('SELECT started_at, finished_at, status, balance_result, transaction_result, records_added, records_removed, error_code FROM sync_runs WHERE item_id = ? ORDER BY started_at DESC LIMIT 12').all(item.item_id)
       : [];
     const txnCount: any = db.prepare('SELECT COUNT(*) n, MIN(date) first, MAX(date) last FROM bank_transactions WHERE bank_account_id = ?').get(detailId);
+    ensureIdentitySchema(db);
+    const connections = db.prepare('SELECT provider, provider_item_id, provider_account_id, connected_at, disconnected_at, status, note FROM account_connections WHERE account_id = ? ORDER BY connected_at DESC').all(detailId);
     const siblings = item
       ? (db.prepare('SELECT id, account_name, nickname, last_four FROM bank_accounts WHERE teller_enrollment_id = ? AND id != ?').all(item.item_id, detailId) as any[])
       : [];
@@ -73,6 +76,7 @@ export async function GET(req: NextRequest) {
       sync_runs: runs,
       transactions: txnCount,
       siblings,
+      connections,
     });
   }
 
@@ -144,12 +148,13 @@ export async function POST(req: NextRequest) {
     console.log('[banking] Got accounts:', accounts.length);
 
     for (const account of accounts) {
-      // Match by teller_account_id first; fall back to institution + last_four
-      // + type — account ids are application-scoped in Teller, so re-enrolling
-      // under a NEW Teller app must still land on the existing rows (history!)
-      const existing: any = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(account.id)
-        || db.prepare(`SELECT id FROM bank_accounts WHERE last_four = ? AND account_type = ? AND institution_name = ? ORDER BY updated_at DESC LIMIT 1`)
-          .get(account.last_four, account.type, account.institution?.name || 'Unknown');
+      // Canonical identity guard — name-aware layered matching so re-enrolling
+      // under a new provider app lands on the existing canonical row (history!)
+      // and twin masks are never guessed.
+      const { match: existing } = findCanonicalMatch(db, {
+        institution: account.institution?.name || 'Unknown', mask: account.last_four,
+        type: account.type, name: account.name, providerAccountId: account.id,
+      });
       if (existing) {
         // Reconnect: refresh token + enrollment + account id on the existing row
         db.prepare(`

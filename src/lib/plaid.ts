@@ -9,6 +9,7 @@ import type Database from 'better-sqlite3';
 import crypto from 'crypto';
 import { reportSource } from '@/lib/source-registry';
 import { ensureConnectionSchema } from '@/lib/connection-state';
+import { findCanonicalMatch, ensureIdentitySchema } from '@/lib/account-identity';
 
 const PLAID_ENV = process.env.PLAID_ENV || 'production';
 const BASE = `https://${PLAID_ENV}.plaid.com`;
@@ -79,6 +80,7 @@ export async function createLinkToken(opts: { accessToken?: string } = {}): Prom
  *  Existing rows (any provider) re-attach by account id OR institution+last4. */
 export async function exchangeAndImport(db: Database.Database, publicToken: string, storeId: string): Promise<{ imported: number; institution: string }> {
   ensurePlaidSchema(db);
+  ensureIdentitySchema(db);
   const ex = await plaidPost('/item/public_token/exchange', { public_token: publicToken });
   const accessToken = ex.access_token;
   const itemId = ex.item_id;
@@ -110,27 +112,37 @@ export async function exchangeAndImport(db: Database.Database, publicToken: stri
   for (const a of acc.accounts || []) {
     const available = Math.round(((a.balances?.available ?? a.balances?.current) || 0) * 100);
     const ledger = Math.round((a.balances?.current || 0) * 100);
-    // Match by exact plaid id, then NAME+mask (twin cards share a last4 —
-    // Gold/Platinum ·1009 — so name must break the tie), then the old
-    // inst+mask+type fallback only when nothing name-matches
-    const existing: any = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(a.account_id)
-      || db.prepare('SELECT id FROM bank_accounts WHERE last_four = ? AND account_name = ? AND institution_name = ? ORDER BY updated_at DESC LIMIT 1')
-        .get(a.mask || '', a.official_name || a.name || '', institution)
-      || db.prepare('SELECT id FROM bank_accounts WHERE last_four = ? AND account_type = ? AND institution_name = ? ORDER BY updated_at DESC LIMIT 1')
-        .get(a.mask || '', a.type, institution);
+    // Canonical identity guard: exact provider id, then name-aware layered
+    // matching (twin cards share a mask — name breaks the tie). Ambiguity
+    // parks the row for review instead of inserting a visible duplicate.
+    const { match: existing, ambiguous } = findCanonicalMatch(db, {
+      institution, mask: a.mask || '', type: a.type,
+      name: a.official_name || a.name || '', providerAccountId: a.account_id,
+    });
     if (existing) {
+      // reconnect lands on the SAME canonical account — record the connection change
+      if (existing.teller_account_id !== a.account_id) {
+        db.prepare(`INSERT INTO account_connections (id, account_id, provider, provider_item_id, provider_account_id, connected_at, disconnected_at, status, note)
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'superseded', 'provider account id rotated on relink')`)
+          .run(crypto.randomUUID(), existing.id, existing.provider || 'unknown', existing.teller_enrollment_id, existing.teller_account_id, existing.created_at);
+      }
       db.prepare(`UPDATE bank_accounts SET provider = 'plaid', access_token = ?, teller_enrollment_id = ?, teller_account_id = ?,
           status = 'active', balance_available_cents = ?, balance_ledger_cents = ?, balance_updated_at = datetime('now'),
           last_sync_error = NULL, updated_at = datetime('now')
         WHERE id = ?`)
         .run(accessToken, itemId, a.account_id, available, ledger, existing.id);
     } else {
+      // Brand-new account — or an ambiguous twin we refuse to guess about.
+      // Ambiguous rows are parked (possible_duplicate) for human review and
+      // count toward NO totals until resolved.
       db.prepare(`INSERT INTO bank_accounts (id, store_id, provider, teller_enrollment_id, teller_account_id, access_token,
           institution_name, account_name, account_type, account_subtype, last_four, currency,
-          balance_available_cents, balance_ledger_cents, balance_updated_at)
-        VALUES (?, ?, 'plaid', ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, datetime('now'))`)
+          balance_available_cents, balance_ledger_cents, balance_updated_at, status)
+        VALUES (?, ?, 'plaid', ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, datetime('now'), ?)`)
         .run(crypto.randomUUID(), storeId, itemId, a.account_id, accessToken, institution,
-          a.official_name || a.name || 'Account', a.type, a.subtype || '', a.mask || '', available, ledger);
+          a.official_name || a.name || 'Account', a.type, a.subtype || '', a.mask || '', available, ledger,
+          ambiguous ? 'possible_duplicate' : 'active');
+      if (ambiguous) console.log(`[plaid] parked ${institution} ····${a.mask} as possible_duplicate — mask matches multiple accounts, review required`);
     }
     imported++;
   }
@@ -147,11 +159,10 @@ export async function reattachItemAccounts(db: Database.Database, itemId: string
   const acc = await plaidPost('/accounts/get', { access_token: item.access_token });
   let reattached = 0;
   for (const a of acc.accounts || []) {
-    const existing: any = db.prepare('SELECT id, teller_account_id FROM bank_accounts WHERE teller_account_id = ?').get(a.account_id)
-      || db.prepare('SELECT id, teller_account_id FROM bank_accounts WHERE last_four = ? AND account_name = ? AND institution_name = ? ORDER BY updated_at DESC LIMIT 1')
-        .get(a.mask || '', a.official_name || a.name || '', item.institution_name)
-      || db.prepare('SELECT id, teller_account_id FROM bank_accounts WHERE last_four = ? AND account_type = ? AND institution_name = ? ORDER BY updated_at DESC LIMIT 1')
-        .get(a.mask || '', a.type, item.institution_name);
+    const { match: existing } = findCanonicalMatch(db, {
+      institution: item.institution_name, mask: a.mask || '', type: a.type,
+      name: a.official_name || a.name || '', providerAccountId: a.account_id,
+    });
     if (!existing) continue;
     db.prepare(`UPDATE bank_accounts SET teller_account_id = ?, teller_enrollment_id = ?, access_token = ?, provider = 'plaid',
         status = 'active', last_sync_error = NULL,
