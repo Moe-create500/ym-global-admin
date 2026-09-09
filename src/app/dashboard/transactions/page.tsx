@@ -76,7 +76,7 @@ export default function TransactionsPage() {
   const [hasMore, setHasMore] = useState(false);
   const [cursor, setCursor] = useState<{ beforeDate: string; beforeId: string } | null>(null);
 
-  const [coverage, setCoverage] = useState<{ total: number; categorized: number; paired: number; attributed: number; uncategorized_cents: number } | null>(null);
+  const [coverage, setCoverage] = useState<{ total: number; attributed: number; attributed_cents: number; unattributed_cents: number } | null>(null);
   const [health, setHealth] = useState<{ issues: { key: string; severity: string; label: string; count: number; amount_cents?: number; href?: string }[] } | null>(null);
   useEffect(() => { fetch('/api/health-finance').then(r => r.json()).then(setHealth).catch(() => {}); }, []);
 
@@ -180,35 +180,32 @@ export default function TransactionsPage() {
         </button>
       </div>
 
-      {/* Reconciliation coverage — the progress picture at a glance */}
-      {coverage && coverage.total > 0 && (
-        <div className="rounded-xl bg-slate-900/60 px-5 py-4 mb-5">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-10 gap-y-4">
-            {([
-              ['Categorized', coverage.categorized, 'from-emerald-400 to-teal-300', 'text-emerald-300'],
-              ['Paired movements', coverage.paired, 'from-blue-400 to-indigo-300', 'text-blue-300'],
-              ['Store-attributed', coverage.attributed, 'from-pink-400 to-purple-300', 'text-pink-300'],
-            ] as const).map(([label, n, bar, txt]) => {
-              const pct = Math.round((n / coverage.total) * 100);
-              return (
-                <div key={label}>
-                  <div className="flex items-baseline justify-between mb-1.5">
-                    <span className="text-[11px] uppercase tracking-wider text-slate-500">{label}</span>
-                    <span className={`text-xl font-semibold tabular-nums ${txt}`}>{pct}%</span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                    <div className={`h-full rounded-full bg-gradient-to-r ${bar}`} style={{ width: `${pct}%` }} />
-                  </div>
-                  <p className="text-[11px] text-slate-500 mt-1.5 tabular-nums">{n.toLocaleString()} of {coverage.total.toLocaleString()}</p>
-                </div>
-              );
-            })}
+      {/* Store pairing — the number that matters: whose money is accounted for */}
+      {coverage && coverage.total > 0 && (() => {
+        const pct = Math.round((coverage.attributed / coverage.total) * 100);
+        return (
+          <div className="rounded-xl bg-slate-900/60 px-5 py-4 mb-5">
+            <div className="flex flex-wrap items-end justify-between gap-4 mb-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">Paired to a store</p>
+                <p className="text-3xl font-semibold text-emerald-300 tabular-nums">{pct}%</p>
+                <p className="text-[11px] text-slate-500 mt-1 tabular-nums">{coverage.attributed.toLocaleString()} transactions · {fmtCents(coverage.attributed_cents)}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">Not paired</p>
+                <p className="text-3xl font-semibold text-amber-300 tabular-nums">{100 - pct}%</p>
+                <p className="text-[11px] text-slate-500 mt-1 tabular-nums">{(coverage.total - coverage.attributed).toLocaleString()} transactions · {fmtCents(coverage.unattributed_cents)}</p>
+              </div>
+            </div>
+            <div className="h-2.5 rounded-full bg-amber-500/15 overflow-hidden">
+              <div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-300 transition-all" style={{ width: `${pct}%` }} />
+            </div>
+            <p className="text-[11px] text-slate-500 mt-2.5 tabular-nums">
+              {fmtCents(coverage.unattributed_cents)} not connected to any store — <button onClick={() => setStoreFilter('unattributed')} className="text-blue-400 hover:text-blue-300">work the list →</button>
+            </p>
           </div>
-          <p className="text-[11px] text-slate-500 mt-3 pt-3 border-t border-slate-800/50 tabular-nums">
-            {fmtCents(coverage.uncategorized_cents)} still uncategorized — <button onClick={() => { setStatus('uncategorized'); }} className="text-blue-400 hover:text-blue-300">work the list →</button>
-          </p>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Integrity issues — the system reports what's wrong, you don't hunt */}
       {health && health.issues.length > 0 && (
