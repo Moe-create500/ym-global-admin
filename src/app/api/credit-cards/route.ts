@@ -79,6 +79,38 @@ export async function GET(req: NextRequest) {
     const daysToDue = st?.due_date
       ? Math.round((Date.parse(st.due_date) - Date.parse(today)) / 86_400_000)
       : null;
+    // Plaid's statement balance is frozen AT CLOSE — it never shrinks when you
+    // pay. Remaining-on-statement is derived from the card's own bank feed:
+    // credits (payments/refunds) posted since the close date pay it down.
+    // Capped by the card's current total owed (can't owe more on the statement
+    // than on the whole card).
+    let statement: any = null;
+    if (st) {
+      let paymentsSinceClose = 0;
+      if (st.statement_date && (st.statement_balance_cents || 0) > 0) {
+        const r: any = db.prepare(
+          'SELECT COALESCE(SUM(amount_cents),0) s FROM bank_transactions WHERE bank_account_id = ? AND amount_cents > 0 AND date > ?'
+        ).get(a.id, st.statement_date);
+        paymentsSinceClose = r.s || 0;
+      }
+      const ledgerKnown = a.balance_ledger_cents != null;
+      const owedNow = Math.abs(a.balance_ledger_cents || 0);
+      let remaining = Math.max((st.statement_balance_cents || 0) - paymentsSinceClose, 0);
+      if (ledgerKnown) remaining = Math.min(remaining, owedNow);
+      statement = {
+        balance_cents: st.statement_balance_cents,
+        payments_since_close_cents: paymentsSinceClose,
+        remaining_cents: remaining,
+        paid: (st.statement_balance_cents || 0) > 0 && remaining === 0,
+        statement_date: st.statement_date,
+        due_date: st.due_date,
+        days_to_due: daysToDue,
+        min_payment_cents: st.min_payment_cents,
+        min_satisfied: paymentsSinceClose >= (st.min_payment_cents || 0),
+        source: st.source || 'manual',
+        updated_at: st.updated_at,
+      };
+    }
     return {
       ...safe,
       item_id: item?.item_id || null,
@@ -89,15 +121,7 @@ export async function GET(req: NextRequest) {
         transactions_through: a.bank_data_as_of || null,
         transactions_checked_at: a.last_txn_success_at || null,
       },
-      statement: st ? {
-        balance_cents: st.statement_balance_cents,
-        statement_date: st.statement_date,
-        due_date: st.due_date,
-        days_to_due: daysToDue,
-        min_payment_cents: st.min_payment_cents,
-        source: st.source || 'manual',
-        updated_at: st.updated_at,
-      } : null,
+      statement,
     };
   });
 

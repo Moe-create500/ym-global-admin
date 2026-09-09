@@ -22,10 +22,14 @@ interface CreditCard {
   freshness: Freshness;
   statement?: {
     balance_cents: number | null;
+    payments_since_close_cents: number;
+    remaining_cents: number;
+    paid: boolean;
     statement_date: string | null;
     due_date: string | null;
     days_to_due: number | null;
     min_payment_cents: number | null;
+    min_satisfied: boolean;
     source: string;
   } | null;
 }
@@ -299,9 +303,9 @@ export default function CreditCardsPage() {
               </div>
             )}
             <div>
-              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">Statements outstanding</p>
-              <p className="text-2xl font-semibold text-slate-200 tabular-nums">{cents(cards.reduce((s, c) => s + (c.statement?.balance_cents || 0), 0))}</p>
-              <p className="text-[11px] text-slate-500 mt-1.5">min due {cents(cards.reduce((s, c) => s + (c.statement?.min_payment_cents || 0), 0))} · bank-reported</p>
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">Statements remaining</p>
+              <p className="text-2xl font-semibold text-slate-200 tabular-nums">{cents(cards.reduce((s, c) => s + (c.statement?.remaining_cents || 0), 0))}</p>
+              <p className="text-[11px] text-slate-500 mt-1.5">min still due {cents(cards.reduce((s, c) => s + (!c.statement || c.statement.paid || c.statement.min_satisfied ? 0 : c.statement.min_payment_cents || 0), 0))} · statement per bank, payments from card feed</p>
             </div>
             <div>
               <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">Real available (lines)</p>
@@ -374,22 +378,30 @@ export default function CreditCardsPage() {
                         {cents(Math.abs(card.balance_ledger_cents || 0))}
                         {!card.balance_verified && <span className="block text-[10px] font-normal text-slate-500">last-known {timeAgo(card.freshness?.balance_verified_at || card.balance_updated_at)}</span>}
                       </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums text-slate-200">
-                        {card.statement?.balance_cents != null ? cents(card.statement.balance_cents) : <span className="text-slate-600">—</span>}
-                        {card.statement?.statement_date && <span className="block text-[10px] text-slate-500">closed {card.statement.statement_date.slice(5)}</span>}
+                      <td className="px-4 py-2.5 text-right tabular-nums">
+                        {!card.statement || card.statement.balance_cents == null ? <span className="text-slate-600">—</span>
+                          : card.statement.paid ? <span className="text-emerald-400 font-medium">PAID ✓</span>
+                          : <span className="text-slate-100 font-medium">{cents(card.statement.remaining_cents)}</span>}
+                        {card.statement && !card.statement.paid && card.statement.payments_since_close_cents > 0 && (
+                          <span className="block text-[10px] text-slate-500">of {cents(card.statement.balance_cents || 0)} · {cents(card.statement.payments_since_close_cents)} paid</span>
+                        )}
+                        {card.statement && !card.statement.paid && card.statement.payments_since_close_cents === 0 && card.statement.statement_date && (
+                          <span className="block text-[10px] text-slate-500">closed {card.statement.statement_date.slice(5)}</span>
+                        )}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums text-slate-200">
-                        {card.statement?.min_payment_cents != null && card.statement.min_payment_cents > 0
-                          ? cents(card.statement.min_payment_cents)
-                          : card.statement ? <span className="text-slate-600">$0</span> : <span className="text-slate-600">—</span>}
+                        {!card.statement ? <span className="text-slate-600">—</span>
+                          : card.statement.paid || card.statement.min_satisfied ? <span className="text-emerald-400">✓</span>
+                          : card.statement.min_payment_cents ? cents(card.statement.min_payment_cents)
+                          : <span className="text-slate-600">$0</span>}
                       </td>
                       <td className={`px-4 py-2.5 text-right whitespace-nowrap tabular-nums ${
-                        card.statement?.days_to_due == null ? 'text-slate-600'
+                        card.statement?.days_to_due == null || card.statement?.paid ? 'text-slate-600'
                           : card.statement.days_to_due < 0 ? 'text-red-400 font-semibold'
                           : card.statement.days_to_due <= 3 ? 'text-red-300'
                           : card.statement.days_to_due <= 7 ? 'text-amber-300' : 'text-slate-300'}`}>
                         {card.statement?.due_date
-                          ? <>{card.statement.due_date.slice(5)}<span className="block text-[10px] font-normal opacity-70">{card.statement.days_to_due! < 0 ? `${-card.statement.days_to_due!}d late` : `${card.statement.days_to_due}d`}</span></>
+                          ? <>{card.statement.due_date.slice(5)}{!card.statement.paid && <span className="block text-[10px] font-normal opacity-70">{card.statement.days_to_due! < 0 ? `${-card.statement.days_to_due!}d late` : `${card.statement.days_to_due}d`}</span>}</>
                           : '—'}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
@@ -587,8 +599,12 @@ export default function CreditCardsPage() {
                       <div className="rounded-lg bg-slate-800/40 p-4 mb-5">
                         <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Statement <span className="normal-case">({st.source === 'plaid' ? 'from the bank' : 'manual entry'})</span></p>
                         <div className="space-y-1.5 text-[12px]">
-                          <div className="flex justify-between"><span className="text-slate-400">Statement balance</span><span className="text-slate-100 font-medium tabular-nums">{st.balance_cents != null ? cents(st.balance_cents) : '—'}</span></div>
-                          <div className="flex justify-between"><span className="text-slate-400">Minimum payment</span><span className="text-slate-100 tabular-nums">{st.min_payment_cents != null ? cents(st.min_payment_cents) : '—'}</span></div>
+                          <div className="flex justify-between"><span className="text-slate-400">Remaining on statement</span>
+                            <span className={`font-medium tabular-nums ${st.paid ? 'text-emerald-400' : 'text-slate-100'}`}>{st.paid ? 'PAID ✓' : cents(st.remaining_cents)}</span>
+                          </div>
+                          <div className="flex justify-between"><span className="text-slate-400">Statement balance at close</span><span className="text-slate-200 tabular-nums">{st.balance_cents != null ? cents(st.balance_cents) : '—'}</span></div>
+                          <div className="flex justify-between"><span className="text-slate-400">Payments since close</span><span className="text-slate-200 tabular-nums">{cents(st.payments_since_close_cents)}</span></div>
+                          <div className="flex justify-between"><span className="text-slate-400">Minimum payment</span><span className="text-slate-100 tabular-nums">{st.paid || st.min_satisfied ? '✓ satisfied' : st.min_payment_cents != null ? cents(st.min_payment_cents) : '—'}</span></div>
                           <div className="flex justify-between"><span className="text-slate-400">Statement closed</span><span className="text-slate-200">{st.statement_date || '—'}</span></div>
                           <div className="flex justify-between"><span className="text-slate-400">Payment due</span>
                             <span className={st.days_to_due != null && st.days_to_due < 0 ? 'text-red-300 font-semibold' : st.days_to_due != null && st.days_to_due <= 7 ? 'text-amber-300' : 'text-slate-200'}>
