@@ -156,3 +156,51 @@ describe('learning loop', () => {
     expect(r.method).not.toBe('EXACT_HISTORY');
   });
 });
+
+describe('store attribution (reconciliation)', () => {
+  it('store-owned account attributes its transactions to that store', async () => {
+    const db = freshDb();
+    db.exec("CREATE TABLE stores (id TEXT PRIMARY KEY, name TEXT, is_active INTEGER DEFAULT 1)");
+    db.prepare("INSERT INTO stores (id, name) VALUES ('st1','Magvita')").run();
+    db.prepare("INSERT INTO bank_accounts (id, account_type, institution_name, last_four, store_id) VALUES ('chk','depository','BofA','1234','st1')").run();
+    const t = txn(db, { id: 't1', acct: 'chk', desc: 'RANDOM VENDOR LLC', amt: -5000 });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.store_id).toBe('st1');
+    expect(r.evidence.some(e => e.type === 'account_ownership')).toBe(true);
+  });
+
+  it('global account + no evidence stays honestly UNATTRIBUTED (store_id null)', async () => {
+    const db = freshDb();
+    db.exec("CREATE TABLE stores (id TEXT PRIMARY KEY, name TEXT, is_active INTEGER DEFAULT 1)");
+    db.exec("ALTER TABLE bank_accounts ADD COLUMN is_global INTEGER DEFAULT 0");
+    db.prepare("INSERT INTO bank_accounts (id, account_type, institution_name, last_four, store_id, is_global) VALUES ('corp','depository','BofA','9999','x',1)").run();
+    const t = txn(db, { id: 't1', acct: 'corp', desc: 'MYSTERY CHARGE', amt: -5000 });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.store_id).toBeNull();
+  });
+
+  it('store name word-bounded in description attributes the store', async () => {
+    const db = freshDb();
+    db.exec("CREATE TABLE stores (id TEXT PRIMARY KEY, name TEXT, is_active INTEGER DEFAULT 1)");
+    db.prepare("INSERT INTO stores (id, name) VALUES ('st1','Purebite')").run();
+    db.prepare("INSERT INTO bank_accounts (id, account_type, institution_name, last_four) VALUES ('chk','depository','BofA','1234')").run();
+    const t = txn(db, { id: 't1', acct: 'chk', desc: 'WIRE FROM PUREBITE HOLDINGS', amt: 90000 });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.store_id).toBe('st1');
+    expect(r.evidence.some(e => e.type === 'store_name_match')).toBe(true);
+  });
+
+  it('card payment carries the PAYER store from the checking-side account', async () => {
+    const db = freshDb();
+    db.exec("CREATE TABLE stores (id TEXT PRIMARY KEY, name TEXT, is_active INTEGER DEFAULT 1)");
+    db.prepare("INSERT INTO stores (id, name) VALUES ('st1','Areya')").run();
+    db.prepare("INSERT INTO bank_accounts (id, account_type, institution_name, last_four, store_id) VALUES ('chk','depository','BofA','1234','st1')").run();
+    db.prepare("INSERT INTO bank_accounts (id, account_type, institution_name, last_four) VALUES ('card','credit','Amex','1009')").run();
+    txn(db, { id: 'chk-leg', acct: 'chk', date: '2026-09-01', desc: 'AMEX EPAYMENT', amt: -200000 });
+    const t = txn(db, { id: 'card-leg', acct: 'card', date: '2026-09-02', desc: 'ONLINE PAYMENT THANK YOU', amt: 200000 });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.method).toBe('CARD_PAYMENT_MATCH');
+    expect(r.store_id).toBe('st1');
+    expect(r.evidence.some(e => e.type === 'paired_account_store')).toBe(true);
+  });
+});

@@ -45,6 +45,27 @@ export async function GET(req: NextRequest) {
       WHERE r.needs_review = 1 ORDER BY ABS(bt.amount_cents) DESC LIMIT 200`).all();
     return NextResponse.json({ queue: rows.map(r => ({ ...r, evidence: JSON.parse(r.evidence_json || '[]') })) });
   }
+  // Reconciliation coverage: whose money is attributed where, and how much
+  // is honestly unconnected. This is the number that must trend to zero.
+  if (req.nextUrl.searchParams.get('attribution')) {
+    const perStore: any[] = db.prepare(`
+      SELECT COALESCE(s.name, '⚠ UNATTRIBUTED') store, COUNT(*) n,
+        COALESCE(SUM(CASE WHEN bt.amount_cents > 0 THEN bt.amount_cents END), 0) in_cents,
+        COALESCE(SUM(CASE WHEN bt.amount_cents < 0 THEN ABS(bt.amount_cents) END), 0) out_cents
+      FROM classification_results r
+      JOIN bank_transactions bt ON bt.id = r.txn_id
+      LEFT JOIN stores s ON s.id = r.store_id
+      GROUP BY r.store_id ORDER BY (in_cents + out_cents) DESC`).all();
+    const unattributed: any[] = db.prepare(`
+      SELECT bt.id, bt.date, bt.description, bt.amount_cents, a.institution_name, a.last_four, r.category, r.method
+      FROM classification_results r
+      JOIN bank_transactions bt ON bt.id = r.txn_id
+      JOIN bank_accounts a ON a.id = bt.bank_account_id
+      WHERE r.store_id IS NULL AND r.category NOT IN ('Transfer In','Transfer Out','Credit Card Payment')
+      ORDER BY ABS(bt.amount_cents) DESC LIMIT 100`).all();
+    return NextResponse.json({ per_store: perStore, largest_unattributed: unattributed });
+  }
+
   // metrics: is the categorizer getting smarter?
   const stats: any[] = db.prepare(`
     SELECT method, COUNT(*) n, ROUND(AVG(confidence), 3) avg_conf, SUM(needs_review) review_n

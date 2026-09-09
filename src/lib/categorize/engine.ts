@@ -42,7 +42,63 @@ const abstain = (txn: any, reason: string, evidence: Evidence[] = []): Classific
   store_id: null, method: 'UNKNOWN', confidence: 0, reason, evidence, needs_review: true, related_txn_id: null,
 });
 
+/** Full pipeline: classify (what is it) + attribute (whose money is it).
+ *  RECONCILIATION IS THE POINT: store attribution has its own evidence
+ *  chain, and a transaction with no proven store connection stays
+ *  store_id = NULL — explicitly unattributed, never guessed. */
 export async function categorizeTransaction(db: Database.Database, txn: any, opts: { allowLlm?: boolean } = {}): Promise<ClassificationResult> {
+  const result = await classifyTransaction(db, txn, opts);
+  return attributeStore(db, txn, result);
+}
+
+/** Store attribution evidence chain (strongest first):
+ *  1. already attributed by invoice/rule evidence during classification
+ *  2. ACCOUNT_OWNERSHIP — the account itself belongs to one store
+ *  3. STORE_NAME_MATCH — store name appears word-bounded in the description
+ *  4. PAIRED_ACCOUNT — transfer/card-payment pair's other account is store-owned
+ *  Transfers/card payments themselves stay unattributed to P&L but carry the
+ *  payer store so card debt composition stays reconcilable. */
+function attributeStore(db: Database.Database, txn: any, r: ClassificationResult): ClassificationResult {
+  if (r.store_id) return r; // invoice/rule already proved it — keep that evidence
+  try {
+  const account: any = db.prepare('SELECT * FROM bank_accounts WHERE id = ?').get(txn.bank_account_id);
+
+  // 2. store-owned account (not a global/company-wide account)
+  if (account?.store_id && !account.is_global) {
+    const store: any = db.prepare('SELECT id, name FROM stores WHERE id = ?').get(account.store_id);
+    if (store) {
+      return { ...r, store_id: store.id,
+        evidence: [...r.evidence, { type: 'account_ownership', reference: `account belongs to ${store.name}` }] };
+    }
+  }
+
+  // 3. store name word-bounded in the description
+  const dl = ` ${(txn.description || '').toLowerCase()} `;
+  const stores: any[] = db.prepare('SELECT * FROM stores').all();
+  const named = stores.filter(s => (s.is_active === 1 || s.is_active == null)
+    && s.name && s.name.length >= 4 && dl.includes(` ${s.name.toLowerCase()} `));
+  if (named.length === 1) {
+    return { ...r, store_id: named[0].id,
+      evidence: [...r.evidence, { type: 'store_name_match', reference: named[0].name }] };
+  }
+
+  // 4. paired transaction's account is store-owned (payer attribution)
+  if (r.related_txn_id) {
+    const pairAcct: any = db.prepare(`SELECT a.*, s.name AS store_name FROM bank_transactions bt
+      JOIN bank_accounts a ON a.id = bt.bank_account_id LEFT JOIN stores s ON s.id = a.store_id
+      WHERE bt.id = ?`).get(r.related_txn_id);
+    if (pairAcct?.store_id && !pairAcct.is_global) {
+      return { ...r, store_id: pairAcct.store_id,
+        evidence: [...r.evidence, { type: 'paired_account_store', reference: `paid from ${pairAcct.store_name || 'store'}'s account` }] };
+    }
+  }
+
+  } catch { /* attribution must never break classification (e.g. minimal schemas) */ }
+  // honestly unattributed — this is triage work, not a guess
+  return r;
+}
+
+async function classifyTransaction(db: Database.Database, txn: any, opts: { allowLlm?: boolean } = {}): Promise<ClassificationResult> {
   ensureCategorizeSchema(db);
   const account: any = db.prepare('SELECT id, account_type, institution_name, company, store_id FROM bank_accounts WHERE id = ?').get(txn.bank_account_id);
   const merchant = resolveMerchant(db, txn.description || '');
