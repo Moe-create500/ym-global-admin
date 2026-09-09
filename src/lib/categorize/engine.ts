@@ -116,22 +116,39 @@ async function classifyTransaction(db: Database.Database, txn: any, opts: { allo
   }
 
   // ---- 2. TRANSFER / CARD-PAYMENT MATCHING --------------------------------
-  // Opposite amounts across two OWNED accounts within ±3 days = the two legs
-  // of one movement. Never revenue, never expense.
-  const twin: any = db.prepare(`
-    SELECT bt.id, a.account_type, a.institution_name, a.last_four FROM bank_transactions bt
-    JOIN bank_accounts a ON a.id = bt.bank_account_id AND a.status = 'active'
-    WHERE bt.amount_cents = ? AND bt.bank_account_id != ?
-      AND ABS(JULIANDAY(bt.date) - JULIANDAY(?)) <= 3
-    ORDER BY ABS(JULIANDAY(bt.date) - JULIANDAY(?)) LIMIT 1`)
-    .get(-txn.amount_cents, txn.bank_account_id, txn.date, txn.date);
-  if (twin && Math.abs(txn.amount_cents) >= 1000) {
-    const isCardPayment = account?.account_type === 'credit' || twin.account_type === 'credit';
-    const category = isCardPayment ? 'Credit Card Payment' : (txn.amount_cents < 0 ? 'Transfer Out' : 'Transfer In');
-    return { ...base, category, related_txn_id: twin.id,
-      method: isCardPayment ? 'CARD_PAYMENT_MATCH' : 'TRANSFER_MATCH', confidence: 0.97,
-      reason: `Opposite-amount twin on ${twin.institution_name} ····${twin.last_four} within 3 days — two legs of one movement, excluded from P&L`,
-      evidence: [{ type: 'paired_transaction', reference: twin.id }], needs_review: false };
+  // Opposite amounts across two OWNED same-currency accounts within ±3 days =
+  // the two legs of one movement. Never revenue, never expense.
+  // Hardened (2026-09-09): MULTIPLE candidates → TRANSFER_SUSPECT (never
+  // guess which leg); a twin already claimed by another transaction's pairing
+  // is excluded (one leg can only settle one movement).
+  if (Math.abs(txn.amount_cents) >= 1000) {
+    const hasCurrency = (db.prepare("SELECT COUNT(*) n FROM pragma_table_info('bank_accounts') WHERE name = 'currency'").get() as any).n > 0;
+    const currencyClause = hasCurrency
+      ? "AND COALESCE(a.currency,'USD') = COALESCE((SELECT currency FROM bank_accounts WHERE id = @acct),'USD')"
+      : '';
+    const candidates: any[] = db.prepare(`
+      SELECT bt.id, a.account_type, a.institution_name, a.last_four FROM bank_transactions bt
+      JOIN bank_accounts a ON a.id = bt.bank_account_id AND a.status = 'active' ${currencyClause}
+      WHERE bt.amount_cents = @negAmt AND bt.bank_account_id != @acct AND bt.id != @txnId
+        AND ABS(JULIANDAY(bt.date) - JULIANDAY(@date)) <= 3
+        AND NOT EXISTS (SELECT 1 FROM classification_results cr WHERE cr.related_txn_id = bt.id AND cr.txn_id != @txnId)
+      ORDER BY ABS(JULIANDAY(bt.date) - JULIANDAY(@date)) LIMIT 3`)
+      .all({ acct: txn.bank_account_id, negAmt: -txn.amount_cents, txnId: txn.id, date: txn.date });
+    if (candidates.length === 1) {
+      const twin = candidates[0];
+      const isCardPayment = account?.account_type === 'credit' || twin.account_type === 'credit';
+      const category = isCardPayment ? 'Credit Card Payment' : (txn.amount_cents < 0 ? 'Transfer Out' : 'Transfer In');
+      return { ...base, category, related_txn_id: twin.id,
+        method: isCardPayment ? 'CARD_PAYMENT_MATCH' : 'TRANSFER_MATCH', confidence: 0.97,
+        reason: `Opposite-amount twin on ${twin.institution_name} ····${twin.last_four} within 3 days — two legs of one movement, excluded from P&L`,
+        evidence: [{ type: 'paired_transaction', reference: twin.id }], needs_review: false };
+    }
+    if (candidates.length > 1) {
+      return { ...base, category: null, method: 'TRANSFER_SUSPECT', confidence: 0,
+        reason: `${candidates.length} opposite-amount candidates within the window — ambiguous pairing, review required (never guessed)`,
+        evidence: candidates.map((c: any) => ({ type: 'transfer_candidate', reference: c.id })),
+        needs_review: true, related_txn_id: null };
+    }
   }
 
   // ---- 3. BUSINESS CONTEXT: invoices & payouts ---------------------------

@@ -7,7 +7,18 @@ export const dynamic = 'force-dynamic';
 
 // Teller sends webhooks for enrollment.disconnected, transactions.processed, etc.
 export async function POST(req: NextRequest) {
+  // Webhook hardening (2026-09-09): this endpoint is necessarily public, and
+  // a forged payload could mark connections broken or trigger syncs. When
+  // YM_WEBHOOK_SECRET is set, the provider webhook URL must carry ?key=<secret>
+  // — requests without it are rejected. (Plaid JWT signature verification is
+  // the P1 follow-up; this closes forgery from anyone without the URL secret.)
+  const secret = process.env.YM_WEBHOOK_SECRET;
+  if (secret && req.nextUrl.searchParams.get('key') !== secret) {
+    console.warn('[webhook] rejected: bad or missing key');
+    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  }
   const body = await req.text();
+  if (body.length > 100_000) return NextResponse.json({ error: 'payload too large' }, { status: 413 });
 
   // Log the webhook for debugging
   console.log('[teller-webhook] Received:', body.substring(0, 500));

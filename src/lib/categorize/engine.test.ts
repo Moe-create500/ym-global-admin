@@ -204,3 +204,58 @@ describe('store attribution (reconciliation)', () => {
     expect(r.evidence.some(e => e.type === 'paired_account_store')).toBe(true);
   });
 });
+
+describe('transfer hardening (adversarial)', () => {
+  it('AMBIGUOUS: two identical opposite candidates → TRANSFER_SUSPECT, never guessed', async () => {
+    const db = freshDb();
+    acct(db, 'chk'); acct(db, 'sav'); acct(db, 'sav2');
+    txn(db, { id: 'c1', acct: 'sav', date: '2026-09-01', desc: 'DEPOSIT', amt: 500000 });
+    txn(db, { id: 'c2', acct: 'sav2', date: '2026-09-02', desc: 'DEPOSIT', amt: 500000 });
+    const t = txn(db, { id: 'out', acct: 'chk', date: '2026-09-01', desc: 'TRANSFER', amt: -500000 });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.method).toBe('TRANSFER_SUSPECT');
+    expect(r.category).toBeNull();
+    expect(r.needs_review).toBe(true);
+    expect(r.evidence).toHaveLength(2);
+  });
+
+  it('a twin already claimed by another pairing cannot be claimed twice', async () => {
+    const db = freshDb();
+    acct(db, 'chk'); acct(db, 'chk2'); acct(db, 'sav');
+    txn(db, { id: 'leg-in', acct: 'sav', date: '2026-09-01', desc: 'DEPOSIT', amt: 500000 });
+    const t1 = txn(db, { id: 'out1', acct: 'chk', date: '2026-09-01', desc: 'TRANSFER A', amt: -500000 });
+    const r1 = await categorizeTransaction(db, t1, { allowLlm: false });
+    saveResult(db, r1);
+    expect(r1.related_txn_id).toBe('leg-in');
+    // second debit, same amount — the twin is TAKEN, must not double-settle
+    const t2 = txn(db, { id: 'out2', acct: 'chk2', date: '2026-09-01', desc: 'TRANSFER B', amt: -500000 });
+    const r2 = await categorizeTransaction(db, t2, { allowLlm: false });
+    expect(r2.related_txn_id).not.toBe('leg-in');
+    expect(r2.method).not.toBe('TRANSFER_MATCH');
+  });
+
+  it('re-running categorization is idempotent — same verdicts both times', async () => {
+    const db = freshDb();
+    acct(db, 'chk'); acct(db, 'sav');
+    txn(db, { id: 'in', acct: 'sav', date: '2026-09-01', desc: 'DEPOSIT', amt: 310000 });
+    const t = txn(db, { id: 'out', acct: 'chk', date: '2026-09-01', desc: 'TRANSFER', amt: -310000 });
+    const r1 = await categorizeTransaction(db, t, { allowLlm: false });
+    saveResult(db, r1);
+    const r2 = await categorizeTransaction(db, t, { allowLlm: false });
+    saveResult(db, r2);
+    expect(r2.category).toBe(r1.category);
+    expect(r2.related_txn_id).toBe(r1.related_txn_id);
+    expect((db.prepare('SELECT COUNT(*) n FROM classification_results').get() as any).n).toBe(1);
+  });
+
+  it('cross-currency same-number amounts never pair', async () => {
+    const db = freshDb();
+    db.exec("ALTER TABLE bank_accounts ADD COLUMN currency TEXT DEFAULT 'USD'");
+    acct(db, 'chk');
+    db.prepare("INSERT INTO bank_accounts (id, account_type, institution_name, last_four, currency) VALUES ('eur','depository','DB','9999','EUR')").run();
+    txn(db, { id: 'eur-in', acct: 'eur', date: '2026-09-01', desc: 'SEPA IN', amt: 500000 });
+    const t = txn(db, { id: 'usd-out', acct: 'chk', date: '2026-09-01', desc: 'WIRE OUT', amt: -500000 });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.method).not.toBe('TRANSFER_MATCH');
+  });
+});

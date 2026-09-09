@@ -108,13 +108,19 @@ export async function middleware(req: NextRequest) {
   }
 
   // ═══ EMPLOYEE LOCKDOWN ═══
-  // Employees have full access EXCEPT banking & credit cards
+  // Employees have full access EXCEPT banking, credit cards, and the raw
+  // transaction/categorization/health surfaces (same underlying bank data —
+  // hardening pass 2026-09-09 closed the gap the new routes opened)
   if (auth.role === 'employee') {
     const blocked =
       pathname.startsWith('/dashboard/banking') ||
       pathname.startsWith('/dashboard/credit-cards') ||
+      pathname.startsWith('/dashboard/transactions') ||
       pathname.startsWith('/api/banking') ||
-      pathname.startsWith('/api/credit-cards');
+      pathname.startsWith('/api/credit-cards') ||
+      pathname.startsWith('/api/transactions') ||
+      pathname.startsWith('/api/categorize') ||
+      pathname.startsWith('/api/health-finance');
     if (blocked) {
       if (pathname.startsWith('/api/')) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });

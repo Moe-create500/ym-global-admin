@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
     JOIN bank_accounts a ON a.id = bt.bank_account_id AND a.status = 'active'
     ${force ? '' : 'LEFT JOIN classification_results r ON r.txn_id = bt.id'}
     WHERE bt.date > date('now', ?) ${force ? '' : 'AND r.txn_id IS NULL'}
-    ORDER BY bt.date DESC LIMIT ?`).all(`-${Math.min(days, 400)} days`, Math.min(limit, 2000));
+    ORDER BY bt.date DESC LIMIT ?`).all(`-${Math.min(days, 4000)} days`, Math.min(limit, 20000));
 
   const byMethod: Record<string, number> = {};
   let reviewCount = 0;
