@@ -82,3 +82,11 @@ Opening balances/systemization dates · ad_payments composite dedupe key · test
 - Twin-mask accounts never cross-matched; merges idempotent, lineage-clean, direction-checked
 - Replayed provider events rejected BY THE DATABASE; NULL ids stay insertable
 - Source modifications/removals preserve prior state; health scan invents nothing on clean data
+
+---
+
+## Addendum 2026-09-09: Categorization engine audit (Phase A of categorizer spec)
+
+**Pre-existing (found, reused):** merchant_store_rules (patterns+direction, reused as layer 5) · txn_links legacy history (10.8k rows, used as MERCHANT_KNOWLEDGE weighting evidence) · custom_category (manual lock, layer 1) · ad_payments/shopify_invoices/cfo_evidence (business-context matching, layer 3) · CATEGORIES list (canonical category set).
+**Was MISSING (post-teardown):** any classification engine, merchant entities/aliases, feedback learning, confidence, evidence, review queue, LLM abstraction. All built new in src/lib/categorize/ — see transaction-categorization-architecture.md.
+**DANGEROUS avoided:** no auto-alias from single corrections (≥3 confirmations); conflicting rules abstain; LLM capped + closed-list + fail-safe; MANUAL protected at SQL layer.

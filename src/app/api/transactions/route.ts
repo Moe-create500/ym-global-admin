@@ -76,11 +76,32 @@ export async function GET(req: NextRequest) {
   });
 }
 
-// PATCH { transactionId, category } — manual categorization
+// PATCH { transactionId, category } — manual categorization.
+// The correction is recorded as FEEDBACK: it locks this transaction (MANUAL,
+// automation can't override) and becomes a verified retrieval example that
+// makes future classification smarter.
 export async function PATCH(req: NextRequest) {
   const { transactionId, category } = await req.json().catch(() => ({}));
   if (!transactionId) return NextResponse.json({ error: 'transactionId required' }, { status: 400 });
   const db = getDb();
+  const txn: any = db.prepare('SELECT * FROM bank_transactions WHERE id = ?').get(transactionId);
+  if (!txn) return NextResponse.json({ error: 'transaction not found' }, { status: 404 });
   db.prepare('UPDATE bank_transactions SET custom_category = ? WHERE id = ?').run(category || null, transactionId);
+  if (category) {
+    const { ensureCategorizeSchema, recordFeedback, resolveMerchant } = await import('@/lib/categorize/merchants');
+    ensureCategorizeSchema(db);
+    const prior: any = db.prepare('SELECT category, method FROM classification_results WHERE txn_id = ?').get(transactionId);
+    recordFeedback(db, {
+      txnId: transactionId,
+      predictedCategory: prior?.category ?? null,
+      predictedMethod: prior?.method ?? null,
+      correctedCategory: category,
+      merchantName: resolveMerchant(db, txn.description || '')?.name,
+      description: txn.description,
+      amountCents: txn.amount_cents,
+      accountId: txn.bank_account_id,
+      actor: 'admin',
+    });
+  }
   return NextResponse.json({ success: true });
 }
