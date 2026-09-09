@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, Suspense } from 'react';
+import { useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import StoreSelector from '@/components/StoreSelector';
 
@@ -134,10 +134,10 @@ function formatTs(ts: string | undefined): string {
 }
 
 function DetailRow({ d, type }: { d: ReconItemDetail; type: 'invoice' | 'payment' | 'bank_txn' }) {
-  const bgClass = d.matched ? 'bg-emerald-950/20 border-emerald-900/30' : 'bg-red-950/10 border-red-900/20';
+  const bgClass = d.matched ? 'bg-emerald-950/20' : 'bg-red-950/10';
   const dotColor = d.matched ? 'bg-emerald-500' : 'bg-red-500';
   return (
-    <div className={`flex items-center justify-between px-3 py-1.5 border rounded text-[11px] ${bgClass}`}>
+    <div className={`flex items-center justify-between px-3 py-1.5 rounded-lg text-[11px] ${bgClass}`}>
       <div className="flex items-center gap-2 min-w-0 flex-1">
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
         <span className="text-slate-400 shrink-0">{d.date}</span>
@@ -145,7 +145,7 @@ function DetailRow({ d, type }: { d: ReconItemDetail; type: 'invoice' | 'payment
         {d.card && <span className="text-slate-500 font-mono shrink-0">*{d.card}</span>}
         {d.platform && <span className="text-blue-400/60 shrink-0">{d.platform}</span>}
       </div>
-      <span className={`font-mono shrink-0 ml-2 ${d.amount_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{cents(Math.abs(d.amount_cents))}</span>
+      <span className={`font-mono tabular-nums shrink-0 ml-2 ${d.amount_cents >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{cents(Math.abs(d.amount_cents))}</span>
     </div>
   );
 }
@@ -191,9 +191,11 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
 
   if (!recon || recon.status === 'insufficient_data') {
     return (
-      <div className="mt-8 bg-slate-900 border border-slate-800 rounded-xl p-5">
-        <h2 className="text-sm font-semibold text-white mb-1">CFO ↔ P&amp;L Reconciliation</h2>
-        <p className="text-xs text-slate-500">
+      <div className="mt-6 rounded-xl bg-slate-900/60 overflow-hidden">
+        <div className="px-5 py-3 border-b border-slate-800/60">
+          <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">CFO ↔ P&amp;L Reconciliation</h2>
+        </div>
+        <p className="px-5 py-4 text-xs text-slate-500">
           Save at least two snapshots (with full balance detail) to reconcile equity movement against P&amp;L profit.
         </p>
       </div>
@@ -217,10 +219,10 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
     : `${recon.period_start} → ${recon.period_end}`;
 
   return (
-    <div className={`mt-8 bg-slate-900 border rounded-xl overflow-hidden ${matched ? 'border-emerald-900/50' : 'border-amber-800/60'}`}>
-      <div className={`px-5 py-4 border-b flex items-center justify-between ${matched ? 'border-emerald-900/40 bg-emerald-950/20' : 'border-amber-900/40 bg-amber-950/20'}`}>
+    <div className="mt-6 rounded-xl bg-slate-900/60 overflow-hidden">
+      <div className="px-5 py-3 border-b border-slate-800/60 flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+          <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-2">
             CFO ↔ P&amp;L Reconciliation
             <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wide ${matched ? 'bg-emerald-900/50 text-emerald-300' : 'bg-amber-900/50 text-amber-300'}`}>
               {matched ? 'Matched' : 'Drift detected'}
@@ -232,7 +234,7 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
         </div>
         <div className="text-right">
           <p className="text-[10px] text-slate-500 uppercase tracking-wider">Unexplained</p>
-          <p className={`text-xl font-bold ${matched ? 'text-emerald-400' : 'text-amber-400'}`}>{signed(recon.residual_cents)}</p>
+          <p className={`text-xl font-semibold tabular-nums ${matched ? 'text-emerald-300' : 'text-amber-300'}`}>{signed(recon.residual_cents)}</p>
         </div>
       </div>
 
@@ -241,26 +243,26 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
         <div className="grid grid-cols-3 gap-3 mb-5">
           <div className="bg-slate-800/40 rounded-lg p-3">
             <p className="text-[10px] text-slate-500 uppercase tracking-wider">P&amp;L net profit</p>
-            <p className="text-lg font-bold text-white">{signed(recon.net_income_cents)}</p>
+            <p className="text-lg font-semibold tabular-nums text-white">{signed(recon.net_income_cents)}</p>
             <p className="text-[9px] text-slate-600">earned this window</p>
           </div>
           <div className="bg-slate-800/40 rounded-lg p-3">
             <p className="text-[10px] text-slate-500 uppercase tracking-wider">Equity moved</p>
-            <p className="text-lg font-bold text-white">{signed(recon.delta_equity_cents)}</p>
+            <p className="text-lg font-semibold tabular-nums text-white">{signed(recon.delta_equity_cents)}</p>
             <p className="text-[9px] text-slate-600">net worth change</p>
           </div>
-          <div className="bg-indigo-950/40 border border-indigo-800/40 rounded-lg p-3">
+          <div className="bg-indigo-950/40 rounded-lg p-3">
             <p className="text-[10px] text-indigo-400 uppercase tracking-wider">The gap to explain</p>
-            <p className="text-lg font-bold text-indigo-200">{signed(recon.gap_cents)}</p>
+            <p className="text-lg font-semibold tabular-nums text-indigo-200">{signed(recon.gap_cents)}</p>
             <p className="text-[9px] text-slate-600">every dollar of this gets named below</p>
           </div>
         </div>
 
         {/* Money Flow Summary */}
         {flowSummary && (flowSummary.ad_invoices > 0 || flowSummary.app_invoices > 0 || flowSummary.ss_payments > 0) && (
-          <div className="bg-slate-800/30 rounded-lg p-3 mb-5 border border-slate-700/50">
+          <div className="bg-slate-800/30 rounded-lg p-3 mb-5">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-[11px] font-semibold text-white uppercase tracking-wider">Money Flow</h3>
+              <h3 className="text-[11px] font-semibold text-slate-200 uppercase tracking-wider">Money Flow</h3>
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
                 flowSummary.match_rate_pct >= 90 ? 'bg-emerald-900/40 text-emerald-300' :
                 flowSummary.match_rate_pct >= 50 ? 'bg-amber-900/40 text-amber-300' :
@@ -269,21 +271,21 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
             </div>
             <div className="grid grid-cols-3 gap-2 text-[11px]">
               {flowSummary.ad_invoices > 0 && (
-                <div className="bg-slate-900/50 rounded p-2">
+                <div className="bg-slate-900/50 rounded-lg p-2">
                   <p className="text-blue-400 font-medium">Ad Spend</p>
                   <p className="text-white font-mono">{cents(flowSummary.total_invoiced_cents)}</p>
                   <p className="text-slate-500">{flowSummary.ad_invoices} invoices · {flowSummary.ad_payments} payments</p>
                 </div>
               )}
               {flowSummary.app_invoices > 0 && (
-                <div className="bg-slate-900/50 rounded p-2">
+                <div className="bg-slate-900/50 rounded-lg p-2">
                   <p className="text-emerald-400 font-medium">App Costs</p>
                   <p className="text-white font-mono">{cents(flowSummary.total_invoiced_cents - (flowSummary.ad_invoices > 0 ? flowSummary.total_invoiced_cents : 0))}</p>
                   <p className="text-slate-500">{flowSummary.app_invoices} invoices · {flowSummary.app_payments} payments</p>
                 </div>
               )}
               {flowSummary.ss_payments > 0 && (
-                <div className="bg-slate-900/50 rounded p-2">
+                <div className="bg-slate-900/50 rounded-lg p-2">
                   <p className="text-orange-400 font-medium">Fulfillment</p>
                   <p className="text-white font-mono">{cents(Math.abs(flowSummary.owner_draws_cents || 0))}</p>
                   <p className="text-slate-500">{flowSummary.ss_payments} payments</p>
@@ -293,10 +295,10 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
             {(flowSummary.owner_draws_cents !== 0 || flowSummary.owner_contributions_cents !== 0) && (
               <div className="mt-2 flex gap-3 text-[11px]">
                 {flowSummary.owner_draws_cents !== 0 && (
-                  <span className="text-purple-400">Owner draws: <span className="font-mono text-red-400">{cents(Math.abs(flowSummary.owner_draws_cents))}</span></span>
+                  <span className="text-purple-400">Owner draws: <span className="font-mono tabular-nums text-red-300">{cents(Math.abs(flowSummary.owner_draws_cents))}</span></span>
                 )}
                 {flowSummary.owner_contributions_cents !== 0 && (
-                  <span className="text-purple-400">Owner contributions: <span className="font-mono text-emerald-400">{cents(flowSummary.owner_contributions_cents)}</span></span>
+                  <span className="text-purple-400">Owner contributions: <span className="font-mono tabular-nums text-emerald-300">{cents(flowSummary.owner_contributions_cents)}</span></span>
                 )}
               </div>
             )}
@@ -308,7 +310,7 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
           <div className="py-1.5 border-b border-slate-800">
             <div className="flex items-center justify-between">
               <span className="text-slate-300">P&amp;L net profit <span className="text-[9px] bg-blue-900/50 text-blue-300 px-1 rounded ml-1">second-exact</span></span>
-              <span className="font-mono text-white">{signed(recon.net_income_cents)}</span>
+              <span className="font-mono tabular-nums text-white">{signed(recon.net_income_cents)}</span>
             </div>
             {(recon as any).boundary_prorate && (
               <p className="text-[10px] text-slate-500 mt-0.5">
@@ -345,7 +347,7 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
                     }`}>{item.kind}</span>
                     {item.note && <p className="text-[10px] text-slate-500 mt-0.5 leading-tight">{item.note}</p>}
                   </div>
-                  <span className={`font-mono ${item.amount_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{signed(item.amount_cents)}</span>
+                  <span className={`font-mono tabular-nums ${item.amount_cents >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{signed(item.amount_cents)}</span>
                 </div>
 
                 {/* Expanded detail panel */}
@@ -382,17 +384,17 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
           })}
           <div className="flex items-center justify-between py-1.5 border-t border-slate-800">
             <span className="text-slate-400">= Expected equity move</span>
-            <span className="font-mono text-slate-300">{signed(expected)}</span>
+            <span className="font-mono tabular-nums text-slate-300">{signed(expected)}</span>
           </div>
           <div className="flex items-center justify-between py-1.5">
             <span className="text-slate-400">Actual equity move</span>
-            <span className="font-mono text-slate-300">{signed(recon.delta_equity_cents)}</span>
+            <span className="font-mono tabular-nums text-slate-300">{signed(recon.delta_equity_cents)}</span>
           </div>
           <div className={`flex items-center justify-between py-2 px-3 rounded-lg mt-1 ${matched ? 'bg-emerald-950/30' : 'bg-amber-950/30'}`}>
             <span className={`font-semibold ${matched ? 'text-emerald-300' : 'text-amber-300'}`}>
               {matched ? 'Unexplained (within tolerance)' : 'Unexplained residual'}
             </span>
-            <span className={`font-mono font-bold ${matched ? 'text-emerald-400' : 'text-amber-400'}`}>{signed(recon.residual_cents)}</span>
+            <span className={`font-mono tabular-nums font-bold ${matched ? 'text-emerald-300' : 'text-amber-300'}`}>{signed(recon.residual_cents)}</span>
           </div>
         </div>
 
@@ -404,7 +406,7 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
             </p>
             <div className="flex flex-wrap gap-2">
               {recon.drivers.map((d, i) => (
-                <span key={i} className="text-[11px] bg-slate-800 rounded px-2 py-1 text-slate-300 font-mono">
+                <span key={i} className="text-[11px] bg-slate-800 rounded-lg px-2 py-1 text-slate-300 font-mono tabular-nums">
                   {d.label} {signed(d.amount_cents)}
                 </span>
               ))}
@@ -418,7 +420,7 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
         )}
 
         {recon.unmodeled_keys.length > 0 && (
-          <p className="mt-3 text-[10px] text-amber-500/80">
+          <p className="mt-3 rounded-lg bg-amber-500/10 text-amber-300 px-3 py-2 text-[12px]">
             New balance lines not yet modeled: {recon.unmodeled_keys.join(', ')} — counted in residual.
           </p>
         )}
@@ -426,7 +428,7 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
         {/* AI Investigator */}
         <div className="mt-4 pt-4 border-t border-slate-800">
           <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-semibold text-violet-300">🧠 AI Investigator (Claude Fable 5)</h3>
+            <h3 className="text-[11px] font-semibold text-violet-300 uppercase tracking-wider">🧠 AI Investigator (Claude Fable 5)</h3>
             <div className="flex items-center gap-2">
             <button
               onClick={async () => {
@@ -444,7 +446,7 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
               }}
               disabled={recomputing || !recon?.t2_snapshot_id}
               title="Skip this window's end snapshot in the reconciliation chain — then re-save the CFO and the window re-runs from its original start to your fresh snapshot"
-              className="px-3 py-1.5 bg-red-900/60 hover:bg-red-800/60 disabled:opacity-50 text-red-200 text-xs font-medium rounded-lg transition-colors"
+              className="px-3 py-1.5 text-red-400/80 hover:text-red-300 disabled:opacity-50 text-xs font-medium rounded-lg transition-colors"
             >
               🚫 Block end snapshot
             </button>
@@ -456,14 +458,14 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
               }}
               disabled={recomputing || !onRecompute}
               title="Re-run this reconciliation after fixing data (payments, categories, balances) — updates the numbers above without a new snapshot"
-              className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors"
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-medium rounded-lg transition-colors"
             >
               {recomputing ? 'Recomputing…' : '↻ I fixed something — resubmit'}
             </button>
             <button
               onClick={runAiAnalysis}
               disabled={aiLoading}
-              className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors"
+              className="px-3 py-1.5 bg-slate-100 hover:bg-white disabled:opacity-50 text-slate-900 text-[12px] font-semibold rounded-lg transition-colors"
             >
               {aiLoading ? 'Scanning every record… (1-3 min)' : aiAnalysis ? 'Re-run deep analysis' : 'Run deep analysis'}
             </button>
@@ -499,7 +501,7 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
                 <div key={i} className="bg-slate-800/60 rounded-lg px-3 py-2">
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-white font-medium">{c.title}</span>
-                    <span className={`font-mono font-bold ${c.amount_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{signed(c.amount_cents)}</span>
+                    <span className={`font-mono tabular-nums font-bold ${c.amount_cents >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{signed(c.amount_cents)}</span>
                   </div>
                   <div className="flex items-center gap-2 mt-0.5">
                     <span className={`text-[9px] uppercase px-1.5 py-0.5 rounded ${c.category === 'data_bug' ? 'bg-red-900/50 text-red-300' : c.category === 'timing' ? 'bg-blue-900/50 text-blue-300' : c.category === 'capital' ? 'bg-purple-900/50 text-purple-300' : 'bg-slate-700 text-slate-300'}`}>{c.category}</span>
@@ -539,6 +541,80 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+
+// Card charges linked to THIS store — each individually markable as paid.
+// Data = proven attribution (classification_results); settlement state lives
+// on the transaction row itself and survives categorizer re-runs.
+function StoreCardCharges({ storeId }: { storeId: string }) {
+  const [data, setData] = useState<any>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [showSettled, setShowSettled] = useState(false);
+  const load = useCallback(() => {
+    fetch(`/api/store-charges?storeId=${storeId}`).then(r => r.json()).then(setData).catch(() => {});
+  }, [storeId]);
+  useEffect(() => { load(); }, [load]);
+
+  async function toggle(txnId: string, settled: boolean) {
+    setBusy(txnId);
+    await fetch('/api/store-charges', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ txnId, settled }),
+    }).catch(() => {});
+    setBusy(null);
+    load();
+  }
+
+  if (!data) return null;
+  const visible = (data.charges || []).filter((c: any) => showSettled || !c.settled_at);
+  return (
+    <div className="rounded-xl bg-slate-900/60 overflow-hidden">
+      <div className="px-5 py-3 border-b border-slate-800/60 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Card charges linked to this store</p>
+          <p className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
+            <span className="text-amber-300">{cents(data.summary.open_cents)} unpaid</span>
+            {data.summary.settled_cents > 0 && <span> · {cents(data.summary.settled_cents)} paid</span>}
+            <span> · {data.summary.count} charges (proven attribution)</span>
+          </p>
+        </div>
+        <label className="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer select-none">
+          <input type="checkbox" checked={showSettled} onChange={e => setShowSettled(e.target.checked)} className="accent-blue-500" />
+          Show paid
+        </label>
+      </div>
+      {visible.length === 0 ? (
+        <p className="px-5 py-6 text-center text-[13px] text-slate-500">
+          {data.summary.count === 0 ? 'No card charges are linked to this store yet — pair them on the Transactions page.' : 'All linked card charges are marked paid ✓'}
+        </p>
+      ) : (
+        <table className="w-full text-[13px]">
+          <tbody>
+            {visible.map((c: any) => (
+              <tr key={c.id} className={`border-b border-slate-800/30 last:border-b-0 ${c.settled_at ? 'opacity-50' : ''}`}>
+                <td className="px-5 py-2 text-slate-500 whitespace-nowrap w-24">{c.date}</td>
+                <td className="px-3 py-2 max-w-[340px]"><span className="text-slate-100 truncate block">{c.description}</span></td>
+                <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{c.card}</td>
+                <td className="px-3 py-2 text-right tabular-nums font-medium text-slate-100 whitespace-nowrap">{cents(Math.abs(c.amount_cents))}</td>
+                <td className="px-5 py-2 text-right w-28">
+                  {c.settled_at ? (
+                    <button onClick={() => toggle(c.id, false)} disabled={busy === c.id}
+                      className="text-[11px] text-emerald-400 hover:text-emerald-300 disabled:opacity-50">✓ paid · undo</button>
+                  ) : (
+                    <button onClick={() => toggle(c.id, true)} disabled={busy === c.id}
+                      className="text-[11px] px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 font-medium">
+                      {busy === c.id ? '…' : 'Mark paid'}
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -634,34 +710,34 @@ function CFOContent() {
   };
   const manualRows = (side: 'asset' | 'liability') => {
     const items = ((data?.details as any)?.manualItems || []).filter((m: any) => m.side === side);
-    const color = side === 'asset' ? 'text-emerald-400' : 'text-red-400';
+    const color = side === 'asset' ? 'text-emerald-300' : 'text-red-300';
     return (
       <>
         {items.map((m: any) => (
-          <tr key={m.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-            <td className="px-5 py-3 text-white font-medium">{m.label} <span className="text-slate-600 text-[10px]">manual</span></td>
-            <td className="px-5 py-3 text-slate-400 text-xs">{m.note || 'manually entered'} · <button onClick={() => deleteManualItem(m.id)} className="text-red-500/60 hover:text-red-400">remove</button></td>
-            <td className={`px-5 py-3 text-right font-medium ${color}`}>{cents(m.amount_cents)}</td>
+          <tr key={m.id} className="border-b border-slate-800/40 hover:bg-slate-800/30">
+            <td className="px-4 py-2 text-white font-medium">{m.label} <span className="text-slate-600 text-[10px]">manual</span></td>
+            <td className="px-4 py-2 text-slate-400 text-xs">{m.note || 'manually entered'} · <button onClick={() => deleteManualItem(m.id)} className="text-red-400/80 hover:text-red-300">remove</button></td>
+            <td className={`px-4 py-2 text-right font-medium tabular-nums ${color}`}>{cents(m.amount_cents)}</td>
           </tr>
         ))}
         {miSide === side ? (
-          <tr className="border-b border-slate-800/50 bg-slate-800/20">
-            <td className="px-5 py-3">
+          <tr className="border-b border-slate-800/40 bg-slate-800/20">
+            <td className="px-4 py-2">
               <input autoFocus value={miLabel} onChange={e => setMiLabel(e.target.value)} placeholder={side === 'asset' ? 'e.g. Equipment / Deposit' : 'e.g. Owed to supplier'}
-                className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white text-xs" />
+                className="w-full bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white" />
             </td>
-            <td className="px-5 py-3">
+            <td className="px-4 py-2">
               <input type="number" step="0.01" value={miAmount} onChange={e => setMiAmount(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void addManualItem(); }} placeholder="$ amount"
-                className="w-28 bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white text-xs" />
+                className="w-28 bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white" />
             </td>
-            <td className="px-5 py-3 text-right whitespace-nowrap">
-              <button onClick={() => void addManualItem()} className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded mr-2">add</button>
+            <td className="px-4 py-2 text-right whitespace-nowrap">
+              <button onClick={() => void addManualItem()} className="text-xs px-2.5 py-1 bg-slate-100 hover:bg-white text-slate-900 font-semibold rounded-lg mr-2">add</button>
               <button onClick={() => setMiSide(null)} className="text-xs text-slate-500">cancel</button>
             </td>
           </tr>
         ) : (
-          <tr className="border-b border-slate-800/50">
-            <td className="px-5 py-3" colSpan={3}>
+          <tr className="border-b border-slate-800/40">
+            <td className="px-4 py-2" colSpan={3}>
               <button onClick={() => setMiSide(side)} className="text-xs text-blue-400 hover:text-blue-300">+ Add {side === 'asset' ? 'Asset' : 'Liability'}</button>
             </td>
           </tr>
@@ -816,12 +892,12 @@ function CFOContent() {
         {tab === 'store' && data && (
           <div className="flex items-center gap-3">
             {snapshotSaved && (
-              <span className="text-xs text-emerald-400">Saved {snapshotSaved}</span>
+              <span className="text-xs text-emerald-300">Saved {snapshotSaved}</span>
             )}
             <button
               onClick={saveSnapshot}
               disabled={savingSnapshot}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg flex items-center gap-2"
+              className="px-3 py-1.5 bg-slate-100 hover:bg-white disabled:opacity-50 text-slate-900 text-[12px] font-semibold rounded-lg flex items-center gap-2"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
@@ -833,19 +909,19 @@ function CFOContent() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-6 bg-slate-900 border border-slate-800 rounded-lg p-1 w-fit">
+      <div className="flex gap-1.5 mb-6 w-fit">
         <button
           onClick={() => setTab('overview')}
-          className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-            tab === 'overview' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          className={`px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
+            tab === 'overview' ? 'bg-slate-100 text-slate-900' : 'text-slate-400 hover:text-white bg-slate-900/70'
           }`}
         >
           OVERVIEW CFO&apos;S
         </button>
         <button
           onClick={() => setTab('store')}
-          className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-            tab === 'store' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          className={`px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
+            tab === 'store' ? 'bg-slate-100 text-slate-900' : 'text-slate-400 hover:text-white bg-slate-900/70'
           }`}
         >
           Store Detail
@@ -863,21 +939,21 @@ function CFOContent() {
             {/* Overview KPIs */}
             {overviewTotals && overviewTotals.store_count > 0 && (
               <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-6">
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Stores with Snapshots</p>
-                  <p className="text-2xl font-bold text-white">{overviewTotals.store_count}</p>
+                <div className="rounded-xl bg-slate-900/60 p-5">
+                  <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Stores with Snapshots</p>
+                  <p className="text-2xl font-semibold tabular-nums text-white">{overviewTotals.store_count}</p>
                 </div>
-                <div className="bg-slate-900 border border-emerald-900/50 rounded-xl p-5">
-                  <p className="text-xs text-emerald-500 uppercase tracking-wider mb-2">Total Assets</p>
-                  <p className="text-2xl font-bold text-emerald-400">{cents(overviewTotals.total_assets_cents)}</p>
+                <div className="rounded-xl bg-slate-900/60 p-5">
+                  <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Total Assets</p>
+                  <p className="text-2xl font-semibold tabular-nums text-emerald-300">{cents(overviewTotals.total_assets_cents)}</p>
                 </div>
-                <div className="bg-slate-900 border border-red-900/50 rounded-xl p-5">
-                  <p className="text-xs text-red-500 uppercase tracking-wider mb-2">Total Liabilities</p>
-                  <p className="text-2xl font-bold text-red-400">{cents(overviewTotals.total_liabilities_cents)}</p>
+                <div className="rounded-xl bg-slate-900/60 p-5">
+                  <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Total Liabilities</p>
+                  <p className="text-2xl font-semibold tabular-nums text-red-300">{cents(overviewTotals.total_liabilities_cents)}</p>
                 </div>
-                <div className={`bg-slate-900 border rounded-xl p-5 ${overviewTotals.total_equity_cents >= 0 ? 'border-blue-900/50' : 'border-orange-900/50'}`}>
-                  <p className="text-xs text-blue-500 uppercase tracking-wider mb-2">Combined Equity</p>
-                  <p className={`text-2xl font-bold ${overviewTotals.total_equity_cents >= 0 ? 'text-blue-400' : 'text-orange-400'}`}>
+                <div className="rounded-xl bg-slate-900/60 p-5">
+                  <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Combined Equity</p>
+                  <p className={`text-2xl font-semibold tabular-nums ${overviewTotals.total_equity_cents >= 0 ? 'text-blue-300' : 'text-orange-300'}`}>
                     {cents(overviewTotals.total_equity_cents)}
                   </p>
                 </div>
@@ -885,25 +961,25 @@ function CFOContent() {
             )}
 
             {/* All Stores Table */}
-            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-800">
-                <h2 className="text-sm font-semibold text-white">All Stores — Most Recent Snapshot</h2>
+            <div className="rounded-xl bg-slate-900/60 overflow-hidden">
+              <div className="px-5 py-3 border-b border-slate-800/60">
+                <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">All Stores — Most Recent Snapshot</h2>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
-                      <th className="text-left px-5 py-3">Store</th>
-                      <th className="text-left px-5 py-3">Snapshot Date</th>
-                      <th className="text-right px-5 py-3">Assets</th>
-                      <th className="text-right px-5 py-3">Liabilities</th>
-                      <th className="text-right px-5 py-3">Equity</th>
-                      <th className="text-right px-5 py-3">Change</th>
+                    <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/60">
+                      <th className="text-left px-4 py-2">Store</th>
+                      <th className="text-left px-4 py-2">Snapshot Date</th>
+                      <th className="text-right px-4 py-2">Assets</th>
+                      <th className="text-right px-4 py-2">Liabilities</th>
+                      <th className="text-right px-4 py-2">Equity</th>
+                      <th className="text-right px-4 py-2">Change</th>
                     </tr>
                   </thead>
                   <tbody>
                     {overviewStores.filter(s => s.has_snapshot).map(s => (
-                      <tr key={s.store_id} className="border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer"
+                      <tr key={s.store_id} className="border-b border-slate-800/40 hover:bg-slate-800/30 cursor-pointer"
                         onClick={() => {
                           const url = new URL(window.location.href);
                           url.searchParams.set('storeId', s.store_id);
@@ -913,7 +989,7 @@ function CFOContent() {
                           window.location.href = `/dashboard/cfo?storeId=${s.store_id}`;
                         }}
                       >
-                        <td className="px-5 py-3 text-white font-medium">
+                        <td className="px-4 py-2 text-white font-medium">
                           <span className="inline-flex items-center gap-2">
                             {s.store_name}
                             {s.recon_status === 'flagged' && (
@@ -927,18 +1003,18 @@ function CFOContent() {
                             )}
                           </span>
                         </td>
-                        <td className="px-5 py-3 text-slate-400 text-xs">
+                        <td className="px-4 py-2 text-slate-400 text-xs">
                           {s.snapshot_date}
                           {s.created_at && <span className="text-slate-600 ml-2">{s.created_at.slice(11, 16)}</span>}
                         </td>
-                        <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(s.assets_cents)}</td>
-                        <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(s.liabilities_cents)}</td>
-                        <td className={`px-5 py-3 text-right font-bold ${s.equity_cents >= 0 ? 'text-blue-400' : 'text-orange-400'}`}>
+                        <td className="px-4 py-2 text-right text-emerald-300 font-medium tabular-nums">{cents(s.assets_cents)}</td>
+                        <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents(s.liabilities_cents)}</td>
+                        <td className={`px-4 py-2 text-right font-semibold tabular-nums ${s.equity_cents >= 0 ? 'text-blue-300' : 'text-orange-300'}`}>
                           {cents(s.equity_cents)}
                         </td>
-                        <td className="px-5 py-3 text-right">
+                        <td className="px-4 py-2 text-right">
                           {s.equity_change_cents !== null ? (
-                            <span className={`text-xs font-medium ${s.equity_change_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            <span className={`text-xs font-medium tabular-nums ${s.equity_change_cents >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
                               {s.equity_change_cents >= 0 ? '+' : ''}{cents(s.equity_change_cents)}
                             </span>
                           ) : (
@@ -950,16 +1026,16 @@ function CFOContent() {
                     {overviewStores.filter(s => !s.has_snapshot).length > 0 && (
                       <>
                         <tr>
-                          <td colSpan={6} className="px-5 py-2 text-[10px] text-slate-600 uppercase tracking-wider bg-slate-800/20">No Snapshot Yet</td>
+                          <td colSpan={6} className="px-4 py-2 text-[10px] text-slate-600 uppercase tracking-wider bg-slate-800/20">No Snapshot Yet</td>
                         </tr>
                         {overviewStores.filter(s => !s.has_snapshot).map(s => (
-                          <tr key={s.store_id} className="border-b border-slate-800/50">
-                            <td className="px-5 py-3 text-slate-500">{s.store_name}</td>
-                            <td className="px-5 py-3 text-slate-600 text-xs">—</td>
-                            <td className="px-5 py-3 text-right text-slate-600">—</td>
-                            <td className="px-5 py-3 text-right text-slate-600">—</td>
-                            <td className="px-5 py-3 text-right text-slate-600">—</td>
-                            <td className="px-5 py-3 text-right text-slate-600">—</td>
+                          <tr key={s.store_id} className="border-b border-slate-800/40">
+                            <td className="px-4 py-2 text-slate-500">{s.store_name}</td>
+                            <td className="px-4 py-2 text-slate-600 text-xs">—</td>
+                            <td className="px-4 py-2 text-right text-slate-600">—</td>
+                            <td className="px-4 py-2 text-right text-slate-600">—</td>
+                            <td className="px-4 py-2 text-right text-slate-600">—</td>
+                            <td className="px-4 py-2 text-right text-slate-600">—</td>
                           </tr>
                         ))}
                       </>
@@ -971,7 +1047,7 @@ function CFOContent() {
           </>
         )
       ) : !storeId ? (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 text-center">
+        <div className="rounded-xl bg-slate-900/60 p-12 text-center">
           <p className="text-slate-400">Select a store to view the balance sheet</p>
         </div>
       ) : loading ? (
@@ -981,49 +1057,48 @@ function CFOContent() {
       ) : data ? (
         <>
           {/* Top-Level Summary */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-            <div className="bg-slate-900 border border-emerald-900/50 rounded-xl p-5">
-              <p className="text-xs text-emerald-500 uppercase tracking-wider mb-2">Total Assets</p>
-              <p className="text-2xl font-bold text-emerald-400">{cents(data.assets.total_cents)}</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+            <div className="rounded-xl bg-slate-900/60 p-5">
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Total Assets</p>
+              <p className="text-2xl font-semibold tabular-nums text-emerald-300">{cents(data.assets.total_cents)}</p>
             </div>
-            <div className="bg-slate-900 border border-red-900/50 rounded-xl p-5">
-              <p className="text-xs text-red-500 uppercase tracking-wider mb-2">Total Liabilities</p>
-              <p className="text-2xl font-bold text-red-400">{cents(data.liabilities.total_cents)}</p>
+            <div className="rounded-xl bg-slate-900/60 p-5">
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Total Liabilities</p>
+              <p className="text-2xl font-semibold tabular-nums text-red-300">{cents(data.liabilities.total_cents)}</p>
             </div>
-            <div className={`bg-slate-900 border rounded-xl p-5 ${data.equity_cents >= 0 ? 'border-blue-900/50' : 'border-orange-900/50'}`}>
-              <p className="text-xs text-blue-500 uppercase tracking-wider mb-2">Net Equity</p>
-              <p className={`text-2xl font-bold ${data.equity_cents >= 0 ? 'text-blue-400' : 'text-orange-400'}`}>{cents(data.equity_cents)}</p>
+            <div className="rounded-xl bg-slate-900/60 p-5">
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Net Equity</p>
+              <p className={`text-2xl font-semibold tabular-nums ${data.equity_cents >= 0 ? 'text-blue-300' : 'text-orange-300'}`}>{cents(data.equity_cents)}</p>
             </div>
           </div>
 
           {/* ASSETS SECTION */}
-          <div className="mb-8">
+          <div className="mb-6">
             {(data.details.shopify_live as any)?.guard_warnings?.length > 0 && (
-              <div className="mb-3 bg-amber-950/30 border border-amber-800/50 rounded-lg px-4 py-2 space-y-0.5">
+              <div className="mb-3 rounded-lg bg-amber-500/10 px-3 py-2 space-y-0.5">
                 {(data.details.shopify_live as any).guard_warnings.map((w: string, i: number) => (
-                  <p key={i} className="text-[11px] text-amber-300">🛡 {w}</p>
+                  <p key={i} className="text-[12px] text-amber-300">🛡 {w}</p>
                 ))}
               </div>
             )}
-            <h2 className="text-lg font-bold text-emerald-400 mb-4 flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full bg-emerald-500" />
-              Assets
-            </h2>
-            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+            <div className="rounded-xl bg-slate-900/60 overflow-hidden">
+              <div className="px-5 py-3 border-b border-slate-800/60">
+                <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Assets</h2>
+              </div>
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
-                    <th className="text-left px-5 py-3">Account</th>
-                    <th className="text-left px-5 py-3">Details</th>
-                    <th className="text-right px-5 py-3">Amount</th>
+                  <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/60">
+                    <th className="text-left px-4 py-2">Account</th>
+                    <th className="text-left px-4 py-2">Details</th>
+                    <th className="text-right px-4 py-2">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
                   {/* Bank Accounts */}
                   {data.details.bankAccounts.map(acc => (
-                    <tr key={acc.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium">{acc.institution_name}</td>
-                      <td className="px-5 py-3 text-slate-400 text-xs">
+                    <tr key={acc.id} className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">{acc.institution_name}</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs">
                         {acc.account_name} ****{acc.last_four}
                         <span className="text-slate-600 ml-2">Updated {timeAgo(acc.balance_updated_at)}</span>
                         {acc.institution_name === 'Shopify Balance' && (
@@ -1044,34 +1119,34 @@ function CFOContent() {
                           </button>
                         )}
                       </td>
-                      <td className={`px-5 py-3 text-right font-medium ${acc.balance_available_cents < 0 ? 'text-red-400' : 'text-emerald-400'}`}>{cents(acc.balance_available_cents)}</td>
+                      <td className={`px-4 py-2 text-right font-medium tabular-nums ${acc.balance_available_cents < 0 ? 'text-red-300' : 'text-emerald-300'}`}>{cents(acc.balance_available_cents)}</td>
                     </tr>
                   ))}
                   {data.details.bankAccounts.length === 0 && (
-                    <tr className="border-b border-slate-800/50">
-                      <td className="px-5 py-3 text-white font-medium">Bank Accounts</td>
-                      <td className="px-5 py-3 text-slate-500 text-xs">No bank accounts connected</td>
-                      <td className="px-5 py-3 text-right text-slate-500">$0.00</td>
+                    <tr className="border-b border-slate-800/40">
+                      <td className="px-4 py-2 text-white font-medium">Bank Accounts</td>
+                      <td className="px-4 py-2 text-slate-500 text-xs">No bank accounts connected</td>
+                      <td className="px-4 py-2 text-right text-slate-500">$0.00</td>
                     </tr>
                   )}
 
                   {/* 3PL mode: payments come in via Stripe — show the Stripe payout balance instead of Shopify rows */}
                   {(data.details as any).ssFinance && (
-                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium">Stripe Payout Balance</td>
-                      <td className="px-5 py-3 text-slate-400 text-xs">
+                    <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">Stripe Payout Balance</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs">
                         <span className="text-[9px] bg-emerald-900/60 text-emerald-300 px-1.5 py-0.5 rounded mr-2 font-semibold">● LIVE</span>
                         money at Stripe not yet paid out — available {cents((data.details as any).ssFinance?.stripeBalance?.availableCents || 0)} + pending {cents((data.details as any).ssFinance?.stripeBalance?.pendingCents || 0)}
                       </td>
-                      <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents((data.assets as any).stripe_payout_cents || 0)}</td>
+                      <td className="px-4 py-2 text-right text-emerald-300 font-medium tabular-nums">{cents((data.assets as any).stripe_payout_cents || 0)}</td>
                     </tr>
                   )}
 
                   {/* Shopify Balance */}
                   {!(data.details as any).ssFinance && (
-                  <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                    <td className="px-5 py-3 text-white font-medium">Shopify Balance</td>
-                    <td className="px-5 py-3">
+                  <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                    <td className="px-4 py-2 text-white font-medium">Shopify Balance</td>
+                    <td className="px-4 py-2">
                       {data.details.shopify_live?.source === 'shopify_api' ? (
                         <span className="text-xs text-slate-400">
                           <span className="text-[9px] bg-emerald-900/60 text-emerald-300 px-1.5 py-0.5 rounded mr-2 font-semibold">● LIVE</span>
@@ -1082,9 +1157,9 @@ function CFOContent() {
                           <span className="text-slate-400 text-xs">$</span>
                           <input type="number" step="0.01" value={shopifyInput}
                             onChange={e => setShopifyInput(e.target.value)}
-                            className="w-32 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500" />
+                            className="w-32 bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none" />
                           <button onClick={saveShopifyBalance} disabled={savingShopify}
-                            className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] rounded">Save</button>
+                            className="px-2.5 py-1 bg-slate-100 hover:bg-white text-slate-900 text-[10px] font-semibold rounded-lg">Save</button>
                           <button onClick={() => setEditingShopify(false)} className="text-[10px] text-slate-500">Cancel</button>
                         </div>
                       ) : (
@@ -1093,15 +1168,15 @@ function CFOContent() {
                         </button>
                       )}
                     </td>
-                    <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(data.assets.cash_shopify_cents)}</td>
+                    <td className="px-4 py-2 text-right text-emerald-300 font-medium tabular-nums">{cents(data.assets.cash_shopify_cents)}</td>
                   </tr>
                   )}
 
                   {/* Shopify Payout */}
                   {!(data.details as any).ssFinance && (
-                  <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                    <td className="px-5 py-3 text-white font-medium">Shopify Payout</td>
-                    <td className="px-5 py-3">
+                  <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                    <td className="px-4 py-2 text-white font-medium">Shopify Payout</td>
+                    <td className="px-4 py-2">
                       {data.details.shopify_live?.source === 'shopify_api' ? (
                         <span className="text-xs text-slate-400">
                           <span className="text-[9px] bg-emerald-900/60 text-emerald-300 px-1.5 py-0.5 rounded mr-2 font-semibold">● LIVE</span>
@@ -1112,9 +1187,9 @@ function CFOContent() {
                           <span className="text-slate-400 text-xs">$</span>
                           <input type="number" step="0.01" value={payoutInput}
                             onChange={e => setPayoutInput(e.target.value)}
-                            className="w-32 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500" />
+                            className="w-32 bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none" />
                           <button onClick={saveShopifyPayout} disabled={savingPayout}
-                            className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] rounded">Save</button>
+                            className="px-2.5 py-1 bg-slate-100 hover:bg-white text-slate-900 text-[10px] font-semibold rounded-lg">Save</button>
                           <button onClick={() => setEditingPayout(false)} className="text-[10px] text-slate-500">Cancel</button>
                         </div>
                       ) : (
@@ -1123,100 +1198,100 @@ function CFOContent() {
                         </button>
                       )}
                     </td>
-                    <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(data.assets.shopify_payout_cents)}</td>
+                    <td className="px-4 py-2 text-right text-emerald-300 font-medium tabular-nums">{cents(data.assets.shopify_payout_cents)}</td>
                   </tr>
                   )}
 
                   {/* Reserves — live single row when connected; manual rows otherwise */}
                   {data.details.shopify_live?.source === 'shopify_api' && (
-                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium">Reserves</td>
-                      <td className="px-5 py-3">
+                    <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">Reserves</td>
+                      <td className="px-4 py-2">
                         <span className="text-xs text-slate-400">
                           <span className="text-[9px] bg-emerald-900/60 text-emerald-300 px-1.5 py-0.5 rounded mr-2 font-semibold">● LIVE</span>
                           Shopify holdback — net of all reserve events
                         </span>
                       </td>
-                      <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(data.assets.reserves_cents)}</td>
+                      <td className="px-4 py-2 text-right text-emerald-300 font-medium tabular-nums">{cents(data.assets.reserves_cents)}</td>
                     </tr>
                   )}
                   {data.details.shopify_live?.source !== 'shopify_api' && (data.details.reserves || []).map(r => (
                     editingReserveId === r.id ? (
-                      <tr key={r.id} className="border-b border-slate-800/50 bg-slate-800/20">
-                        <td className="px-5 py-3 text-white font-medium">Reserve</td>
-                        <td className="px-5 py-3">
+                      <tr key={r.id} className="border-b border-slate-800/40 bg-slate-800/20">
+                        <td className="px-4 py-2 text-white font-medium">Reserve</td>
+                        <td className="px-4 py-2">
                           <div className="flex items-center gap-2">
                             <input type="text" placeholder="Held at (e.g. PayPal)" value={reserveHeldAtInput}
                               onChange={e => setReserveHeldAtInput(e.target.value)}
-                              className="w-40 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500" />
+                              className="w-40 bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none" />
                             <span className="text-slate-400 text-xs">$</span>
                             <input type="number" step="0.01" placeholder="Amount" value={reserveAmountInput}
                               onChange={e => setReserveAmountInput(e.target.value)}
-                              className="w-28 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500" />
+                              className="w-28 bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none" />
                             <button onClick={() => saveReserve(r.id)} disabled={savingReserve}
-                              className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] rounded">Save</button>
+                              className="px-2.5 py-1 bg-slate-100 hover:bg-white text-slate-900 text-[10px] font-semibold rounded-lg">Save</button>
                             <button onClick={() => { setEditingReserveId(null); setReserveAmountInput(''); setReserveHeldAtInput(''); }}
                               className="text-[10px] text-slate-500">Cancel</button>
                           </div>
                         </td>
-                        <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(r.amount_cents)}</td>
+                        <td className="px-4 py-2 text-right text-emerald-300 font-medium tabular-nums">{cents(r.amount_cents)}</td>
                       </tr>
                     ) : (
-                      <tr key={r.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                        <td className="px-5 py-3 text-white font-medium">Reserve</td>
-                        <td className="px-5 py-3 text-slate-400 text-xs flex items-center gap-2">
+                      <tr key={r.id} className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                        <td className="px-4 py-2 text-white font-medium">Reserve</td>
+                        <td className="px-4 py-2 text-slate-400 text-xs flex items-center gap-2">
                           Held at: <span className="text-white font-medium">{r.held_at}</span>
                           <button onClick={() => { setEditingReserveId(r.id); setReserveAmountInput(String(r.amount_cents / 100)); setReserveHeldAtInput(r.held_at); }}
                             className="text-blue-400 hover:text-blue-300 ml-2">Edit</button>
                           <button onClick={() => deleteReserve(r.id)}
-                            className="text-red-400 hover:text-red-300">Del</button>
+                            className="text-red-400/80 hover:text-red-300">Del</button>
                         </td>
-                        <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(r.amount_cents)}</td>
+                        <td className="px-4 py-2 text-right text-emerald-300 font-medium tabular-nums">{cents(r.amount_cents)}</td>
                       </tr>
                     )
                   ))}
                   {/* Add Reserve (manual stores only — live stores read reserves from the API) */}
                   {data.details.shopify_live?.source === 'shopify_api' ? null : addingReserve ? (
-                    <tr className="border-b border-slate-800/50 bg-slate-800/20">
-                      <td className="px-5 py-3 text-white font-medium">New Reserve</td>
-                      <td className="px-5 py-3">
+                    <tr className="border-b border-slate-800/40 bg-slate-800/20">
+                      <td className="px-4 py-2 text-white font-medium">New Reserve</td>
+                      <td className="px-4 py-2">
                         <div className="flex items-center gap-2">
                           <input type="text" placeholder="Held at (e.g. PayPal)" value={reserveHeldAtInput}
                             onChange={e => setReserveHeldAtInput(e.target.value)}
-                            className="w-40 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500" />
+                            className="w-40 bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none" />
                           <span className="text-slate-400 text-xs">$</span>
                           <input type="number" step="0.01" placeholder="Amount" value={reserveAmountInput}
                             onChange={e => setReserveAmountInput(e.target.value)}
-                            className="w-28 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500" />
+                            className="w-28 bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none" />
                           <button onClick={() => saveReserve()} disabled={savingReserve}
-                            className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] rounded">Save</button>
+                            className="px-2.5 py-1 bg-slate-100 hover:bg-white text-slate-900 text-[10px] font-semibold rounded-lg">Save</button>
                           <button onClick={() => { setAddingReserve(false); setReserveAmountInput(''); setReserveHeldAtInput(''); }}
                             className="text-[10px] text-slate-500">Cancel</button>
                         </div>
                       </td>
-                      <td className="px-5 py-3" />
+                      <td className="px-4 py-2" />
                     </tr>
                   ) : (
-                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3" colSpan={2}>
+                    <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2" colSpan={2}>
                         <button onClick={() => setAddingReserve(true)} className="text-xs text-blue-400 hover:text-blue-300">
                           + Add Reserve
                         </button>
                       </td>
-                      <td className="px-5 py-3" />
+                      <td className="px-4 py-2" />
                     </tr>
                   )}
 
                   {/* Inventory */}
-                  <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                    <td className="px-5 py-3 text-white font-medium">Inventory</td>
-                    <td className="px-5 py-3 text-slate-400 text-xs">
+                  <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                    <td className="px-4 py-2 text-white font-medium">Inventory</td>
+                    <td className="px-4 py-2 text-slate-400 text-xs">
                       {editingOverride === 'inventory_details' ? (
                         <div className="flex items-center gap-2">
                           <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
-                            className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                            className="flex-1 bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none"
                             autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('inventory_details', overrideInput)} />
-                          <button onClick={() => saveOverride('inventory_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => saveOverride('inventory_details', overrideInput)} className="px-2.5 py-1 bg-slate-100 hover:bg-white text-slate-900 text-[10px] font-semibold rounded-lg">Save</button>
                           <button onClick={() => saveOverride('inventory_details', '')} className="text-[10px] text-red-400">Clear</button>
                           <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
                         </div>
@@ -1226,29 +1301,29 @@ function CFOContent() {
                         </span>
                       )}
                     </td>
-                    <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(data.assets.inventory_cents)}</td>
+                    <td className="px-4 py-2 text-right text-emerald-300 font-medium tabular-nums">{cents(data.assets.inventory_cents)}</td>
                   </tr>
 
                   {/* Loans Receivable */}
                   {data.assets.loans_receivable_cents > 0 && (
-                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium">Loans Receivable</td>
-                      <td className="px-5 py-3 text-slate-400 text-xs">
+                    <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">Loans Receivable</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs">
                         Money lent out (total: {cents(data.details.loans.lent_total_cents)})
                       </td>
-                      <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(data.assets.loans_receivable_cents)}</td>
+                      <td className="px-4 py-2 text-right text-emerald-300 font-medium tabular-nums">{cents(data.assets.loans_receivable_cents)}</td>
                     </tr>
                   )}
 
                   {/* 3PL mode: A/R from ShipSourced client billing */}
                   {(data.assets as any).ar_clients_cents > 0 && (
-                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium">Accounts Receivable — Clients</td>
-                      <td className="px-5 py-3 text-slate-400 text-xs max-w-[420px]">
+                    <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">Accounts Receivable — Clients</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs max-w-[420px]">
                         {((data.details as any).ssFinance?.arClients || []).slice(0, 6).map((c: any) => `${c.company} ${cents(c.owedCents)}`).join(' · ')}
                         {((data.details as any).ssFinance?.arClients || []).length > 6 && ` +${((data.details as any).ssFinance?.arClients || []).length - 6} more`}
                       </td>
-                      <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents((data.assets as any).ar_clients_cents)}</td>
+                      <td className="px-4 py-2 text-right text-emerald-300 font-medium tabular-nums">{cents((data.assets as any).ar_clients_cents)}</td>
                     </tr>
                   )}
 
@@ -1256,8 +1331,8 @@ function CFOContent() {
 
                   {/* Total */}
                   <tr className="bg-slate-800/30">
-                    <td className="px-5 py-3 text-white font-bold" colSpan={2}>Total Assets</td>
-                    <td className="px-5 py-3 text-right text-emerald-400 font-bold text-base">{cents(data.assets.total_cents)}</td>
+                    <td className="px-4 py-2 text-white font-bold" colSpan={2}>Total Assets</td>
+                    <td className="px-4 py-2 text-right text-emerald-300 font-bold text-base tabular-nums">{cents(data.assets.total_cents)}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1265,31 +1340,30 @@ function CFOContent() {
           </div>
 
           {/* LIABILITIES SECTION */}
-          <div className="mb-8">
-            <h2 className="text-lg font-bold text-red-400 mb-4 flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full bg-red-500" />
-              Liabilities
-            </h2>
-            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div className="mb-6">
+            <div className="rounded-xl bg-slate-900/60 overflow-hidden">
+              <div className="px-5 py-3 border-b border-slate-800/60">
+                <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Liabilities</h2>
+              </div>
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
-                    <th className="text-left px-5 py-3">Account</th>
-                    <th className="text-left px-5 py-3">Details</th>
-                    <th className="text-right px-5 py-3">Amount</th>
+                  <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/60">
+                    <th className="text-left px-4 py-2">Account</th>
+                    <th className="text-left px-4 py-2">Details</th>
+                    <th className="text-right px-4 py-2">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
                   {/* Current Unpaid Fulfillment Bill */}
-                  <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                    <td className="px-5 py-3 text-white font-medium">Current Unpaid Fulfillment Bill</td>
-                    <td className="px-5 py-3 text-slate-400 text-xs">
+                  <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                    <td className="px-4 py-2 text-white font-medium">Current Unpaid Fulfillment Bill</td>
+                    <td className="px-4 py-2 text-slate-400 text-xs">
                       {editingOverride === 'fulfillment_details' ? (
                         <div className="flex items-center gap-2">
                           <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
-                            className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                            className="flex-1 bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none"
                             placeholder="Custom details text..." autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('fulfillment_details', overrideInput)} />
-                          <button onClick={() => saveOverride('fulfillment_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => saveOverride('fulfillment_details', overrideInput)} className="px-2.5 py-1 bg-slate-100 hover:bg-white text-slate-900 text-[10px] font-semibold rounded-lg">Save</button>
                           <button onClick={() => saveOverride('fulfillment_details', '')} className="text-[10px] text-red-400">Clear</button>
                           <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
                         </div>
@@ -1317,18 +1391,18 @@ function CFOContent() {
                         </span>
                       )}
                     </td>
-                    <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(data.details.fulfillment.balance_cents)}</td>
+                    <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents(data.details.fulfillment.balance_cents)}</td>
                   </tr>
                   {/* Unfulfilled Orders Estimated Bill */}
-                  <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                    <td className="px-5 py-3 text-white font-medium">Unfulfilled Orders Est. Fulfillment Bill</td>
-                    <td className="px-5 py-3 text-slate-400 text-xs">
+                  <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                    <td className="px-4 py-2 text-white font-medium">Unfulfilled Orders Est. Fulfillment Bill</td>
+                    <td className="px-4 py-2 text-slate-400 text-xs">
                       {editingOverride === 'unfulfilled_details' ? (
                         <div className="flex items-center gap-2">
                           <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
-                            className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                            className="flex-1 bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none"
                             placeholder="Custom details text..." autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('unfulfilled_details', overrideInput)} />
-                          <button onClick={() => saveOverride('unfulfilled_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => saveOverride('unfulfilled_details', overrideInput)} className="px-2.5 py-1 bg-slate-100 hover:bg-white text-slate-900 text-[10px] font-semibold rounded-lg">Save</button>
                           <button onClick={() => saveOverride('unfulfilled_details', '')} className="text-[10px] text-red-400">Clear</button>
                           <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
                         </div>
@@ -1348,45 +1422,45 @@ function CFOContent() {
                         </span>
                       )}
                     </td>
-                    <td className="px-5 py-3 text-right text-orange-400 font-medium">{cents(data.details.fulfillment.estimated_cents)}</td>
+                    <td className="px-4 py-2 text-right text-orange-300 font-medium tabular-nums">{cents(data.details.fulfillment.estimated_cents)}</td>
                   </tr>
 
                   {/* Ad Invoices Balance Due - Per Platform */}
                   {data.details.adSpend.platforms && Object.entries(data.details.adSpend.platforms).map(([platform, info]: [string, any]) => (
-                    <tr key={platform} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium flex items-center gap-2">
+                    <tr key={platform} className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium flex items-center gap-2">
                         <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${
                           platform === 'facebook' ? 'bg-blue-900/50 text-blue-400' : 'bg-green-900/50 text-green-400'
                         }`}>{platform === 'facebook' ? 'FB' : 'Google'}</span>
                         Ad Invoices
                       </td>
-                      <td className="px-5 py-3 text-slate-400 text-xs">
+                      <td className="px-4 py-2 text-slate-400 text-xs">
                         Charged: {cents(info.charged)} — Paid: {cents(info.paid)}
                       </td>
-                      <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(Math.max(0, info.balance))}</td>
+                      <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents(Math.max(0, info.balance))}</td>
                     </tr>
                   ))}
                   {(!data.details.adSpend.platforms || Object.keys(data.details.adSpend.platforms).length === 0) && (
-                  <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                    <td className="px-5 py-3 text-white font-medium">Ad Invoices (Balance Due)</td>
-                    <td className="px-5 py-3 text-slate-400 text-xs">
+                  <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                    <td className="px-4 py-2 text-white font-medium">Ad Invoices (Balance Due)</td>
+                    <td className="px-4 py-2 text-slate-400 text-xs">
                       Invoiced: {cents(data.details.adSpend.total_invoiced_cents)} - Paid: {cents(data.details.adSpend.total_paid_cents)}
                     </td>
-                    <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(data.liabilities.ad_spend_pending_cents)}</td>
+                    <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents(data.liabilities.ad_spend_pending_cents)}</td>
                   </tr>
                   )}
 
                   {/* FB Pending (Unbilled) */}
                   {data.liabilities.fb_pending_balance_cents > 0 && (
-                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium">FB Pending (Unbilled)</td>
-                      <td className="px-5 py-3 text-slate-400 text-xs">
+                    <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">FB Pending (Unbilled)</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs">
                         {editingOverride === 'fb_pending_details' ? (
                           <div className="flex items-center gap-2">
                             <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
-                              className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                              className="flex-1 bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none"
                               autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('fb_pending_details', overrideInput)} />
-                            <button onClick={() => saveOverride('fb_pending_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                            <button onClick={() => saveOverride('fb_pending_details', overrideInput)} className="px-2.5 py-1 bg-slate-100 hover:bg-white text-slate-900 text-[10px] font-semibold rounded-lg">Save</button>
                             <button onClick={() => saveOverride('fb_pending_details', '')} className="text-[10px] text-red-400">Clear</button>
                             <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
                           </div>
@@ -1396,20 +1470,20 @@ function CFOContent() {
                           </span>
                         )}
                       </td>
-                      <td className="px-5 py-3 text-right text-orange-400 font-medium">{cents(data.liabilities.fb_pending_balance_cents)}</td>
+                      <td className="px-4 py-2 text-right text-orange-300 font-medium tabular-nums">{cents(data.liabilities.fb_pending_balance_cents)}</td>
                     </tr>
                   )}
 
                   {/* App Invoices */}
-                  <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                    <td className="px-5 py-3 text-white font-medium">App Invoices (Balance Due)</td>
-                    <td className="px-5 py-3 text-slate-400 text-xs">
+                  <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                    <td className="px-4 py-2 text-white font-medium">App Invoices (Balance Due)</td>
+                    <td className="px-4 py-2 text-slate-400 text-xs">
                       {editingOverride === 'app_invoices_details' ? (
                         <div className="flex items-center gap-2">
                           <input type="text" value={overrideInput} onChange={e => setOverrideInput(e.target.value)}
-                            className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                            className="flex-1 bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none"
                             autoFocus onKeyDown={e => e.key === 'Enter' && saveOverride('app_invoices_details', overrideInput)} />
-                          <button onClick={() => saveOverride('app_invoices_details', overrideInput)} className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded">Save</button>
+                          <button onClick={() => saveOverride('app_invoices_details', overrideInput)} className="px-2.5 py-1 bg-slate-100 hover:bg-white text-slate-900 text-[10px] font-semibold rounded-lg">Save</button>
                           <button onClick={() => saveOverride('app_invoices_details', '')} className="text-[10px] text-red-400">Clear</button>
                           <button onClick={() => setEditingOverride(null)} className="text-[10px] text-slate-500">Cancel</button>
                         </div>
@@ -1426,111 +1500,111 @@ function CFOContent() {
                         </span>
                       )}
                     </td>
-                    <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(data.liabilities.app_invoices_due_cents)}</td>
+                    <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents(data.liabilities.app_invoices_due_cents)}</td>
                   </tr>
 
                   {/* Payments in flight — initiated, not yet debited from any bank.
                       Committed money the bank balance still shows as free. */}
                   {(data.liabilities as any).payments_in_flight_cents > 0 && (
-                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium">Payments in Flight</td>
-                      <td className="px-5 py-3 text-slate-400 text-xs">
+                    <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">Payments in Flight</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs">
                         Sent but not yet taken from the bank — {((data.details as any).paymentsInFlight || []).map((p: any) => `${p.date} $${(p.amount_cents / 100).toFixed(2)} → ··${p.card_last4}`).join(' · ')}
                       </td>
-                      <td className="px-5 py-3 text-right text-red-400 font-medium">{cents((data.liabilities as any).payments_in_flight_cents)}</td>
+                      <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents((data.liabilities as any).payments_in_flight_cents)}</td>
                     </tr>
                   )}
 
                   {/* 3PL mode: owed to carriers */}
                   {(data.liabilities as any).carrier_owed_cents > 0 && (
-                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium">Carrier Invoices Owed</td>
-                      <td className="px-5 py-3 text-slate-400 text-xs">Carrier invoices exceeding payments made</td>
-                      <td className="px-5 py-3 text-right text-red-400 font-medium">{cents((data.liabilities as any).carrier_owed_cents)}</td>
+                    <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">Carrier Invoices Owed</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs">Carrier invoices exceeding payments made</td>
+                      <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents((data.liabilities as any).carrier_owed_cents)}</td>
                     </tr>
                   )}
                   {/* 3PL mode: client overpayments we owe back */}
                   {(data.liabilities as any).client_credits_cents > 0 && (
-                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium">Client Credit Balances</td>
-                      <td className="px-5 py-3 text-slate-400 text-xs">Clients who have paid ahead — owed back in services</td>
-                      <td className="px-5 py-3 text-right text-red-400 font-medium">{cents((data.liabilities as any).client_credits_cents)}</td>
+                    <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">Client Credit Balances</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs">Clients who have paid ahead — owed back in services</td>
+                      <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents((data.liabilities as any).client_credits_cents)}</td>
                     </tr>
                   )}
 
                   {/* Loans Payable */}
                   {data.liabilities.loans_payable_cents > 0 && (
-                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium">Loans Payable</td>
-                      <td className="px-5 py-3 text-slate-400 text-xs">
+                    <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">Loans Payable</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs">
                         Borrowed: {cents(data.details.loans.borrowed_total_cents)} — Remaining
                       </td>
-                      <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(data.liabilities.loans_payable_cents)}</td>
+                      <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents(data.liabilities.loans_payable_cents)}</td>
                     </tr>
                   )}
 
                   {/* Manual Credit Cards */}
                   {(data.details.manualCreditCards || []).map(cc => (
                     editingCCId === cc.id ? (
-                    <tr key={cc.id} className="border-b border-slate-800/50">
-                      <td className="px-5 py-3 text-white font-medium">Credit Card</td>
-                      <td className="px-5 py-3">
+                    <tr key={cc.id} className="border-b border-slate-800/40">
+                      <td className="px-4 py-2 text-white font-medium">Credit Card</td>
+                      <td className="px-4 py-2">
                         <div className="flex gap-2 items-center">
                           <input type="text" placeholder="Card name (e.g. Amex Gold 1006)" value={ccNameInput}
                             onChange={e => setCcNameInput(e.target.value)}
-                            className="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white w-48 focus:outline-none focus:border-red-500" />
+                            className="bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white w-48 focus:outline-none" />
                           <input type="number" step="0.01" placeholder="Amount owed" value={ccAmountInput}
                             onChange={e => setCcAmountInput(e.target.value)}
-                            className="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white w-28 focus:outline-none focus:border-red-500" />
+                            className="bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white w-28 focus:outline-none" />
                           <button onClick={() => saveManualCC(cc.id)} disabled={savingCC}
                             className="text-xs text-emerald-400 hover:text-emerald-300">Save</button>
                           <button onClick={() => { setEditingCCId(null); setCcNameInput(''); setCcAmountInput(''); }}
                             className="text-xs text-slate-500 hover:text-slate-400">Cancel</button>
                         </div>
                       </td>
-                      <td className="px-5 py-3" />
+                      <td className="px-4 py-2" />
                     </tr>
                     ) : (
-                    <tr key={cc.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-white font-medium">Credit Card</td>
-                      <td className="px-5 py-3 text-slate-400 text-xs">
+                    <tr key={cc.id} className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">Credit Card</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs">
                         {cc.card_name}
                         <button onClick={() => { setEditingCCId(cc.id); setCcNameInput(cc.card_name); setCcAmountInput(String(cc.amount_owed_cents / 100)); }}
                           className="ml-2 text-blue-400 hover:text-blue-300">Edit</button>
                         <button onClick={() => deleteManualCC(cc.id)}
-                          className="ml-2 text-red-400 hover:text-red-300">Delete</button>
+                          className="ml-2 text-red-400/80 hover:text-red-300">Delete</button>
                       </td>
-                      <td className="px-5 py-3 text-right text-red-400 font-medium">{cents(cc.amount_owed_cents)}</td>
+                      <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents(cc.amount_owed_cents)}</td>
                     </tr>
                     )
                   ))}
                   {/* Add Credit Card */}
                   {addingCC ? (
-                    <tr className="border-b border-slate-800/50">
-                      <td className="px-5 py-3 text-white font-medium">New Credit Card</td>
-                      <td className="px-5 py-3">
+                    <tr className="border-b border-slate-800/40">
+                      <td className="px-4 py-2 text-white font-medium">New Credit Card</td>
+                      <td className="px-4 py-2">
                         <div className="flex gap-2 items-center">
                           <input type="text" placeholder="Card name (e.g. Amex Gold 1006)" value={ccNameInput}
                             onChange={e => setCcNameInput(e.target.value)}
-                            className="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white w-48 focus:outline-none focus:border-red-500" />
+                            className="bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white w-48 focus:outline-none" />
                           <input type="number" step="0.01" placeholder="Amount owed" value={ccAmountInput}
                             onChange={e => setCcAmountInput(e.target.value)}
-                            className="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white w-28 focus:outline-none focus:border-red-500" />
+                            className="bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white w-28 focus:outline-none" />
                           <button onClick={() => saveManualCC()} disabled={savingCC}
                             className="text-xs text-emerald-400 hover:text-emerald-300">Save</button>
                           <button onClick={() => { setAddingCC(false); setCcNameInput(''); setCcAmountInput(''); }}
                             className="text-xs text-slate-500 hover:text-slate-400">Cancel</button>
                         </div>
                       </td>
-                      <td className="px-5 py-3" />
+                      <td className="px-4 py-2" />
                     </tr>
                   ) : (
-                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3" colSpan={2}>
+                    <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2" colSpan={2}>
                         <button onClick={() => setAddingCC(true)} className="text-xs text-blue-400 hover:text-blue-300">
                           + Add Credit Card</button>
                       </td>
-                      <td className="px-5 py-3" />
+                      <td className="px-4 py-2" />
                     </tr>
                   )}
 
@@ -1538,24 +1612,27 @@ function CFOContent() {
 
                   {/* Total */}
                   <tr className="bg-slate-800/30">
-                    <td className="px-5 py-3 text-white font-bold" colSpan={2}>Total Liabilities</td>
-                    <td className="px-5 py-3 text-right text-red-400 font-bold text-base">{cents(data.liabilities.total_cents)}</td>
+                    <td className="px-4 py-2 text-white font-bold" colSpan={2}>Total Liabilities</td>
+                    <td className="px-4 py-2 text-right text-red-300 font-bold text-base tabular-nums">{cents(data.liabilities.total_cents)}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
           </div>
 
+          {/* CARD CHARGES LINKED TO THIS STORE (individually payable) */}
+          {storeId && <StoreCardCharges storeId={storeId} />}
+
           {/* EQUITY */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+          <div className="mt-6 rounded-xl bg-slate-900/60 p-5">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-lg font-bold text-white">Net Equity (Assets - Liabilities)</h2>
-                <p className="text-xs text-slate-400 mt-1">
+                <h2 className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">Net Equity (Assets - Liabilities)</h2>
+                <p className="text-xs text-slate-400 mt-1 tabular-nums">
                   {cents(data.assets.total_cents)} - {cents(data.liabilities.total_cents)}
                 </p>
               </div>
-              <p className={`text-3xl font-bold ${data.equity_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              <p className={`text-3xl font-semibold tabular-nums ${data.equity_cents >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
                 {cents(data.equity_cents)}
               </p>
             </div>
@@ -1570,20 +1647,20 @@ function CFOContent() {
 
           {/* SNAPSHOT HISTORY */}
           {snapshots.length > 0 && (
-            <div className="mt-8 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-800">
-                <h2 className="text-sm font-semibold text-white">Saved Snapshots</h2>
+            <div className="mt-6 rounded-xl bg-slate-900/60 overflow-hidden">
+              <div className="px-5 py-3 border-b border-slate-800/60">
+                <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Saved Snapshots</h2>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
-                      <th className="text-left px-5 py-3">Date</th>
-                      <th className="text-right px-5 py-3">Assets</th>
-                      <th className="text-right px-5 py-3">Liabilities</th>
-                      <th className="text-right px-5 py-3">Equity</th>
-                      <th className="text-right px-5 py-3">Change</th>
-                      <th className="text-right px-5 py-3"></th>
+                    <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/60">
+                      <th className="text-left px-4 py-2">Date</th>
+                      <th className="text-right px-4 py-2">Assets</th>
+                      <th className="text-right px-4 py-2">Liabilities</th>
+                      <th className="text-right px-4 py-2">Equity</th>
+                      <th className="text-right px-4 py-2">Change</th>
+                      <th className="text-right px-4 py-2"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1593,24 +1670,24 @@ function CFOContent() {
                       const prev = snap.excluded ? undefined : snapshots.slice(i + 1).find(p => !p.excluded);
                       const change = prev ? snap.equity_cents - prev.equity_cents : 0;
                       return (
-                        <tr key={snap.id} className={`border-b border-slate-800/50 hover:bg-slate-800/30 ${snap.excluded ? 'opacity-40' : ''}`}>
-                          <td className="px-5 py-3 text-slate-300">{snap.snapshot_date}
+                        <tr key={snap.id} className={`border-b border-slate-800/40 hover:bg-slate-800/30 ${snap.excluded ? 'opacity-40' : ''}`}>
+                          <td className="px-4 py-2 text-slate-300">{snap.snapshot_date}
                             <span className="text-[10px] text-slate-600 ml-2">{snap.created_at?.slice(11, 16)}</span>
                             {!!snap.excluded && <span className="ml-2 text-[9px] uppercase bg-red-900/50 text-red-300 rounded px-1.5 py-0.5">blocked</span>}
                           </td>
-                          <td className="px-5 py-3 text-right text-emerald-400">{cents(snap.assets_cents)}</td>
-                          <td className="px-5 py-3 text-right text-red-400">{cents(snap.liabilities_cents)}</td>
-                          <td className={`px-5 py-3 text-right font-medium ${snap.equity_cents >= 0 ? 'text-blue-400' : 'text-orange-400'}`}>{cents(snap.equity_cents)}</td>
-                          <td className="px-5 py-3 text-right">
+                          <td className="px-4 py-2 text-right text-emerald-300 tabular-nums">{cents(snap.assets_cents)}</td>
+                          <td className="px-4 py-2 text-right text-red-300 tabular-nums">{cents(snap.liabilities_cents)}</td>
+                          <td className={`px-4 py-2 text-right font-medium tabular-nums ${snap.equity_cents >= 0 ? 'text-blue-300' : 'text-orange-300'}`}>{cents(snap.equity_cents)}</td>
+                          <td className="px-4 py-2 text-right">
                             {prev ? (
-                              <span className={`text-xs ${change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                              <span className={`text-xs tabular-nums ${change >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
                                 {change >= 0 ? '+' : ''}{cents(change)}
                               </span>
                             ) : (
                               <span className="text-xs text-slate-600">—</span>
                             )}
                           </td>
-                          <td className="px-5 py-3 text-right">
+                          <td className="px-4 py-2 text-right">
                             <button
                               onClick={async () => {
                                 const blocking = !snap.excluded;
@@ -1622,7 +1699,7 @@ function CFOContent() {
                                 loadData();
                               }}
                               title={snap.excluded ? 'Unblock — include this snapshot in the reconciliation chain again' : 'Block — skip this snapshot so you can fix data and resubmit a fresh one'}
-                              className={`text-xs px-2 py-1 rounded transition-colors ${snap.excluded ? 'text-emerald-400 hover:bg-emerald-900/30' : 'text-red-400 hover:bg-red-900/30'}`}
+                              className={`text-xs px-2 py-1 rounded-lg transition-colors ${snap.excluded ? 'text-emerald-300 hover:bg-emerald-900/30' : 'text-red-400/80 hover:text-red-300'}`}
                             >
                               {snap.excluded ? '↩ Unblock' : '🚫 Block'}
                             </button>
