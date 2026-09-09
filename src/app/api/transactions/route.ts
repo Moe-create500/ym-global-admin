@@ -16,6 +16,7 @@ export async function GET(req: NextRequest) {
   const beforeId = sp.get('beforeId') || '';
 
   const db = getDb();
+  try { db.exec('ALTER TABLE bank_transactions ADD COLUMN settled_at TEXT'); } catch { /* exists */ }
   const where: string[] = ["a.status != 'merged'"];
   const params: any[] = [];
   if (accountId) { where.push('bt.bank_account_id = ?'); params.push(accountId); }
@@ -45,6 +46,9 @@ export async function GET(req: NextRequest) {
   else if (storeFilter) { where.push('r.store_id = ?'); params.push(storeFilter); }
   const method = sp.get('method') || '';
   if (method) { where.push('r.method = ?'); params.push(method); }
+  const paid = sp.get('paid') || '';
+  if (paid === 'paid') where.push('bt.settled_at IS NOT NULL');
+  if (paid === 'unpaid') where.push('bt.settled_at IS NULL');
   const conf = sp.get('conf') || '';
   if (conf === 'high') where.push('r.confidence >= 0.95');
   if (conf === 'mid') where.push('r.confidence >= 0.8 AND r.confidence < 0.95');
@@ -59,7 +63,7 @@ export async function GET(req: NextRequest) {
   // verdict (category/store/method/confidence/evidence) and, when paired,
   // a summary of the OTHER leg — so "what's connected to what" is visible.
   const rows: any[] = db.prepare(`
-    SELECT bt.id, bt.date, bt.description, bt.amount_cents, bt.status,
+    SELECT bt.id, bt.date, bt.description, bt.amount_cents, bt.status, bt.settled_at,
       bt.counterparty, bt.category, bt.custom_category,
       a.id AS account_id, a.institution_name, a.account_name, a.nickname, a.last_four, a.account_type,
       r.category AS cls_category, r.suggested_category, r.method AS cls_method, r.confidence AS cls_confidence,

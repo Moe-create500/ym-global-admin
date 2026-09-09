@@ -13,6 +13,7 @@ interface Txn {
   description: string;
   amount_cents: number;
   status: string;
+  settled_at: string | null;
   counterparty: string | null;
   category: string | null;
   custom_category: string | null;
@@ -88,6 +89,7 @@ export default function TransactionsPage() {
   const [storeFilter, setStoreFilter] = useState('');
   const [methodFilter, setMethodFilter] = useState('');
   const [confFilter, setConfFilter] = useState('');
+  const [paidFilter, setPaidFilter] = useState('');
   const [storesList, setStoresList] = useState<{ id: string; name: string }[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -140,6 +142,7 @@ export default function TransactionsPage() {
     if (storeFilter) p.set('store', storeFilter);
     if (methodFilter) p.set('method', methodFilter);
     if (confFilter) p.set('conf', confFilter);
+    if (paidFilter) p.set('paid', paidFilter);
     if (append && cur) { p.set('beforeDate', cur.beforeDate); p.set('beforeId', cur.beforeId); }
     const d = await fetch(`/api/transactions?${p}`).then(r => r.json()).catch(() => null);
     if (d) {
@@ -153,9 +156,17 @@ export default function TransactionsPage() {
     }
     setLoading(false);
     setLoadingMore(false);
-  }, [qDebounced, kind, accountId, status, storeFilter, methodFilter, confFilter]);
+  }, [qDebounced, kind, accountId, status, storeFilter, methodFilter, confFilter, paidFilter]);
 
   useEffect(() => { load(false); }, [load]);
+
+  async function togglePaid(txnId: string, settled: boolean) {
+    await fetch('/api/store-charges', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ txnId, settled }),
+    }).catch(() => {});
+    setTxns(prev => prev.map(t => t.id === txnId ? { ...t, settled_at: settled ? new Date().toISOString() : null } : t));
+  }
 
   async function setCategory(txnId: string, category: string) {
     await fetch('/api/transactions', {
@@ -304,6 +315,12 @@ export default function TransactionsPage() {
             <option value="mid">80–95% (suggestions)</option>
             <option value="low">&lt; 80% (unknown)</option>
           </select>
+          <select value={paidFilter} onChange={e => setPaidFilter(e.target.value)}
+            className={`text-[13px] rounded-lg px-2.5 py-1.5 ${paidFilter ? 'bg-slate-700 text-white' : 'bg-slate-900/70 text-slate-300'}`}>
+            <option value="">Paid + unpaid</option>
+            <option value="unpaid">Unpaid only</option>
+            <option value="paid">✓ Paid only</option>
+          </select>
           <select value={methodFilter} onChange={e => setMethodFilter(e.target.value)}
             className={`text-[13px] rounded-lg px-2.5 py-1.5 ${methodFilter ? 'bg-slate-700 text-white' : 'bg-slate-900/70 text-slate-300'}`}>
             <option value="">Any method</option>
@@ -344,7 +361,7 @@ export default function TransactionsPage() {
                           return next;
                         })} />
                     </td>
-                    <td colSpan={6} className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+                    <td colSpan={7} className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
                       {date} <span className="normal-case font-normal">· {timeAgoStr(date + ' 12:00:00')}</span>
                     </td>
                   </tr>
@@ -403,13 +420,22 @@ export default function TransactionsPage() {
                           </span>
                         )}
                       </td>
+                      <td className="px-3 py-2 text-right whitespace-nowrap w-20" onClick={e => e.stopPropagation()}>
+                        {t.amount_cents < 0 && (t.settled_at ? (
+                          <button onClick={() => togglePaid(t.id, false)} title="marked paid — click to undo"
+                            className="text-[11px] text-emerald-400 hover:text-emerald-300">✓ paid</button>
+                        ) : (
+                          <button onClick={() => togglePaid(t.id, true)}
+                            className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-500 hover:text-emerald-300 hover:bg-emerald-500/10">mark paid</button>
+                        ))}
+                      </td>
                       <td className={`px-4 py-2 text-right tabular-nums font-medium whitespace-nowrap ${t.amount_cents >= 0 ? 'text-emerald-300' : 'text-slate-100'}`}>
                         {t.amount_cents >= 0 ? '+' : ''}{fmtCents(t.amount_cents)}
                       </td>
                     </tr>
                     {expanded === t.id && (
                       <tr className="bg-slate-950/50">
-                        <td colSpan={7} className="px-6 py-3">
+                        <td colSpan={8} className="px-6 py-3">
                           {/* WHY does YM believe this — the reconciliation evidence */}
                           {t.cls_reason ? (
                             <div className="space-y-1.5">
