@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import { reportSource } from '@/lib/source-registry';
 import { ensureConnectionSchema } from '@/lib/connection-state';
 import { findCanonicalMatch, ensureIdentitySchema } from '@/lib/account-identity';
+import { ensureIntegritySchema, recordTxnRevision } from '@/lib/financial-integrity';
 
 const PLAID_ENV = process.env.PLAID_ENV || 'production';
 const BASE = `https://${PLAID_ENV}.plaid.com`;
@@ -188,6 +189,7 @@ export async function reattachItemAccounts(db: Database.Database, itemId: string
 export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_synced: number; transactions_imported: number; errors: string[] }> {
   ensurePlaidSchema(db);
   ensureConnectionSchema(db);
+  ensureIntegritySchema(db);
   const items: any[] = db.prepare("SELECT * FROM plaid_items WHERE status = 'active'").all();
   let synced = 0;
   let txns = 0;
@@ -269,20 +271,26 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
         // replacement — then removed deletes the pending and the transaction
         // vanishes entirely. Retractions and amendments run FIRST.
         for (const t of d.removed || []) {
-          const row: any = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(t.transaction_id);
+          const row: any = db.prepare('SELECT * FROM bank_transactions WHERE teller_transaction_id = ?').get(t.transaction_id);
           if (!row) continue;
+          // Source truth is never silently destroyed — prior state preserved
+          recordTxnRevision(db, row.id, 'provider_removed', row, null);
           db.prepare('UPDATE txn_links SET pair_txn_id = NULL WHERE pair_txn_id = ?').run(row.id);
           db.prepare('DELETE FROM txn_links WHERE txn_id = ?').run(row.id);
           db.prepare('DELETE FROM bank_transactions WHERE id = ?').run(row.id);
           runRemoved++;
-          console.log(`[plaid] removed retracted txn ${t.transaction_id} (bank reversed it)`);
+          console.log(`[plaid] removed retracted txn ${t.transaction_id} (bank reversed it) — prior state in txn_revisions`);
         }
         for (const t of d.modified || []) {
-          const row: any = db.prepare('SELECT id FROM bank_transactions WHERE teller_transaction_id = ?').get(t.transaction_id);
+          const row: any = db.prepare('SELECT * FROM bank_transactions WHERE teller_transaction_id = ?').get(t.transaction_id);
           if (!row) continue;
+          const next = { date: t.date, description: t.name || t.merchant_name || '', amount_cents: -Math.round((t.amount || 0) * 100), status: t.pending ? 'pending' : 'posted' };
+          // Only audit real changes (Plaid re-sends unchanged rows sometimes)
+          if (row.date !== next.date || row.description !== next.description || row.amount_cents !== next.amount_cents || row.status !== next.status) {
+            recordTxnRevision(db, row.id, 'provider_modified', row, next);
+          }
           db.prepare(`UPDATE bank_transactions SET date = ?, description = ?, amount_cents = ?, status = ?, counterparty = ? WHERE id = ?`)
-            .run(t.date, t.name || t.merchant_name || '', -Math.round((t.amount || 0) * 100),
-              t.pending ? 'pending' : 'posted', t.merchant_name || null, row.id);
+            .run(next.date, next.description, next.amount_cents, next.status, t.merchant_name || null, row.id);
           runModified++;
         }
         for (const t of d.added || []) {

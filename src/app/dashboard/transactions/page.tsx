@@ -51,6 +51,9 @@ export default function TransactionsPage() {
   const [hasMore, setHasMore] = useState(false);
   const [cursor, setCursor] = useState<{ beforeDate: string; beforeId: string } | null>(null);
 
+  const [health, setHealth] = useState<{ issues: { key: string; severity: string; label: string; count: number; amount_cents?: number; href?: string }[] } | null>(null);
+  useEffect(() => { fetch('/api/health-finance').then(r => r.json()).then(setHealth).catch(() => {}); }, []);
+
   const [q, setQ] = useState('');
   const [qDebounced, setQDebounced] = useState('');
   const [kind, setKind] = useState<'all' | 'bank' | 'card'>('all');
@@ -108,6 +111,22 @@ export default function TransactionsPage() {
           <p className="text-sm text-slate-400 mt-1">Every movement across all bank accounts and credit cards</p>
         </div>
       </div>
+
+      {/* Integrity issues — the system reports what's wrong, you don't hunt */}
+      {health && health.issues.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-5">
+          {health.issues.map(i => (
+            <a key={i.key} href={i.href || '#'}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors ${
+                i.severity === 'critical' ? 'bg-red-500/10 text-red-300 hover:bg-red-500/20'
+                : i.severity === 'warning' ? 'bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
+                : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800'}`}>
+              <span className="font-semibold tabular-nums">{i.count}</span> {i.label}
+              {i.amount_cents != null && i.amount_cents > 0 && <span className="opacity-70 tabular-nums">· {fmtCents(i.amount_cents)}</span>}
+            </a>
+          ))}
+        </div>
+      )}
 
       {/* Filter-scoped totals */}
       <div className="flex flex-wrap items-end gap-x-10 gap-y-3 mb-6">
