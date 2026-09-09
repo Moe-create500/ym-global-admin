@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { computePnl } from '@/lib/finance-core';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -193,21 +194,14 @@ export async function POST(req: NextRequest) {
 
   for (const day of dailyTotals) {
     const existing: any = db.prepare(
-      'SELECT id, ad_spend_cents, shopify_fees_cents, other_costs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
+      'SELECT id, refunds_cents, cogs_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
     ).get(storeId, day.date);
 
     if (existing) {
-      const adSpend = existing.ad_spend_cents || 0;
-      const shopifyFees = existing.shopify_fees_cents || 0;
-      const otherCosts = existing.other_costs_cents || 0;
-      const shipping = existing.shipping_cost_cents || 0;
-      const pickPack = existing.pick_pack_cents || 0;
-      const packaging = existing.packaging_cents || 0;
-      const chargebacks = existing.chargeback_cents || 0;
-      const appCosts = existing.app_costs_cents || 0;
-      const totalCosts = shipping + pickPack + packaging + adSpend + shopifyFees + otherCosts + chargebacks + appCosts;
-      const netProfit = day.revenue - totalCosts;
-      const margin = day.revenue > 0 ? (netProfit / day.revenue) * 100 : 0;
+      // This write also sets source = 'csv_import', so compute with that source
+      const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+        ...existing, revenue_cents: day.revenue, source: 'csv_import',
+      });
 
       db.prepare(`
         UPDATE daily_pnl SET
@@ -219,8 +213,9 @@ export async function POST(req: NextRequest) {
     } else {
       // New row: calculate Shopify fee (2.6% + $0.30/txn)
       const shopifyFee = Math.round(day.revenue * 0.026) + ((day.orders || 0) * 30);
-      const netProfit = day.revenue - shopifyFee;
-      const margin = day.revenue > 0 ? (netProfit / day.revenue) * 100 : 0;
+      const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+        revenue_cents: day.revenue, shopify_fees_cents: shopifyFee, source: 'csv_import',
+      });
       db.prepare(`
         INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count,
           cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents,
@@ -242,13 +237,10 @@ export async function POST(req: NextRequest) {
 
   for (const ad of adDays) {
     const pnlRow: any = db.prepare(
-      'SELECT id, revenue_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
+      'SELECT id, revenue_cents, refunds_cents, source, cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
     ).get(storeId, ad.date);
     if (pnlRow) {
-      const totalCosts = (pnlRow.shipping_cost_cents || 0) + (pnlRow.pick_pack_cents || 0) +
-        (pnlRow.packaging_cents || 0) + ad.total + (pnlRow.shopify_fees_cents || 0) + (pnlRow.other_costs_cents || 0) + (pnlRow.chargeback_cents || 0) + (pnlRow.app_costs_cents || 0);
-      const netProfit = (pnlRow.revenue_cents || 0) - totalCosts;
-      const margin = pnlRow.revenue_cents > 0 ? (netProfit / pnlRow.revenue_cents) * 100 : 0;
+      const { netProfitCents: netProfit, marginPct: margin } = computePnl({ ...pnlRow, ad_spend_cents: ad.total });
       db.prepare('UPDATE daily_pnl SET ad_spend_cents = ?, net_profit_cents = ?, margin_pct = ?, updated_at = datetime(\'now\') WHERE id = ?')
         .run(ad.total, netProfit, margin, pnlRow.id);
     }
@@ -256,14 +248,11 @@ export async function POST(req: NextRequest) {
 
   // Re-calculate Shopify fees from revenue (2.6% + $0.30/txn)
   const pnlDays: any[] = db.prepare(
-    'SELECT id, date, revenue_cents, order_count, ad_spend_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ?'
+    'SELECT id, date, revenue_cents, refunds_cents, source, order_count, cogs_cents, ad_spend_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ?'
   ).all(storeId);
   for (const row of pnlDays) {
     const shopifyFee = Math.round((row.revenue_cents || 0) * 0.026) + ((row.order_count || 0) * 30);
-    const totalCosts = shopifyFee + (row.ad_spend_cents || 0) + (row.shipping_cost_cents || 0) +
-      (row.pick_pack_cents || 0) + (row.packaging_cents || 0) + (row.other_costs_cents || 0) + (row.chargeback_cents || 0) + (row.app_costs_cents || 0);
-    const netProfit = (row.revenue_cents || 0) - totalCosts;
-    const margin = row.revenue_cents > 0 ? (netProfit / row.revenue_cents) * 100 : 0;
+    const { netProfitCents: netProfit, marginPct: margin } = computePnl({ ...row, shopify_fees_cents: shopifyFee });
     db.prepare('UPDATE daily_pnl SET shopify_fees_cents = ?, net_profit_cents = ?, margin_pct = ?, updated_at = datetime(\'now\') WHERE id = ?')
       .run(shopifyFee, netProfit, margin, row.id);
   }

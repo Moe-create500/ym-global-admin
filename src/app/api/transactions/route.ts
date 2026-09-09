@@ -5,6 +5,7 @@ import {
   getLedger, getCardIntel, getPaymentsView, getSummary, getCardClarity, getTruth, getPayPlan, getSystemHealth,
 } from '@/lib/transactions-intel';
 import { brainCached, dropBrainCache } from '@/lib/brain-cache';
+import { computePnl } from '@/lib/finance-core';
 
 export const dynamic = 'force-dynamic';
 
@@ -260,18 +261,16 @@ export async function POST(req: NextRequest) {
       const row: any = db.prepare('SELECT * FROM daily_pnl WHERE store_id = ? AND date = ?').get(b.storeId, t.date);
       if (row) {
         const other = (row.other_costs_cents || 0) + amt;
-        const totalCosts = (row.cogs_cents || 0) + (row.shipping_cost_cents || 0) + (row.pick_pack_cents || 0)
-          + (row.packaging_cents || 0) + (row.ad_spend_cents || 0) + (row.shopify_fees_cents || 0)
-          + other + (row.chargeback_cents || 0) + (row.app_costs_cents || 0);
-        const net = (row.revenue_cents || 0) - totalCosts;
+        const { netProfitCents: net, marginPct: margin } = computePnl({ ...row, other_costs_cents: other });
         db.prepare(`UPDATE daily_pnl SET other_costs_cents = ?, other_costs_note = ?,
           net_profit_cents = ?, margin_pct = ?, updated_at = datetime('now') WHERE id = ?`)
           .run(other, [row.other_costs_note, note].filter(Boolean).join(' · ').slice(0, 500),
-            net, row.revenue_cents > 0 ? (net / row.revenue_cents) * 100 : 0, row.id);
+            net, margin, row.id);
       } else {
+        const { netProfitCents: net } = computePnl({ revenue_cents: 0, other_costs_cents: amt, source: 'manual' });
         db.prepare(`INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count, other_costs_cents, other_costs_note, net_profit_cents, margin_pct, source)
           VALUES (?, ?, ?, 0, 0, ?, ?, ?, 0, 'manual')`)
-          .run(crypto.randomUUID(), b.storeId, t.date, amt, note, -amt);
+          .run(crypto.randomUUID(), b.storeId, t.date, amt, note, net);
       }
       billed++; totalCents += amt;
     }

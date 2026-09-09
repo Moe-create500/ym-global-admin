@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { computePnl } from '@/lib/finance-core';
 
 export const dynamic = 'force-dynamic';
 
@@ -163,15 +164,13 @@ export async function POST(req: NextRequest) {
 
     for (const day of dailyCharges) {
       const pnlRow: any = db.prepare(
-        'SELECT id, revenue_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents, pick_pack_cents, packaging_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
+        'SELECT id, revenue_cents, refunds_cents, source, cogs_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents, pick_pack_cents, packaging_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
       ).get(storeId, day.date);
       if (pnlRow) {
         const shopifyFee = Math.round((pnlRow.revenue_cents || 0) * 0.026) + ((day.order_count || 0) * 30);
-        const totalCosts = day.total_charges + (pnlRow.pick_pack_cents || 0) +
-          (pnlRow.packaging_cents || 0) + (pnlRow.ad_spend_cents || 0) +
-          shopifyFee + (pnlRow.other_costs_cents || 0);
-        const netProfit = (pnlRow.revenue_cents || 0) - totalCosts;
-        const margin = pnlRow.revenue_cents > 0 ? (netProfit / pnlRow.revenue_cents) * 100 : 0;
+        const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+          ...pnlRow, shipping_cost_cents: day.total_charges, shopify_fees_cents: shopifyFee,
+        });
         db.prepare(`
           UPDATE daily_pnl SET shipping_cost_cents = ?, shopify_fees_cents = ?, net_profit_cents = ?, margin_pct = ?, updated_at = datetime('now')
           WHERE id = ?

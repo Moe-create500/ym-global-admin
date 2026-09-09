@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { computePnl } from '@/lib/finance-core';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -45,10 +46,11 @@ export async function POST(req: NextRequest) {
     const shopifyFeesCents = Math.round((parseFloat(row.shopify_fees) || 0) * 100);
     const otherCostsCents = Math.round((parseFloat(row.other_costs) || 0) * 100);
 
-    const totalCosts = cogsCents + shippingCents + pickPackCents + packagingCents +
-      adSpendCents + shopifyFeesCents + otherCostsCents;
-    const netProfit = revenueCents - totalCosts;
-    const margin = revenueCents > 0 ? (netProfit / revenueCents) * 100 : 0;
+    const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+      revenue_cents: revenueCents, cogs_cents: cogsCents, shipping_cost_cents: shippingCents,
+      pick_pack_cents: pickPackCents, packaging_cents: packagingCents, ad_spend_cents: adSpendCents,
+      shopify_fees_cents: shopifyFeesCents, other_costs_cents: otherCostsCents, source: 'import',
+    });
 
     const existing: any = db.prepare(
       'SELECT id FROM daily_pnl WHERE store_id = ? AND date = ?'

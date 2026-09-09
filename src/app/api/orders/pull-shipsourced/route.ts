@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getAllClientOrdersList, getNewClientOrders, getClientBillingConfig, SSBillingProfileRate } from '@/lib/shipsourced';
+import { computePnl } from '@/lib/finance-core';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -255,16 +256,14 @@ export async function POST(req: NextRequest) {
   let recalculated = 0;
   for (const day of affectedDates) {
     const pnl: any = db.prepare(
-      'SELECT id, ad_spend_cents, shopify_fees_cents, other_costs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
+      'SELECT id, refunds_cents, source, cogs_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
     ).get(storeId, day.date);
 
     if (pnl) {
       const shopifyFee = Math.round((day.revenue || 0) * 0.026) + ((day.orders || 0) * 30);
-      const totalCosts = (pnl.shipping_cost_cents || 0) + (pnl.pick_pack_cents || 0) +
-        (pnl.packaging_cents || 0) + (pnl.ad_spend_cents || 0) + shopifyFee +
-        (pnl.other_costs_cents || 0) + (pnl.chargeback_cents || 0) + (pnl.app_costs_cents || 0);
-      const netProfit = day.revenue - totalCosts;
-      const margin = day.revenue > 0 ? (netProfit / day.revenue) * 100 : 0;
+      const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+        ...pnl, revenue_cents: day.revenue, shopify_fees_cents: shopifyFee,
+      });
       db.prepare(`
         UPDATE daily_pnl SET revenue_cents = ?, order_count = ?, shopify_fees_cents = ?,
           net_profit_cents = ?, margin_pct = ?, updated_at = datetime('now')
@@ -273,8 +272,9 @@ export async function POST(req: NextRequest) {
       recalculated++;
     } else {
       const shopifyFee = Math.round((day.revenue || 0) * 0.026) + ((day.orders || 0) * 30);
-      const netProfit = day.revenue - shopifyFee;
-      const margin = day.revenue > 0 ? (netProfit / day.revenue) * 100 : 0;
+      const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+        revenue_cents: day.revenue, shopify_fees_cents: shopifyFee, source: 'shipsourced',
+      });
       db.prepare(`
         INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count,
           cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents,

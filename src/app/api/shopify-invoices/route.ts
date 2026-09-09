@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import crypto from 'crypto';
 import { dropBrainCache } from '@/lib/brain-cache';
+import { computePnl } from '@/lib/finance-core';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,20 +22,16 @@ function rollUpAppCosts(db: any, storeId: string) {
 
   for (const day of days) {
     const pnl: any = db.prepare(
-      'SELECT id, revenue_cents, ad_spend_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, other_costs_cents, chargeback_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
+      'SELECT id, revenue_cents, refunds_cents, source, cogs_cents, ad_spend_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, other_costs_cents, chargeback_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
     ).get(storeId, day.date);
 
     if (pnl) {
-      const totalCosts = (pnl.shipping_cost_cents || 0) + (pnl.pick_pack_cents || 0) +
-        (pnl.packaging_cents || 0) + (pnl.ad_spend_cents || 0) + (pnl.shopify_fees_cents || 0) +
-        (pnl.other_costs_cents || 0) + (pnl.chargeback_cents || 0) + day.app_costs;
-      const netProfit = (pnl.revenue_cents || 0) - totalCosts;
-      const margin = pnl.revenue_cents > 0 ? (netProfit / pnl.revenue_cents) * 100 : 0;
+      const { netProfitCents: netProfit, marginPct: margin } = computePnl({ ...pnl, app_costs_cents: day.app_costs });
       db.prepare('UPDATE daily_pnl SET app_costs_cents = ?, net_profit_cents = ?, margin_pct = ?, updated_at = datetime(\'now\') WHERE id = ?')
         .run(day.app_costs, netProfit, margin, pnl.id);
     } else {
       // Create a new P&L row for dates that only have invoices
-      const netProfit = -day.app_costs;
+      const { netProfitCents: netProfit } = computePnl({ revenue_cents: 0, app_costs_cents: day.app_costs, source: 'invoices' });
       db.prepare(`
         INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count,
           cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents,

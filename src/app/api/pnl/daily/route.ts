@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { computePnl } from '@/lib/finance-core';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -52,11 +53,9 @@ export async function POST(req: NextRequest) {
     const adSpend = adSpendCents !== undefined ? adSpendCents : existing.ad_spend_cents;
     const shopifyFees = shopifyFeesCents !== undefined ? shopifyFeesCents : existing.shopify_fees_cents;
     const otherCosts = otherCostsCents !== undefined ? otherCostsCents : existing.other_costs_cents;
-    const totalCosts = (existing.cogs_cents || 0) + (existing.shipping_cost_cents || 0) +
-      (existing.pick_pack_cents || 0) + (existing.packaging_cents || 0) + adSpend + shopifyFees + otherCosts +
-      (existing.chargeback_cents || 0) + (existing.app_costs_cents || 0);
-    const netProfit = (existing.revenue_cents || 0) - totalCosts;
-    const margin = existing.revenue_cents > 0 ? (netProfit / existing.revenue_cents) * 100 : 0;
+    const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+      ...existing, ad_spend_cents: adSpend, shopify_fees_cents: shopifyFees, other_costs_cents: otherCosts,
+    });
     const isConfirmed = confirm !== undefined ? (confirm ? 1 : 0) : existing.is_confirmed;
 
     db.prepare(`
@@ -70,8 +69,10 @@ export async function POST(req: NextRequest) {
     const adSpend = adSpendCents || 0;
     const shopifyFees = shopifyFeesCents || 0;
     const otherCosts = otherCostsCents || 0;
-    const totalCosts = adSpend + shopifyFees + otherCosts;
-    const netProfit = -totalCosts;
+    const { netProfitCents: netProfit } = computePnl({
+      revenue_cents: 0, ad_spend_cents: adSpend, shopify_fees_cents: shopifyFees,
+      other_costs_cents: otherCosts, source: 'manual',
+    });
 
     db.prepare(`
       INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count, cogs_cents,

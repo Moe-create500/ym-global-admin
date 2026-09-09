@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { syncFacebookAds } from '@/lib/sync';
+import { computePnl } from '@/lib/finance-core';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -186,14 +187,10 @@ export async function POST(req: NextRequest) {
 
       for (const day of days as any[]) {
         const existing: any = db.prepare(
-          'SELECT id, revenue_cents, cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, other_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
+          'SELECT id, revenue_cents, refunds_cents, source, cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
         ).get(profile.store_id, day.date);
         if (existing) {
-          const totalCosts = (existing.cogs_cents || 0) + (existing.shipping_cost_cents || 0) +
-            (existing.pick_pack_cents || 0) + (existing.packaging_cents || 0) +
-            day.total + (existing.shopify_fees_cents || 0) + (existing.other_costs_cents || 0);
-          const netProfit = (existing.revenue_cents || 0) - totalCosts;
-          const margin = existing.revenue_cents > 0 ? (netProfit / existing.revenue_cents) * 100 : 0;
+          const { netProfitCents: netProfit, marginPct: margin } = computePnl({ ...existing, ad_spend_cents: day.total });
           db.prepare('UPDATE daily_pnl SET ad_spend_cents = ?, net_profit_cents = ?, margin_pct = ?, updated_at = datetime(\'now\') WHERE id = ?')
             .run(day.total, netProfit, margin, existing.id);
         }

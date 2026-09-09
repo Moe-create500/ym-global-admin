@@ -1,4 +1,5 @@
 import { getDb } from '@/lib/db';
+import { computePnl } from '@/lib/finance-core';
 import crypto from 'crypto';
 
 /** Shopify payment processing fee rate (2.6% + 30c on Basic plan) */
@@ -64,7 +65,7 @@ export function recalcDailyPnl(
   // Hoisted statements + one transaction — full-store recalcs touch thousands
   // of days; per-day prepare + autocommit was the slow path.
   const selectPnl = db.prepare(
-    `SELECT id, revenue_cents, cogs_cents, ad_spend_cents,
+    `SELECT id, revenue_cents, refunds_cents, source, cogs_cents, ad_spend_cents,
             other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed,
             order_count
      FROM daily_pnl WHERE store_id = ? AND date = ?`);
@@ -94,28 +95,30 @@ export function recalcDailyPnl(
       if (pnl.is_confirmed) continue;
 
       const revenue = pnl.revenue_cents || 0;
-      const cogs = pnl.cogs_cents || 0;
       const orders = pnl.order_count || day.order_count || 0;
-      const adSpend = pnl.ad_spend_cents || 0;
-      const otherCosts = pnl.other_costs_cents || 0;
-      const chargebacks = pnl.chargeback_cents || 0;
-      const appCosts = pnl.app_costs_cents || 0;
 
       // Auto-calculate Shopify fees: 2.6% of revenue + 30c per order
       const shopifyFees = Math.round(revenue * SHOPIFY_FEE_RATE) + (orders * SHOPIFY_FEE_PER_TXN_CENTS);
 
-      const totalCosts = cogs + fulfillmentCents + adSpend + shopifyFees + otherCosts + chargebacks + appCosts;
-      const netProfit = revenue - totalCosts;
-      const margin = revenue > 0 ? (netProfit / revenue) * 100 : 0;
+      const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+        ...pnl,
+        shipping_cost_cents: fulfillmentCents,
+        pick_pack_cents: 0,
+        packaging_cents: 0,
+        shopify_fees_cents: shopifyFees,
+      });
 
       updatePnl.run(fulfillmentCents, shopifyFees, netProfit, margin, pnl.id);
     } else {
       const revenue = day.total_revenue || 0;
       const orders = day.order_count || 0;
       const shopifyFees = Math.round(revenue * SHOPIFY_FEE_RATE) + (orders * SHOPIFY_FEE_PER_TXN_CENTS);
-      const totalCosts = fulfillmentCents + shopifyFees;
-      const netProfit = revenue - totalCosts;
-      const margin = revenue > 0 ? (netProfit / revenue) * 100 : 0;
+      const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+        revenue_cents: revenue,
+        source: 'orders',
+        shipping_cost_cents: fulfillmentCents,
+        shopify_fees_cents: shopifyFees,
+      });
 
       insertPnl.run(crypto.randomUUID(), storeId, day.date, revenue, orders,
         fulfillmentCents, shopifyFees, netProfit, margin);
@@ -134,17 +137,16 @@ export function recalcDailyPnl(
         if (pnl.is_confirmed) continue;
 
         const revenue = pnl.revenue_cents || 0;
-        const cogs = pnl.cogs_cents || 0;
         const orders = pnl.order_count || 0;
-        const adSpend = pnl.ad_spend_cents || 0;
-        const otherCosts = pnl.other_costs_cents || 0;
-        const chargebacks = pnl.chargeback_cents || 0;
-        const appCosts = pnl.app_costs_cents || 0;
         const shopifyFees = Math.round(revenue * SHOPIFY_FEE_RATE) + (orders * SHOPIFY_FEE_PER_TXN_CENTS);
 
-        const totalCosts = cogs + lumpSumCents + adSpend + shopifyFees + otherCosts + chargebacks + appCosts;
-        const netProfit = revenue - totalCosts;
-        const margin = revenue > 0 ? (netProfit / revenue) * 100 : 0;
+        const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+          ...pnl,
+          shipping_cost_cents: lumpSumCents,
+          pick_pack_cents: 0,
+          packaging_cents: 0,
+          shopify_fees_cents: shopifyFees,
+        });
 
         updatePnl.run(lumpSumCents, shopifyFees, netProfit, margin, pnl.id);
       }

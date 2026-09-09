@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { computePnl } from '@/lib/finance-core';
 
 /** Roll lost chargebacks into daily_pnl.chargeback_cents and recalc net profit.
  *  Shared by the chargebacks API routes and the Shopify Payments dispute sync.
@@ -19,7 +20,7 @@ export function rollUpChargebacks(db: Database.Database, storeId: string) {
   const dates = Array.from(target.keys());
   const placeholders = dates.map(() => '?').join(',');
   const rows: any[] = db.prepare(`
-    SELECT id, date, revenue_cents, cogs_cents, shipping_cost_cents, pick_pack_cents,
+    SELECT id, date, revenue_cents, refunds_cents, source, cogs_cents, shipping_cost_cents, pick_pack_cents,
       packaging_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents,
       app_costs_cents, chargeback_cents
     FROM daily_pnl
@@ -35,11 +36,7 @@ export function rollUpChargebacks(db: Database.Database, storeId: string) {
     for (const row of rows) {
       const want = target.get(row.date) || 0;
       if ((row.chargeback_cents || 0) === want) continue;
-      const totalCosts = (row.cogs_cents || 0) + (row.shipping_cost_cents || 0) + (row.pick_pack_cents || 0) +
-        (row.packaging_cents || 0) + (row.ad_spend_cents || 0) + (row.shopify_fees_cents || 0) +
-        (row.other_costs_cents || 0) + (row.app_costs_cents || 0) + want;
-      const netProfit = (row.revenue_cents || 0) - totalCosts;
-      const margin = row.revenue_cents > 0 ? (netProfit / row.revenue_cents) * 100 : 0;
+      const { netProfitCents: netProfit, marginPct: margin } = computePnl({ ...row, chargeback_cents: want });
       update.run(want, netProfit, margin, row.id);
     }
   })();

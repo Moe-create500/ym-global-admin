@@ -4,6 +4,7 @@ import { computeFulfillmentEstimates } from '@/lib/fulfillment-estimate';
 import { calculateShopifyFees } from '@/lib/recalc-pnl';
 import { getAdInsights, getAdCreatives, getBillingCharges, getAccountPaymentMethods, getVideoSourceUrls, getPages } from '@/lib/facebook';
 import { reportSource } from '@/lib/source-registry';
+import { computePnl } from '@/lib/finance-core';
 import crypto from 'crypto';
 
 /**
@@ -167,7 +168,7 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
       const fulfillmentCharges = (rev.charges || 0) + fulfillmentEst;
 
       const existing: any = db.prepare(
-        'SELECT id, revenue_cents, order_count, ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed, source FROM daily_pnl WHERE store_id = ? AND date = ?'
+        'SELECT id, revenue_cents, order_count, ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents, refunds_cents, is_confirmed, source FROM daily_pnl WHERE store_id = ? AND date = ?'
       ).get(store.id, day);
 
       // Auto-calculate platform fees (Amazon/eBay) per-order or flat fallback
@@ -183,12 +184,18 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
         const platformFees = (store.platform === 'amazon' || store.platform === 'ebay')
           ? calculateDailyPlatformFees(db, store.id, day, store.platform, storeCategory, effectiveRevenue, platformFeePct)
           : calculateShopifyFees(effectiveRevenue, useShipSourcedRevenue ? orderCount : (existing.order_count || 0));
-        const otherCosts = existing.other_costs_cents || 0;
-        const chargebacks = existing.chargeback_cents || 0;
-        const appCosts = existing.app_costs_cents || 0;
-        const totalCosts = productCost + fulfillmentCharges + adSpend + platformFees + otherCosts + chargebacks + appCosts;
-        const netProfit = effectiveRevenue - totalCosts;
-        const margin = effectiveRevenue > 0 ? (netProfit / effectiveRevenue) * 100 : 0;
+        const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+          revenue_cents: effectiveRevenue,
+          refunds_cents: existing.refunds_cents,
+          source: useShipSourcedRevenue ? 'shipsourced' : 'shopify',
+          cogs_cents: productCost,
+          shipping_cost_cents: fulfillmentCharges,
+          ad_spend_cents: existing.ad_spend_cents,
+          shopify_fees_cents: platformFees,
+          other_costs_cents: existing.other_costs_cents,
+          chargeback_cents: existing.chargeback_cents,
+          app_costs_cents: existing.app_costs_cents,
+        });
 
         if (useShipSourcedRevenue) {
           db.prepare(`
@@ -218,9 +225,13 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
         const platformFees = (store.platform === 'amazon' || store.platform === 'ebay')
           ? calculateDailyPlatformFees(db, store.id, day, store.platform, storeCategory, revenueCents, platformFeePct)
           : calculateShopifyFees(revenueCents, orderCount);
-        const totalCosts = productCost + fulfillmentCharges + platformFees;
-        const netProfit = revenueCents - totalCosts;
-        const margin = revenueCents > 0 ? (netProfit / revenueCents) * 100 : 0;
+        const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+          revenue_cents: revenueCents,
+          source: 'sync',
+          cogs_cents: productCost,
+          shipping_cost_cents: fulfillmentCharges,
+          shopify_fees_cents: platformFees,
+        });
 
         db.prepare(`
           INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count, cogs_cents,
@@ -241,39 +252,48 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
         // Skip if already synced from orders data above
         if (dailyRevMap[day.date]) continue;
 
-        // For billing-only days, use totalCharge as COGS (per-SKU total)
-        const cogsCents = skipProductCost ? 0 : Math.round((day.totalCharge || 0) * 100);
+        // Billing-only days carry ShipSourced's bundled per-SKU billing. For stores
+        // that don't purchase stock (everything except amazon/ebay), that charge is
+        // fulfillment — labeling it COGS put a phantom "Product Cost" on their P&L.
+        const bundledCents = skipProductCost ? 0 : Math.round((day.totalCharge || 0) * 100);
+        const cogsCents = noSeparateCogs ? 0 : bundledCents;
+        const shipCents = noSeparateCogs ? bundledCents : 0;
         const orderCount = day.labelCount || 0;
 
         const existing: any = db.prepare(
-          'SELECT id, revenue_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
+          'SELECT id, revenue_cents, ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents, refunds_cents, source FROM daily_pnl WHERE store_id = ? AND date = ?'
         ).get(store.id, day.date);
 
         if (existing) {
           // Keep existing revenue/orders (from Shopify CSV), only update COGS from billing
-          const revenueCents = existing.revenue_cents || 0;
-          const adSpend = existing.ad_spend_cents || 0;
-          const shopifyFees = existing.shopify_fees_cents || 0;
-          const otherCosts = existing.other_costs_cents || 0;
-          const totalCosts = cogsCents + adSpend + shopifyFees + otherCosts;
-          const netProfit = revenueCents - totalCosts;
-          const margin = revenueCents > 0 ? (netProfit / revenueCents) * 100 : 0;
+          const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+            revenue_cents: existing.revenue_cents,
+            refunds_cents: existing.refunds_cents,
+            source: existing.source,
+            cogs_cents: cogsCents,
+            shipping_cost_cents: shipCents,
+            ad_spend_cents: existing.ad_spend_cents,
+            shopify_fees_cents: existing.shopify_fees_cents,
+            other_costs_cents: existing.other_costs_cents,
+            chargeback_cents: existing.chargeback_cents,
+            app_costs_cents: existing.app_costs_cents,
+          });
 
           db.prepare(`
             UPDATE daily_pnl SET
               cogs_cents = ?,
-              shipping_cost_cents = 0, pick_pack_cents = 0, packaging_cents = 0,
+              shipping_cost_cents = ?, pick_pack_cents = 0, packaging_cents = 0,
               net_profit_cents = ?, margin_pct = ?,
               synced_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
-          `).run(cogsCents, netProfit, margin, existing.id);
+          `).run(cogsCents, shipCents, netProfit, margin, existing.id);
         } else {
           db.prepare(`
             INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count, cogs_cents,
               shipping_cost_cents, pick_pack_cents, packaging_cents, net_profit_cents, margin_pct, source, synced_at)
-            VALUES (?, ?, ?, 0, ?, ?, 0, 0, 0, ?, ?, 'sync', datetime('now'))
+            VALUES (?, ?, ?, 0, ?, ?, ?, 0, 0, ?, ?, 'sync', datetime('now'))
           `).run(crypto.randomUUID(), store.id, day.date, orderCount,
-            cogsCents, -cogsCents, 0);
+            cogsCents, shipCents, -(cogsCents + shipCents), 0);
         }
         synced++;
       }
@@ -373,19 +393,24 @@ export async function syncShopifyRevenue(storeId: string): Promise<{ synced: num
     db.transaction(() => {
     for (const [date, data] of Object.entries(dailySales)) {
       const existing: any = db.prepare(
-        'SELECT id, ad_spend_cents, shopify_fees_cents, other_costs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
+        'SELECT id, ad_spend_cents, shopify_fees_cents, other_costs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, cogs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
       ).get(storeId, date);
 
       if (existing) {
-        const adSpend = existing.ad_spend_cents || 0;
-        const shopifyFees = existing.shopify_fees_cents || 0;
-        const otherCosts = existing.other_costs_cents || 0;
-        const shipping = existing.shipping_cost_cents || 0;
-        const pickPack = existing.pick_pack_cents || 0;
-        const packaging = existing.packaging_cents || 0;
-        const totalCosts = shipping + pickPack + packaging + adSpend + shopifyFees + otherCosts;
-        const netProfit = data.netSalesCents - totalCosts;
-        const margin = data.netSalesCents > 0 ? (netProfit / data.netSalesCents) * 100 : 0;
+        // source='shopify' → Total-sales revenue is already net of refunds
+        const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+          revenue_cents: data.netSalesCents,
+          source: 'shopify',
+          cogs_cents: existing.cogs_cents,
+          shipping_cost_cents: existing.shipping_cost_cents,
+          pick_pack_cents: existing.pick_pack_cents,
+          packaging_cents: existing.packaging_cents,
+          ad_spend_cents: existing.ad_spend_cents,
+          shopify_fees_cents: existing.shopify_fees_cents,
+          other_costs_cents: existing.other_costs_cents,
+          chargeback_cents: existing.chargeback_cents,
+          app_costs_cents: existing.app_costs_cents,
+        });
 
         db.prepare(`
           UPDATE daily_pnl SET
@@ -467,7 +492,7 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
     const fulfillmentCharges = (d.chargesCents || 0) + fulfillmentEst;
 
     const existing: any = db.prepare(
-      'SELECT id, revenue_cents, order_count, ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents, is_confirmed, source FROM daily_pnl WHERE store_id = ? AND date = ?'
+      'SELECT id, revenue_cents, order_count, ad_spend_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents, refunds_cents, is_confirmed, source FROM daily_pnl WHERE store_id = ? AND date = ?'
     ).get(store.id, today);
 
     // Never overwrite a confirmed/locked day.
@@ -486,12 +511,18 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
       const platformFees = (store.platform === 'amazon' || store.platform === 'ebay')
         ? calculateDailyPlatformFees(db, store.id, today, store.platform, storeCategory, effectiveRevenue, platformFeePct)
         : calculateShopifyFees(effectiveRevenue, useShipSourcedRevenue ? orderCount : (existing.order_count || 0));
-      const otherCosts = existing.other_costs_cents || 0;
-      const chargebacks = existing.chargeback_cents || 0;
-      const appCosts = existing.app_costs_cents || 0;
-      const totalCosts = productCost + fulfillmentCharges + adSpend + platformFees + otherCosts + chargebacks + appCosts;
-      const netProfit = effectiveRevenue - totalCosts;
-      const margin = effectiveRevenue > 0 ? (netProfit / effectiveRevenue) * 100 : 0;
+      const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+        revenue_cents: effectiveRevenue,
+        refunds_cents: existing.refunds_cents,
+        source: useShipSourcedRevenue ? 'shipsourced' : 'shopify',
+        cogs_cents: productCost,
+        shipping_cost_cents: fulfillmentCharges,
+        ad_spend_cents: existing.ad_spend_cents,
+        shopify_fees_cents: platformFees,
+        other_costs_cents: existing.other_costs_cents,
+        chargeback_cents: existing.chargeback_cents,
+        app_costs_cents: existing.app_costs_cents,
+      });
 
       if (useShipSourcedRevenue) {
         db.prepare(`
@@ -517,9 +548,13 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
       const platformFees = (store.platform === 'amazon' || store.platform === 'ebay')
         ? calculateDailyPlatformFees(db, store.id, today, store.platform, storeCategory, revenueCents, platformFeePct)
         : calculateShopifyFees(revenueCents, orderCount);
-      const totalCosts = productCost + fulfillmentCharges + platformFees;
-      const netProfit = revenueCents - totalCosts;
-      const margin = revenueCents > 0 ? (netProfit / revenueCents) * 100 : 0;
+      const { netProfitCents: netProfit, marginPct: margin } = computePnl({
+        revenue_cents: revenueCents,
+        source: 'sync',
+        cogs_cents: productCost,
+        shipping_cost_cents: fulfillmentCharges,
+        shopify_fees_cents: platformFees,
+      });
       db.prepare(`
         INSERT INTO daily_pnl (id, store_id, date, revenue_cents, order_count, cogs_cents,
           us_cogs_cents, china_cogs_cents, shipping_cost_cents, fulfillment_est_cents, pick_pack_cents, packaging_cents,
@@ -832,15 +867,10 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
       db.transaction(() => {
       for (const day of days as any[]) {
         const existing: any = db.prepare(
-          'SELECT id, revenue_cents, cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
+          'SELECT id, revenue_cents, refunds_cents, source, cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
         ).get(profile.store_id, day.date);
         if (existing) {
-          const totalCosts = (existing.cogs_cents || 0) + (existing.shipping_cost_cents || 0) +
-            (existing.pick_pack_cents || 0) + (existing.packaging_cents || 0) +
-            day.total + (existing.shopify_fees_cents || 0) + (existing.other_costs_cents || 0) +
-            (existing.chargeback_cents || 0) + (existing.app_costs_cents || 0);
-          const netProfit = (existing.revenue_cents || 0) - totalCosts;
-          const margin = existing.revenue_cents > 0 ? (netProfit / existing.revenue_cents) * 100 : 0;
+          const { netProfitCents: netProfit, marginPct: margin } = computePnl({ ...existing, ad_spend_cents: day.total });
           db.prepare('UPDATE daily_pnl SET ad_spend_cents = ?, net_profit_cents = ?, margin_pct = ?, updated_at = datetime(\'now\') WHERE id = ?')
             .run(day.total, netProfit, margin, existing.id);
         } else {
@@ -924,14 +954,10 @@ export async function syncFacebookAds(maxAgeMinutes?: number): Promise<{ synced:
 
       for (const day of rollupDays as any[]) {
         const existing: any = db.prepare(
-          'SELECT id, revenue_cents, cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
+          'SELECT id, revenue_cents, refunds_cents, source, cogs_cents, shipping_cost_cents, pick_pack_cents, packaging_cents, shopify_fees_cents, other_costs_cents, chargeback_cents, app_costs_cents FROM daily_pnl WHERE store_id = ? AND date = ?'
         ).get(profile.store_id, day.date);
         if (existing) {
-          const totalCosts = (existing.cogs_cents || 0) + (existing.shipping_cost_cents || 0) + (existing.pick_pack_cents || 0) + (existing.packaging_cents || 0) +
-            day.total + (existing.shopify_fees_cents || 0) + (existing.other_costs_cents || 0) +
-            (existing.chargeback_cents || 0) + (existing.app_costs_cents || 0);
-          const netProfit = (existing.revenue_cents || 0) - totalCosts;
-          const margin = existing.revenue_cents > 0 ? (netProfit / existing.revenue_cents) * 100 : 0;
+          const { netProfitCents: netProfit, marginPct: margin } = computePnl({ ...existing, ad_spend_cents: day.total });
           db.prepare("UPDATE daily_pnl SET ad_spend_cents = ?, net_profit_cents = ?, margin_pct = ?, updated_at = datetime('now') WHERE id = ?")
             .run(day.total, netProfit, margin, existing.id);
         }
