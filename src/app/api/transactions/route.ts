@@ -41,6 +41,7 @@ export async function GET(req: NextRequest) {
   if (status === 'paired') where.push('r.related_txn_id IS NOT NULL');
   const storeFilter = sp.get('store') || '';
   if (storeFilter === 'unattributed') where.push('r.store_id IS NULL');
+  else if (storeFilter === 'paired') where.push('r.store_id IS NOT NULL');
   else if (storeFilter) { where.push('r.store_id = ?'); params.push(storeFilter); }
   const method = sp.get('method') || '';
   if (method) { where.push('r.method = ?'); params.push(method); }
@@ -131,12 +132,33 @@ export async function PATCH(req: NextRequest) {
     ? body.transactionIds
     : body.transactionId ? [body.transactionId] : [];
   const category = body.category;
+  const storeId = body.storeId; // 'none' clears the manual pairing
   if (ids.length === 0) return NextResponse.json({ error: 'transactionId(s) required' }, { status: 400 });
   if (ids.length > 500) return NextResponse.json({ error: 'max 500 per bulk action' }, { status: 400 });
 
   const db = getDb();
   const { ensureCategorizeSchema, recordFeedback, resolveMerchant } = await import('@/lib/categorize/merchants');
   ensureCategorizeSchema(db);
+  if (storeId !== undefined) {
+    if (storeId !== 'none' && !db.prepare('SELECT id FROM stores WHERE id = ?').get(storeId)) {
+      return NextResponse.json({ error: 'store not found' }, { status: 404 });
+    }
+    const { categorizeTransaction, saveResult } = await import('@/lib/categorize/engine');
+    let paired = 0, totalCents = 0;
+    for (const id of ids) {
+      const txn: any = db.prepare('SELECT * FROM bank_transactions WHERE id = ?').get(id);
+      if (!txn) continue;
+      db.prepare('UPDATE bank_transactions SET custom_store_id = ? WHERE id = ?').run(storeId === 'none' ? null : storeId, id);
+      const fresh: any = db.prepare('SELECT * FROM bank_transactions WHERE id = ?').get(id);
+      const r = await categorizeTransaction(db, fresh, { allowLlm: false });
+      saveResult(db, r);
+      // MANUAL-category rows are upsert-protected — apply the store directly
+      db.prepare("UPDATE classification_results SET store_id = ? WHERE txn_id = ? AND method = 'MANUAL'")
+        .run(storeId === 'none' ? null : storeId, id);
+      paired++; totalCents += Math.abs(txn.amount_cents || 0);
+    }
+    return NextResponse.json({ success: true, paired, total_cents: totalCents });
+  }
   let updated = 0;
   let totalCents = 0;
   const apply = db.transaction(() => {

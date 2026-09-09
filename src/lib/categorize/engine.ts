@@ -63,6 +63,12 @@ export async function categorizeTransaction(db: Database.Database, txn: any, opt
  *  Transfers/card payments themselves stay unattributed to P&L but carry the
  *  payer store so card debt composition stays reconcilable. */
 function attributeStore(db: Database.Database, txn: any, r: ClassificationResult): ClassificationResult {
+  // 0. MANUAL STORE PAIRING — a human said whose money this is. Always
+  // asserted (100%), independent of category state, never overridden.
+  if (txn.custom_store_id) {
+    return { ...r, store_id: txn.custom_store_id,
+      evidence: [...r.evidence, { type: 'manual_store', reference: 'paired to store by human' }] };
+  }
   if (r.store_id) return r; // invoice/rule already proved it — keep that evidence
   // Policy (2026-09-09): an UNEXPLAINED transaction claims no owner. Store is
   // only ASSERTED when the classification itself is asserted; otherwise any

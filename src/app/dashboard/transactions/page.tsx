@@ -100,6 +100,17 @@ export default function TransactionsPage() {
     return next;
   });
 
+  async function applyBulkStore(storeId: string) {
+    if (!storeId || selected.size === 0) return;
+    setBulkApplying(true);
+    const res = await fetch('/api/transactions', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transactionIds: [...selected], storeId }),
+    }).then(r => r.json()).catch(() => null);
+    setBulkApplying(false);
+    if (res?.success) { setSelected(new Set()); load(false); }
+  }
+
   async function applyBulk(category: string) {
     if (!category || selected.size === 0) return;
     setBulkApplying(true);
@@ -245,17 +256,20 @@ export default function TransactionsPage() {
       {/* Controls — status pills + dimension filters */}
       <div className="space-y-2 mb-4">
         <div className="flex flex-wrap items-center gap-1.5">
-          {([['all', 'All'], ['categorized', '✓ Categorized'], ['suggested', '~ Suggested'], ['uncategorized', '∅ Uncategorized'], ['review', '⚠ Needs review'], ['paired', '↔ Paired']] as const).map(([k, label]) => (
-            <button key={k} onClick={() => setStatus(k)}
-              className={`px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
-                status === k ? 'bg-slate-100 text-slate-900' : 'bg-slate-900/70 text-slate-400 hover:text-white'}`}>
-              {label}
-            </button>
-          ))}
+          <button onClick={() => setStoreFilter('')}
+            className={`px-3.5 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
+              !storeFilter ? 'bg-slate-100 text-slate-900' : 'bg-slate-900/70 text-slate-400 hover:text-white'}`}>
+            All
+          </button>
+          <button onClick={() => setStoreFilter('paired')}
+            className={`px-3.5 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
+              storeFilter === 'paired' ? 'bg-emerald-300 text-slate-900' : 'bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'}`}>
+            ✓ Paired to store
+          </button>
           <button onClick={() => setStoreFilter(storeFilter === 'unattributed' ? '' : 'unattributed')}
-            className={`px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
+            className={`px-3.5 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
               storeFilter === 'unattributed' ? 'bg-amber-300 text-slate-900' : 'bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'}`}>
-            ⚠ Unpaired (no store)
+            ⚠ Unpaired
           </button>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -269,11 +283,19 @@ export default function TransactionsPage() {
               </button>
             ))}
           </div>
-          <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
-            className={`text-[13px] rounded-lg px-2.5 py-1.5 ${storeFilter ? 'bg-slate-700 text-white' : 'bg-slate-900/70 text-slate-300'}`}>
-            <option value="">All stores</option>
-            <option value="unattributed">⚠ Unattributed</option>
+          <select value={storeFilter && storeFilter !== 'unattributed' && storeFilter !== 'paired' ? storeFilter : ''} onChange={e => setStoreFilter(e.target.value)}
+            className={`text-[13px] rounded-lg px-2.5 py-1.5 ${storeFilter && storeFilter !== 'unattributed' && storeFilter !== 'paired' ? 'bg-slate-700 text-white' : 'bg-slate-900/70 text-slate-300'}`}>
+            <option value="">Specific store…</option>
             {storesList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          <select value={status} onChange={e => setStatus(e.target.value)}
+            className={`text-[13px] rounded-lg px-2.5 py-1.5 ${status !== 'all' ? 'bg-slate-700 text-white' : 'bg-slate-900/70 text-slate-300'}`}>
+            <option value="all">Any category state</option>
+            <option value="categorized">✓ Categorized</option>
+            <option value="suggested">~ Suggested</option>
+            <option value="uncategorized">∅ Uncategorized</option>
+            <option value="review">⚠ Needs review</option>
+            <option value="paired">↔ Linked pair</option>
           </select>
           <select value={confFilter} onChange={e => setConfFilter(e.target.value)}
             className={`text-[13px] rounded-lg px-2.5 py-1.5 ${confFilter ? 'bg-slate-700 text-white' : 'bg-slate-900/70 text-slate-300'}`}>
@@ -442,9 +464,16 @@ export default function TransactionsPage() {
                 {selected.size} selected · {fmtCents(txns.filter(t => selected.has(t.id)).reduce((s, t) => s + Math.abs(t.amount_cents), 0))}
               </span>
               <select defaultValue="" disabled={bulkApplying}
+                onChange={e => { if (e.target.value) applyBulkStore(e.target.value); e.target.value = ''; }}
+                className="bg-emerald-600 text-white text-[13px] font-medium rounded-lg px-2.5 py-1.5">
+                <option value="">{bulkApplying ? 'Pairing…' : '⇢ Pair to store…'}</option>
+                {storesList.map(st => <option key={st.id} value={st.id}>{st.name}</option>)}
+                <option value="none">✕ Clear pairing</option>
+              </select>
+              <select defaultValue="" disabled={bulkApplying}
                 onChange={e => { if (e.target.value) applyBulk(e.target.value); e.target.value = ''; }}
                 className="bg-slate-700 text-white text-[13px] rounded-lg px-2.5 py-1.5">
-                <option value="">{bulkApplying ? 'Applying…' : 'Categorize all as…'}</option>
+                <option value="">{bulkApplying ? 'Applying…' : 'Categorize as…'}</option>
                 {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
               <button onClick={() => setSelected(new Set())} className="text-[13px] text-slate-400 hover:text-white">Cancel</button>
