@@ -100,6 +100,17 @@ export async function GET(req: NextRequest) {
   `).all();
   const stores = db.prepare('SELECT id, name FROM stores WHERE is_active = 1 OR is_active IS NULL ORDER BY name').all();
 
+  // Global reconciliation coverage (not filter-scoped) — the progress numbers
+  const coverage: any = db.prepare(`
+    SELECT COUNT(*) total,
+      SUM(CASE WHEN r.category IS NOT NULL THEN 1 ELSE 0 END) categorized,
+      SUM(CASE WHEN r.related_txn_id IS NOT NULL THEN 1 ELSE 0 END) paired,
+      SUM(CASE WHEN r.store_id IS NOT NULL THEN 1 ELSE 0 END) attributed,
+      SUM(CASE WHEN r.txn_id IS NULL OR (r.category IS NULL AND COALESCE(bt.custom_category,'') = '') THEN ABS(bt.amount_cents) ELSE 0 END) uncategorized_cents
+    FROM bank_transactions bt
+    JOIN bank_accounts a ON a.id = bt.bank_account_id AND a.status != 'merged'
+    LEFT JOIN classification_results r ON r.txn_id = bt.id`).get();
+
   return NextResponse.json({
     transactions: page,
     hasMore,
@@ -107,6 +118,7 @@ export async function GET(req: NextRequest) {
     totals,
     accounts,
     stores,
+    coverage,
   });
 }
 
