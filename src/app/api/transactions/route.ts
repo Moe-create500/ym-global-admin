@@ -46,14 +46,15 @@ export async function GET(req: NextRequest) {
       a.id AS account_id, a.institution_name, a.account_name, a.nickname, a.last_four, a.account_type,
       r.category AS cls_category, r.suggested_category, r.method AS cls_method, r.confidence AS cls_confidence,
       r.reason AS cls_reason, r.evidence_json, r.needs_review AS cls_needs_review,
-      s.name AS store_name,
-      pt.description AS pair_description, pt.date AS pair_date,
+      s.name AS store_name, ss.name AS suggested_store_name,
+      pt.description AS pair_description, pt.date AS pair_date, pt.amount_cents AS pair_amount_cents,
       pa.institution_name AS pair_institution, pa.last_four AS pair_last_four,
       pa.nickname AS pair_nickname, pa.account_name AS pair_account_name
     FROM bank_transactions bt
     JOIN bank_accounts a ON a.id = bt.bank_account_id
     LEFT JOIN classification_results r ON r.txn_id = bt.id
     LEFT JOIN stores s ON s.id = r.store_id
+    LEFT JOIN stores ss ON ss.id = r.suggested_store_id
     LEFT JOIN bank_transactions pt ON pt.id = r.related_txn_id
     LEFT JOIN bank_accounts pa ON pa.id = pt.bank_account_id
     WHERE ${where.join(' AND ')}

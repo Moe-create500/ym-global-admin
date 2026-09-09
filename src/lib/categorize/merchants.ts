@@ -62,6 +62,7 @@ export function ensureCategorizeSchema(db: Database.Database) {
 
   `);
   try { db.exec('ALTER TABLE classification_results ADD COLUMN suggested_category TEXT'); } catch { /* exists */ }
+  try { db.exec('ALTER TABLE classification_results ADD COLUMN suggested_store_id TEXT'); } catch { /* exists */ }
   db.exec(`
   CREATE TABLE IF NOT EXISTS ai_calls (
     id TEXT PRIMARY KEY,

@@ -165,7 +165,9 @@ describe('store attribution (reconciliation)', () => {
     db.prepare("INSERT INTO bank_accounts (id, account_type, institution_name, last_four, store_id) VALUES ('chk','depository','BofA','1234','st1')").run();
     const t = txn(db, { id: 't1', acct: 'chk', desc: 'RANDOM VENDOR LLC', amt: -5000 });
     const r = await categorizeTransaction(db, t, { allowLlm: false });
-    expect(r.store_id).toBe('st1');
+    // UNKNOWN txn: ownership is a SUGGESTION only (100%-or-nothing policy)
+    expect(r.store_id).toBeNull();
+    expect(r.suggested_store_id).toBe('st1');
     expect(r.evidence.some(e => e.type === 'account_ownership')).toBe(true);
   });
 
@@ -186,7 +188,9 @@ describe('store attribution (reconciliation)', () => {
     db.prepare("INSERT INTO bank_accounts (id, account_type, institution_name, last_four) VALUES ('chk','depository','BofA','1234')").run();
     const t = txn(db, { id: 't1', acct: 'chk', desc: 'WIRE FROM PUREBITE HOLDINGS', amt: 90000 });
     const r = await categorizeTransaction(db, t, { allowLlm: false });
-    expect(r.store_id).toBe('st1');
+    // wire is UNKNOWN category → store is suggested, not asserted
+    expect(r.store_id).toBeNull();
+    expect(r.suggested_store_id).toBe('st1');
     expect(r.evidence.some(e => e.type === 'store_name_match')).toBe(true);
   });
 

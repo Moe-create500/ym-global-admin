@@ -31,9 +31,11 @@ interface Txn {
   evidence_json: string | null;
   cls_needs_review: number | null;
   store_name: string | null;
+  suggested_store_name: string | null;
   // the OTHER leg when paired
   pair_description: string | null;
   pair_date: string | null;
+  pair_amount_cents: number | null;
   pair_institution: string | null;
   pair_last_four: string | null;
   pair_nickname: string | null;
@@ -273,12 +275,16 @@ export default function TransactionsPage() {
                               {isPaired && (
                                 <p className="text-[12px] text-blue-300">
                                   ↔ connected to: <span className="text-slate-200">{t.pair_description}</span>
+                                  {t.pair_amount_cents != null && <span className="text-slate-100 font-medium tabular-nums"> {t.pair_amount_cents >= 0 ? '+' : ''}{fmtCents(t.pair_amount_cents)}</span>}
                                   <span className="text-slate-500"> on {t.pair_nickname || t.pair_account_name || t.pair_institution} ····{t.pair_last_four} · {t.pair_date}</span>
                                 </p>
                               )}
+                              {!t.store_name && t.suggested_store_name && (
+                                <p className="text-[11px] text-amber-300/70 italic">likely {t.suggested_store_name} (unconfirmed — transaction itself is unexplained, so no store is claimed)</p>
+                              )}
                               {evidence.length > 0 && (
                                 <p className="text-[11px] text-slate-500">
-                                  evidence: {evidence.map(e => `${e.type.replace(/_/g, ' ')} (${String(e.reference).slice(0, 40)})`).join(' · ')}
+                                  evidence: {evidence.map(e => `${e.type.replace(/_/g, ' ')} (${String(e.reference).slice(0, 60)})`).join(' · ')}
                                 </p>
                               )}
                             </div>

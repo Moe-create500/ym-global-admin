@@ -27,6 +27,8 @@ export interface ClassificationResult {
   category: string | null;
   /** sub-certain hint shown as "suggest: X?" — never asserted, never counted */
   suggested_category?: string | null;
+  /** store hint when the txn itself is unexplained — never shown as ownership */
+  suggested_store_id?: string | null;
   subcategory: string | null;
   merchant_id: string | null;
   merchant_name: string | null;
@@ -62,16 +64,21 @@ export async function categorizeTransaction(db: Database.Database, txn: any, opt
  *  payer store so card debt composition stays reconcilable. */
 function attributeStore(db: Database.Database, txn: any, r: ClassificationResult): ClassificationResult {
   if (r.store_id) return r; // invoice/rule already proved it — keep that evidence
+  // Policy (2026-09-09): an UNEXPLAINED transaction claims no owner. Store is
+  // only ASSERTED when the classification itself is asserted; otherwise any
+  // ownership evidence becomes suggested_store_id (unconfirmed, detail-only).
+  const assertable = r.category != null;
+  const withStore = (storeId: string, ev: Evidence): ClassificationResult =>
+    assertable
+      ? { ...r, store_id: storeId, evidence: [...r.evidence, ev] }
+      : { ...r, suggested_store_id: storeId, evidence: [...r.evidence, { ...ev, reference: `${ev.reference} (unconfirmed — txn itself unexplained)` }] };
   try {
   const account: any = db.prepare('SELECT * FROM bank_accounts WHERE id = ?').get(txn.bank_account_id);
 
   // 2. store-owned account (not a global/company-wide account)
   if (account?.store_id && !account.is_global) {
     const store: any = db.prepare('SELECT id, name FROM stores WHERE id = ?').get(account.store_id);
-    if (store) {
-      return { ...r, store_id: store.id,
-        evidence: [...r.evidence, { type: 'account_ownership', reference: `account belongs to ${store.name}` }] };
-    }
+    if (store) return withStore(store.id, { type: 'account_ownership', reference: `account belongs to ${store.name}` });
   }
 
   // 3. store name word-bounded in the description
@@ -79,10 +86,7 @@ function attributeStore(db: Database.Database, txn: any, r: ClassificationResult
   const stores: any[] = db.prepare('SELECT * FROM stores').all();
   const named = stores.filter(s => (s.is_active === 1 || s.is_active == null)
     && s.name && s.name.length >= 4 && dl.includes(` ${s.name.toLowerCase()} `));
-  if (named.length === 1) {
-    return { ...r, store_id: named[0].id,
-      evidence: [...r.evidence, { type: 'store_name_match', reference: named[0].name }] };
-  }
+  if (named.length === 1) return withStore(named[0].id, { type: 'store_name_match', reference: named[0].name });
 
   // 4. paired transaction's account is store-owned (payer attribution)
   if (r.related_txn_id) {
@@ -90,8 +94,7 @@ function attributeStore(db: Database.Database, txn: any, r: ClassificationResult
       JOIN bank_accounts a ON a.id = bt.bank_account_id LEFT JOIN stores s ON s.id = a.store_id
       WHERE bt.id = ?`).get(r.related_txn_id);
     if (pairAcct?.store_id && !pairAcct.is_global) {
-      return { ...r, store_id: pairAcct.store_id,
-        evidence: [...r.evidence, { type: 'paired_account_store', reference: `paid from ${pairAcct.store_name || 'store'}'s account` }] };
+      return withStore(pairAcct.store_id, { type: 'paired_account_store', reference: `paid from ${pairAcct.store_name || 'store'}'s account` });
     }
   }
 
@@ -284,17 +287,17 @@ function classToCategory(cls: string | null): string {
 
 /** Persist a result (idempotent upsert; MANUAL results are never overwritten). */
 export function saveResult(db: Database.Database, r: ClassificationResult) {
-  db.prepare(`INSERT INTO classification_results (txn_id, category, suggested_category, subcategory, merchant_id, merchant_name,
+  db.prepare(`INSERT INTO classification_results (txn_id, category, suggested_category, suggested_store_id, subcategory, merchant_id, merchant_name,
       store_id, method, confidence, reason, evidence_json, needs_review, related_txn_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(txn_id) DO UPDATE SET
-      category = excluded.category, suggested_category = excluded.suggested_category, subcategory = excluded.subcategory,
+      category = excluded.category, suggested_category = excluded.suggested_category, suggested_store_id = excluded.suggested_store_id, subcategory = excluded.subcategory,
       merchant_id = excluded.merchant_id, merchant_name = excluded.merchant_name,
       store_id = excluded.store_id, method = excluded.method, confidence = excluded.confidence,
       reason = excluded.reason, evidence_json = excluded.evidence_json,
       needs_review = excluded.needs_review, related_txn_id = excluded.related_txn_id,
       created_at = datetime('now')
     WHERE classification_results.method != 'MANUAL'`)
-    .run(r.txn_id, r.category, r.suggested_category ?? null, r.subcategory, r.merchant_id, r.merchant_name, r.store_id,
+    .run(r.txn_id, r.category, r.suggested_category ?? null, r.suggested_store_id ?? null, r.subcategory, r.merchant_id, r.merchant_name, r.store_id,
       r.method, r.confidence, r.reason, JSON.stringify(r.evidence), r.needs_review ? 1 : 0, r.related_txn_id);
 }
