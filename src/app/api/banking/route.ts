@@ -3,33 +3,126 @@ import { getDb } from '@/lib/db';
 import { getAccounts, getAccountBalance, getAccountTransactions } from '@/lib/teller';
 import crypto from 'crypto';
 import { dropBrainCache } from '@/lib/brain-cache';
+import { deriveConnectionState, evidenceFromPlaidItem, ensureConnectionSchema } from '@/lib/connection-state';
 
 export const dynamic = 'force-dynamic';
 
-// GET: List all bank accounts + balances
+// GET: accounts with evidence-derived connection state + coverage-aware totals.
+// ?detail=<accountId> returns the drawer payload (evidence explain + sync history).
 export async function GET(req: NextRequest) {
   const storeId = req.nextUrl.searchParams.get('storeId');
+  const detailId = req.nextUrl.searchParams.get('detail');
   const db = getDb();
+  ensureConnectionSchema(db);
 
-  let where = "WHERE status = ? AND account_type != 'credit'";
-  const params: any[] = ['active'];
+  const items = new Map<string, any>(
+    (db.prepare('SELECT * FROM plaid_items').all() as any[]).map((i: any) => [i.item_id, i])
+  );
+
+  const FRESH_MS = 36 * 3_600_000;
+  const decorate = (a: any) => {
+    const item = a.provider === 'plaid' ? items.get(a.teller_enrollment_id) : null;
+    const connection = item
+      ? deriveConnectionState(evidenceFromPlaidItem(item))
+      : deriveConnectionState({
+          provider: a.provider || null,
+          itemStatus: a.status === 'disconnected' ? 'disconnected' : 'active',
+          // Teller rows have no structured provider codes — balance heartbeat is
+          // the only sync evidence we hold, so state honestly degrades to STALE.
+          lastSyncSuccessAt: a.balance_updated_at,
+          lastSyncStatus: a.balance_updated_at ? 'success' : null,
+        });
+    const balTs = a.balance_updated_at ? Date.parse(a.balance_updated_at.replace(' ', 'T') + (a.balance_updated_at.includes('Z') ? '' : 'Z')) : NaN;
+    const balanceFresh = !Number.isNaN(balTs) && Date.now() - balTs <= FRESH_MS;
+    const verified = balanceFresh && ['HEALTHY', 'SYNCING', 'DEGRADED', 'PENDING_DISCONNECT'].includes(connection.status);
+    const { access_token: _t, ...safe } = a; // never ship tokens to the frontend
+    return {
+      ...safe,
+      item_id: item?.item_id || null,
+      connection,
+      balance_verified: verified,
+      freshness: {
+        balance_verified_at: a.balance_updated_at || null,
+        transactions_through: a.bank_data_as_of || null,
+        transactions_checked_at: a.last_txn_success_at || null,
+      },
+    };
+  };
+
+  if (detailId) {
+    const a: any = db.prepare('SELECT * FROM bank_accounts WHERE id = ?').get(detailId);
+    if (!a) return NextResponse.json({ error: 'account not found' }, { status: 404 });
+    const item = a.provider === 'plaid' ? items.get(a.teller_enrollment_id) : null;
+    const runs = item
+      ? db.prepare('SELECT started_at, finished_at, status, balance_result, transaction_result, records_added, records_removed, error_code FROM sync_runs WHERE item_id = ? ORDER BY started_at DESC LIMIT 12').all(item.item_id)
+      : [];
+    const txnCount: any = db.prepare('SELECT COUNT(*) n, MIN(date) first, MAX(date) last FROM bank_transactions WHERE bank_account_id = ?').get(detailId);
+    const siblings = item
+      ? (db.prepare('SELECT id, account_name, nickname, last_four FROM bank_accounts WHERE teller_enrollment_id = ? AND id != ?').all(item.item_id, detailId) as any[])
+      : [];
+    return NextResponse.json({
+      account: decorate(a),
+      item: item ? {
+        item_id: item.item_id, institution_name: item.institution_name, status: item.status,
+        provider_error_code: item.provider_error_code, provider_error_message: item.provider_error_message,
+        error_detected_at: item.error_detected_at, pending_disconnect_at: item.pending_disconnect_at,
+        institution_health: item.institution_health || 'UNKNOWN',
+        last_sync_attempt_at: item.last_sync_attempt_at, last_sync_success_at: item.last_sync_success_at,
+        last_sync_status: item.last_sync_status,
+      } : null,
+      sync_runs: runs,
+      transactions: txnCount,
+      siblings,
+    });
+  }
+
+  let where = "WHERE status IN ('active','disconnected') AND account_type != 'credit' AND (archived IS NULL OR archived = 0)";
+  const params: any[] = [];
   if (storeId) { where += ' AND store_id = ? AND (is_global IS NULL OR is_global = 0)'; params.push(storeId); }
-  // When no storeId filter, show everything including global accounts
 
-  const accounts = db.prepare(`SELECT * FROM bank_accounts ${where} ORDER BY institution_name, account_name`).all(...params);
+  const accounts = (db.prepare(`SELECT * FROM bank_accounts ${where} ORDER BY institution_name, account_name`).all(...params) as any[]).map(decorate);
 
-  // Summary
-  const totalAvailable = (accounts as any[]).reduce((s, a) => s + (a.balance_available_cents || 0), 0);
-  const totalLedger = (accounts as any[]).reduce((s, a) => s + (a.balance_ledger_cents || 0), 0);
+  // Coverage-aware totals: verified cash (fresh, provably-connected balances)
+  // is reported SEPARATELY from last-known cash. Never blended into one number.
+  let verifiedCents = 0, lastKnownCents = 0, verifiedCount = 0;
+  for (const a of accounts) {
+    if (a.balance_verified) { verifiedCents += a.balance_available_cents || 0; verifiedCount++; }
+    else lastKnownCents += a.balance_available_cents || 0;
+  }
+  const attention = accounts.filter(a => a.connection.requiresUserAction);
+  const unknown = accounts.filter(a => a.connection.status === 'UNKNOWN' || a.connection.status === 'STALE');
 
-  // Accounts parked until their store is known (bulk Shopify Balance
-  // enrollments) — shown in their own section, counted nowhere
-  const unassigned = db.prepare("SELECT * FROM bank_accounts WHERE status = 'unassigned' ORDER BY last_four").all();
+  // Group accounts needing user action by their provider item — one login
+  // repair fixes every account underneath it, so we surface ONE issue per item.
+  const itemGroups: any[] = [];
+  const seen = new Set<string>();
+  for (const a of attention) {
+    const key = a.item_id || a.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const affected = a.item_id ? accounts.filter(x => x.item_id === a.item_id) : [a];
+    itemGroups.push({
+      item_id: a.item_id, institution_name: a.institution_name,
+      connection: a.connection, affected_count: affected.length,
+      accounts: affected.map(x => ({ id: x.id, name: x.nickname || x.account_name, last_four: x.last_four })),
+    });
+  }
+
+  const unassigned = db.prepare("SELECT id, institution_name, account_name, last_four, balance_available_cents FROM bank_accounts WHERE status = 'unassigned' ORDER BY last_four").all();
 
   return NextResponse.json({
     accounts,
     unassigned,
-    summary: { total_available_cents: totalAvailable, total_ledger_cents: totalLedger, account_count: accounts.length },
+    repair_groups: itemGroups,
+    summary: {
+      account_count: accounts.length,
+      verified_cents: verifiedCents,
+      last_known_cents: lastKnownCents,
+      verified_accounts: verifiedCount,
+      attention_count: attention.length,
+      unknown_count: unknown.length,
+      unassigned_count: (unassigned as any[]).length,
+    },
   });
 }
 

@@ -8,9 +8,18 @@
 import type Database from 'better-sqlite3';
 import crypto from 'crypto';
 import { reportSource } from '@/lib/source-registry';
+import { ensureConnectionSchema } from '@/lib/connection-state';
 
 const PLAID_ENV = process.env.PLAID_ENV || 'production';
 const BASE = `https://${PLAID_ENV}.plaid.com`;
+
+export class PlaidApiError extends Error {
+  errorCode: string;
+  constructor(path: string, status: number, errorCode: string, message: string) {
+    super(`Plaid ${path} ${status}: ${errorCode} ${message.slice(0, 180)}`);
+    this.errorCode = errorCode;
+  }
+}
 
 async function plaidPost(path: string, body: Record<string, any>): Promise<any> {
   if (!process.env.PLAID_CLIENT_ID || !process.env.PLAID_SECRET) throw new Error('PLAID_CLIENT_ID / PLAID_SECRET not configured');
@@ -20,7 +29,7 @@ async function plaidPost(path: string, body: Record<string, any>): Promise<any> 
     body: JSON.stringify({ client_id: process.env.PLAID_CLIENT_ID, secret: process.env.PLAID_SECRET, ...body }),
   });
   const d: any = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`Plaid ${path} ${res.status}: ${d?.error_code || ''} ${String(d?.error_message || '').slice(0, 180)}`);
+  if (!res.ok) throw new PlaidApiError(path, res.status, d?.error_code || '', String(d?.error_message || ''));
   return d;
 }
 
@@ -157,15 +166,36 @@ export async function reattachItemAccounts(db: Database.Database, itemId: string
 }
 
 /** Sync every active Plaid item: balances + cursor-based transaction sync.
- *  Plaid sign convention is inverted (positive = outflow) — we store inflow-positive. */
+ *  Plaid sign convention is inverted (positive = outflow) — we store inflow-positive.
+ *
+ *  Evidence discipline (hardening 2026-09-09): every attempt is recorded in
+ *  sync_runs; provider error codes are stored verbatim on the item; balance
+ *  and transaction phases succeed/fail INDEPENDENTLY (partial is a real
+ *  outcome); success clears errors (LOGIN_REPAIRED semantics). A failure
+ *  NEVER zeroes balances, deletes transactions, or deactivates accounts —
+ *  last-known data is preserved and labeled by its timestamps. */
 export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_synced: number; transactions_imported: number; errors: string[] }> {
   ensurePlaidSchema(db);
+  ensureConnectionSchema(db);
   const items: any[] = db.prepare("SELECT * FROM plaid_items WHERE status = 'active'").all();
   let synced = 0;
   let txns = 0;
   const errors: string[] = [];
 
   for (const item of items) {
+    const runId = crypto.randomUUID();
+    const startedAt = new Date().toISOString();
+    db.prepare("UPDATE plaid_items SET last_sync_attempt_at = ? WHERE item_id = ?").run(startedAt, item.item_id);
+    let balanceResult = 'skipped';
+    let txnResult = 'skipped';
+    let runAdded = 0, runModified = 0, runRemoved = 0;
+    let errCode: string | null = null;
+    let errMsg: string | null = null;
+    const captureErr = (e: any) => {
+      const code = e instanceof PlaidApiError ? e.errorCode : '';
+      if (!errCode) { errCode = code || 'API_ERROR'; errMsg = String(e?.message || e).slice(0, 300); }
+    };
+    try {
     try {
       const bal = await plaidPost('/accounts/balance/get', { access_token: item.access_token });
       for (const a of bal.accounts || []) {
@@ -176,6 +206,13 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
           WHERE teller_account_id = ?`).run(available, ledger, a.account_id);
         if (r.changes) synced++;
       }
+      balanceResult = 'success';
+    } catch (e: any) {
+      balanceResult = 'failed';
+      captureErr(e);
+      // Reauth-class errors make the txn phase pointless; other errors still try it
+      if (e instanceof PlaidApiError && /ITEM_LOGIN_REQUIRED|ITEM_LOCKED|ACCESS_NOT_GRANTED|NO_ACCOUNTS|INVALID_CREDENTIALS/i.test(e.errorCode)) throw e;
+    }
 
       // Statement data (balance/dates/min/limit) — the bank's own numbers, no
       // manual typing. Consent-gated: items linked before liabilities consent
@@ -209,6 +246,7 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
         }
       } catch { /* consent not granted yet — manual entry covers these cards */ }
 
+      try {
       let cursor: string | undefined = item.cursor || undefined;
       let hasMore = true;
       let guard = 0;
@@ -225,6 +263,7 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
           db.prepare('UPDATE txn_links SET pair_txn_id = NULL WHERE pair_txn_id = ?').run(row.id);
           db.prepare('DELETE FROM txn_links WHERE txn_id = ?').run(row.id);
           db.prepare('DELETE FROM bank_transactions WHERE id = ?').run(row.id);
+          runRemoved++;
           console.log(`[plaid] removed retracted txn ${t.transaction_id} (bank reversed it)`);
         }
         for (const t of d.modified || []) {
@@ -233,6 +272,7 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
           db.prepare(`UPDATE bank_transactions SET date = ?, description = ?, amount_cents = ?, status = ?, counterparty = ? WHERE id = ?`)
             .run(t.date, t.name || t.merchant_name || '', -Math.round((t.amount || 0) * 100),
               t.pending ? 'pending' : 'posted', t.merchant_name || null, row.id);
+          runModified++;
         }
         for (const t of d.added || []) {
           const row: any = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(t.account_id);
@@ -257,29 +297,56 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
               (t.personal_finance_category?.primary || '').toLowerCase().replace(/_/g, ' ') || null,
               amountCents, t.payment_channel || 'other', t.pending ? 'pending' : 'posted', t.merchant_name || null);
           txns++;
+          runAdded++;
         }
         cursor = d.next_cursor;
         hasMore = !!d.has_more;
       }
       if (hasMore) console.error(`[plaid] WARNING: ${item.institution_name} hit the 80-page sync cap with more remaining — next sync continues from saved cursor`);
       db.prepare("UPDATE plaid_items SET cursor = ?, updated_at = datetime('now') WHERE item_id = ?").run(cursor || null, item.item_id);
-      reportSource(db, `bank:plaid:${item.item_id}`, { ok: true, records: txns, label: `Bank — ${item.institution_name || 'Plaid item'}`, cadenceMin: 120 });
+      db.prepare("UPDATE bank_accounts SET last_txn_success_at = datetime('now') WHERE teller_enrollment_id = ?").run(item.item_id);
+      txnResult = 'success';
+      } catch (e: any) { txnResult = 'failed'; captureErr(e); }
     } catch (e: any) {
-      const msg = String(e?.message || e);
-      errors.push(`plaid ${item.institution_name || item.item_id}: ${msg.slice(0, 160)}`);
-      reportSource(db, `bank:plaid:${item.item_id}`, { ok: false, error: msg, label: `Bank — ${item.institution_name || 'Plaid item'}`, cadenceMin: 120 });
-      if (/NO_ACCOUNTS/i.test(msg)) {
-        // empty husk connection — polling it forever is pure noise
-        db.prepare("UPDATE plaid_items SET status = 'inactive', updated_at = datetime('now') WHERE item_id = ?").run(item.item_id);
-        console.log(`[plaid] item ${item.institution_name || item.item_id} returned NO_ACCOUNTS — deactivated (relink to restore)`);
-      }
-      if (/ITEM_LOGIN_REQUIRED|ITEM_LOCKED|ACCESS_NOT_GRANTED/i.test(msg)) {
+      captureErr(e);
+    }
+
+    // ---- Evidence bookkeeping for this item's run ------------------------
+    const status = balanceResult === 'success' && txnResult === 'success' ? 'success'
+      : (balanceResult === 'success' || txnResult === 'success') ? 'partial' : 'failed';
+    if (status !== 'failed') {
+      db.prepare("UPDATE plaid_items SET last_sync_success_at = datetime('now'), last_sync_status = ? WHERE item_id = ?").run(status, item.item_id);
+    } else {
+      db.prepare("UPDATE plaid_items SET last_sync_status = 'failed' WHERE item_id = ?").run(item.item_id);
+    }
+    if (errCode) {
+      // Preserve first-detection time when the same error persists across runs
+      db.prepare(`UPDATE plaid_items SET provider_error_code = ?, provider_error_message = ?,
+          error_detected_at = CASE WHEN provider_error_code = ? THEN COALESCE(error_detected_at, datetime('now')) ELSE datetime('now') END
+        WHERE item_id = ?`).run(errCode, errMsg, errCode, item.item_id);
+      errors.push(`plaid ${item.institution_name || item.item_id}: ${String(errMsg || errCode).slice(0, 160)}`);
+      reportSource(db, `bank:plaid:${item.item_id}`, { ok: false, error: errMsg || errCode, label: `Bank — ${item.institution_name || 'Plaid item'}`, cadenceMin: 120 });
+      // Legacy field other pages still read — only for PROVEN reauth errors
+      if (/ITEM_LOGIN_REQUIRED|ITEM_LOCKED|ACCESS_NOT_GRANTED|INVALID_CREDENTIALS/i.test(errCode)) {
         db.prepare("UPDATE bank_accounts SET last_sync_error = 'CONNECTION EXPIRED — reconnect this bank via Connect Bank' WHERE teller_enrollment_id = ?").run(item.item_id);
       }
+      // NOTE: NO_ACCOUNTS no longer deactivates the item — that destroyed
+      // state. It's now provider evidence (ACTION_REQUIRED: re-select
+      // accounts) and the repair flow fixes it in place.
+    } else if (status === 'success') {
+      // Clean run proves the connection — clear stale error evidence (LOGIN_REPAIRED semantics)
+      db.prepare(`UPDATE plaid_items SET provider_error_code = NULL, provider_error_message = NULL,
+          error_detected_at = NULL, pending_disconnect_at = NULL WHERE item_id = ?`).run(item.item_id);
+      reportSource(db, `bank:plaid:${item.item_id}`, { ok: true, records: txns, label: `Bank — ${item.institution_name || 'Plaid item'}`, cadenceMin: 120 });
     }
+    db.prepare(`INSERT INTO sync_runs (id, provider, item_id, started_at, finished_at, status,
+        balance_result, transaction_result, records_added, records_modified, records_removed, error_code, error_message)
+      VALUES (?, 'plaid', ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(runId, item.item_id, startedAt, status, balanceResult, txnResult, runAdded, runModified, runRemoved, errCode, errMsg);
   }
 
-  // Freshness = newest imported transaction per account
+  // Newest transaction date per account — DESCRIPTIVE freshness only.
+  // This is "transactions through", never evidence of connection state.
   db.exec(`UPDATE bank_accounts SET bank_data_as_of =
     (SELECT MAX(date) FROM bank_transactions bt WHERE bt.bank_account_id = bank_accounts.id)
     WHERE provider = 'plaid'`);

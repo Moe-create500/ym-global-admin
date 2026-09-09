@@ -5,6 +5,14 @@ import { useSearchParams } from 'next/navigation';
 import Script from 'next/script';
 import StoreSelector from '@/components/StoreSelector';
 
+interface Connection {
+  status: 'HEALTHY' | 'SYNCING' | 'STALE' | 'DEGRADED' | 'ACTION_REQUIRED' | 'PENDING_DISCONNECT' | 'DISCONNECTED' | 'PROVIDER_OUTAGE' | 'ERROR' | 'UNKNOWN';
+  reason: string;
+  source: string;
+  requiresUserAction: boolean;
+  userActionType: string | null;
+}
+
 interface BankAccount {
   id: string;
   store_id: string;
@@ -12,6 +20,7 @@ interface BankAccount {
   teller_account_id: string;
   institution_name: string;
   account_name: string;
+  nickname?: string | null;
   account_type: string;
   account_subtype: string;
   last_four: string;
@@ -21,6 +30,44 @@ interface BankAccount {
   balance_updated_at: string | null;
   bank_data_as_of: string | null;
   status: string;
+  provider?: string;
+  item_id?: string | null;
+  connection: Connection;
+  balance_verified: boolean;
+  freshness: { balance_verified_at: string | null; transactions_through: string | null; transactions_checked_at: string | null };
+  store_name?: string;
+}
+
+interface RepairGroup {
+  item_id: string | null;
+  institution_name: string;
+  connection: Connection;
+  affected_count: number;
+  accounts: { id: string; name: string; last_four: string }[];
+}
+
+// Status pill styling — calm by default, red ONLY for proven user-action states
+const PILL: Record<string, { label: string; cls: string; dot: string }> = {
+  HEALTHY: { label: 'Healthy', cls: 'bg-emerald-500/10 text-emerald-300', dot: 'bg-emerald-400' },
+  SYNCING: { label: 'Syncing', cls: 'bg-blue-500/10 text-blue-300', dot: 'bg-blue-400' },
+  STALE: { label: 'Stale', cls: 'bg-amber-500/10 text-amber-300', dot: 'bg-amber-400' },
+  DEGRADED: { label: 'Degraded', cls: 'bg-amber-500/10 text-amber-300', dot: 'bg-amber-400' },
+  ACTION_REQUIRED: { label: 'Fix connection', cls: 'bg-red-500/10 text-red-300', dot: 'bg-red-400' },
+  PENDING_DISCONNECT: { label: 'Repair soon', cls: 'bg-amber-500/10 text-amber-300', dot: 'bg-amber-400' },
+  DISCONNECTED: { label: 'Disconnected', cls: 'bg-red-500/10 text-red-300', dot: 'bg-red-400' },
+  PROVIDER_OUTAGE: { label: 'Bank outage', cls: 'bg-amber-500/10 text-amber-300', dot: 'bg-amber-400' },
+  ERROR: { label: 'Sync error', cls: 'bg-amber-500/10 text-amber-300', dot: 'bg-amber-400' },
+  UNKNOWN: { label: 'Unknown', cls: 'bg-slate-500/10 text-slate-300', dot: 'bg-slate-400' },
+};
+
+function StatusPill({ c }: { c: Connection }) {
+  const p = PILL[c.status] || PILL.UNKNOWN;
+  return (
+    <span title={c.reason} className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap ${p.cls}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${p.dot}`} />
+      {p.label}
+    </span>
+  );
 }
 
 interface Transaction {
@@ -74,7 +121,15 @@ function BankingContent() {
 
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [unassigned, setUnassigned] = useState<BankAccount[]>([]);
-  const [summary, setSummary] = useState({ total_available_cents: 0, total_ledger_cents: 0, account_count: 0 });
+  const [summary, setSummary] = useState({ account_count: 0, verified_cents: 0, last_known_cents: 0, verified_accounts: 0, attention_count: 0, unknown_count: 0, unassigned_count: 0 });
+  const [repairGroups, setRepairGroups] = useState<RepairGroup[]>([]);
+  // Table controls + drawer
+  const [q, setQ] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [showZero, setShowZero] = useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [drawerId, setDrawerId] = useState<string | null>(null);
+  const [drawer, setDrawer] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
@@ -141,8 +196,16 @@ function BankingContent() {
     const data = await res.json();
     setAccounts(data.accounts || []);
     setUnassigned(data.unassigned || []);
-    setSummary(data.summary || { total_available_cents: 0, total_ledger_cents: 0, account_count: 0 });
+    setRepairGroups(data.repair_groups || []);
+    setSummary(data.summary || { account_count: 0, verified_cents: 0, last_known_cents: 0, verified_accounts: 0, attention_count: 0, unknown_count: 0, unassigned_count: 0 });
     setLoading(false);
+  }
+
+  async function openDrawer(accountId: string) {
+    setDrawerId(accountId);
+    setDrawer(null);
+    const d = await fetch(`/api/banking?detail=${accountId}`).then(r => r.json()).catch(() => null);
+    setDrawer(d);
   }
 
   async function saveAnchor(account: BankAccount) {
@@ -440,146 +503,164 @@ function BankingContent() {
         </div>
       ) : (
         <>
-          {/* Total Balance KPIs */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-              <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Total Available</p>
-              <p className="text-xl font-bold text-emerald-400">{cents(summary.total_available_cents)}</p>
+          {/* Coverage-aware headline — verified and last-known are NEVER blended.
+              A stale connection keeps its last-known money visible, labeled honestly. */}
+          <div className="flex flex-wrap items-end gap-x-12 gap-y-4 mb-8">
+            <div>
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">Verified cash</p>
+              <p className="text-3xl font-semibold text-white tabular-nums">{cents(summary.verified_cents)}</p>
+              <p className="text-[11px] text-slate-500 mt-1.5">{summary.verified_accounts} of {summary.account_count} accounts bank-verified within 36h</p>
             </div>
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-              <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Total Ledger</p>
-              <p className="text-xl font-bold text-white">{cents(summary.total_ledger_cents)}</p>
-            </div>
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-              <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Accounts</p>
-              <p className="text-xl font-bold text-blue-400">{summary.account_count}</p>
+            {summary.last_known_cents !== 0 && (
+              <div>
+                <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">Awaiting verification</p>
+                <p className="text-2xl font-semibold text-slate-300 tabular-nums">{cents(summary.last_known_cents)}</p>
+                <p className="text-[11px] text-slate-500 mt-1.5">last-known balances on {summary.account_count - summary.verified_accounts} unverified accounts</p>
+              </div>
+            )}
+            <div className="ml-auto flex items-center gap-4 text-[12px] text-slate-400 pb-1.5">
+              <span className="inline-flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />{summary.account_count - summary.attention_count} connected</span>
+              {summary.attention_count > 0 && <span className="inline-flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-red-400" />{summary.attention_count} need attention</span>}
+              {summary.unknown_count > 0 && <span className="inline-flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-slate-500" />{summary.unknown_count} unverified</span>}
             </div>
           </div>
 
-          {/* Unassigned accounts — parked until their store is known (auto-
-              matcher assigns them as payout history arrives, or pick manually) */}
-          {unassigned.length > 0 && (
-            <div className="mb-6 bg-slate-900 border border-amber-800/40 rounded-xl p-4">
-              <p className="text-sm font-semibold text-amber-400 mb-1">🗂 {unassigned.length} accounts waiting for store assignment</p>
-              <p className="text-[11px] text-slate-500 mb-3">These auto-assign as their payout history syncs in (matched against each store&apos;s Shopify payouts). Assign manually to place one now — they count toward no store until assigned.</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                {unassigned.map(a => (
-                  <div key={a.id} className="flex items-center justify-between bg-slate-800/50 rounded-lg px-3 py-2">
-                    <div>
-                      <p className="text-xs text-white">{a.institution_name} ****{a.last_four}</p>
-                      <p className="text-[10px] text-slate-500">{cents(a.balance_available_cents || 0)} available</p>
-                    </div>
-                    <select defaultValue=""
-                      onChange={async e => {
-                        if (!e.target.value) return;
-                        await fetch('/api/banking', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: a.id, storeId: e.target.value }) });
-                        loadAccounts();
-                      }}
-                      className="text-[11px] bg-slate-800 border border-slate-700 text-slate-300 rounded px-1.5 py-1">
-                      <option value="">assign…</option>
-                      {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                    </select>
-                  </div>
-                ))}
+          {/* Repair center — grouped by provider LOGIN: one repair fixes every
+              account under the same item, so we show one issue, not eight. */}
+          {repairGroups.length > 0 && (
+            <div className="mb-6 rounded-xl bg-slate-900/70 overflow-hidden">
+              <div className="px-4 py-2.5 flex items-center justify-between border-b border-slate-800/60">
+                <p className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Needs attention <span className="ml-1.5 text-slate-500">{repairGroups.length}</span></p>
               </div>
+              {repairGroups.map(g => (
+                <div key={g.item_id || g.accounts[0]?.id} className="px-4 py-3 flex items-center gap-4 border-b border-slate-800/40 last:border-b-0">
+                  <StatusPill c={g.connection} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-white truncate">
+                      {g.institution_name}
+                      {g.affected_count > 1 && <span className="text-slate-500"> · {g.affected_count} accounts on this login</span>}
+                      {g.affected_count === 1 && g.accounts[0] && <span className="text-slate-500"> · {g.accounts[0].name} ····{g.accounts[0].last_four}</span>}
+                    </p>
+                    <p className="text-[12px] text-slate-400 truncate">{g.connection.reason}</p>
+                  </div>
+                  {g.connection.requiresUserAction && (
+                    <button
+                      onClick={() => handlePlaidConnect({ accountId: g.accounts[0]?.id })}
+                      disabled={connecting}
+                      className="flex-shrink-0 px-3 py-1.5 bg-slate-100 hover:bg-white disabled:opacity-50 text-slate-900 text-[12px] font-semibold rounded-lg transition-colors">
+                      {g.connection.userActionType === 'reauth' ? 'Fix connection' : 'Review'}
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           )}
 
-          {/* Account Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-            {accounts.map(account => {
-              // Manual anchor = Shopify Balance WITHOUT a live feed. Plaid can
-              // connect Shopify Balance directly now — those rows sync like
-              // any bank and must not be treated as hand-updated anchors.
-              const isAnchor = account.institution_name === 'Shopify Balance' && (account as any).provider !== 'plaid';
-              // Teller returns 200 + last-known data when a bank connection dies —
-              // the newest transaction date is the real freshness signal
-              const dataAgeDays = account.bank_data_as_of
-                ? Math.floor((Date.now() - new Date(account.bank_data_as_of + 'T12:00:00').getTime()) / 86_400_000)
-                : null;
-              const frozen = !isAnchor && dataAgeDays !== null && dataAgeDays >= 3;
-              return (
-              <div
-                key={account.id}
-                role="button"
-                onClick={() => loadTransactions(account.id)}
-                className={`bg-slate-900 border rounded-xl p-5 text-left cursor-pointer transition-colors ${
-                  selectedAccount === account.id ? 'border-blue-600' : 'border-slate-800 hover:border-slate-700'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 className="font-semibold text-white text-sm">{account.institution_name}</h3>
-                    <p className="text-xs text-slate-400">{account.account_name} {account.last_four ? `****${account.last_four}` : ''}</p>
-                  </div>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">
-                    {account.account_subtype || account.account_type}
-                  </span>
+          {/* Unassigned — small entry point, focused workflow on demand */}
+          {unassigned.length > 0 && (
+            <div className="mb-6">
+              <div className="flex items-center gap-3">
+                <p className="text-[12px] text-slate-400"><span className="text-slate-200 font-semibold">{unassigned.length}</span> accounts need store assignment</p>
+                <button onClick={() => setAssignOpen(!assignOpen)} className="text-[12px] text-blue-400 hover:text-blue-300 font-medium">
+                  {assignOpen ? 'Hide' : 'Review assignments'}
+                </button>
+              </div>
+              {assignOpen && (
+                <div className="mt-3 rounded-xl bg-slate-900/70 divide-y divide-slate-800/40">
+                  {unassigned.map(a => (
+                    <div key={a.id} className="flex items-center justify-between px-4 py-2.5">
+                      <div>
+                        <p className="text-[13px] text-slate-200">{a.institution_name} ····{a.last_four}</p>
+                        <p className="text-[11px] text-slate-500 tabular-nums">{cents(a.balance_available_cents || 0)} · auto-assigns when payout history matches a store</p>
+                      </div>
+                      <select defaultValue=""
+                        onChange={async e => {
+                          if (!e.target.value) return;
+                          await fetch('/api/banking', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: a.id, storeId: e.target.value }) });
+                          loadAccounts();
+                        }}
+                        className="text-[12px] bg-slate-800 text-slate-300 rounded-lg px-2 py-1.5">
+                        <option value="">Assign to…</option>
+                        {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                    </div>
+                  ))}
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <p className="text-[10px] text-slate-500 uppercase">Available</p>
-                    <p className="text-sm font-semibold text-emerald-400">{cents(account.balance_available_cents || 0)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-slate-500 uppercase">Ledger</p>
-                    <p className="text-sm font-semibold text-white">{cents(account.balance_ledger_cents || 0)}</p>
-                  </div>
-                </div>
-                {frozen && (
-                  <div className="mt-2 text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 rounded px-2 py-1 flex items-center justify-between gap-2">
-                    <span>⚠ Bank data frozen at {account.bank_data_as_of} — Teller connection stale</span>
-                    <button
-                      onClick={e => { e.stopPropagation(); handlePlaidConnect({ accountId: account.id, storeId: account.store_id }); }}
-                      disabled={connecting}
-                      className="flex-shrink-0 px-2 py-0.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-semibold rounded text-[10px]">
-                      ↻ Reconnect
-                    </button>
-                  </div>
-                )}
-                <div className="flex items-center justify-between mt-2">
-                  <p className="text-[10px] text-slate-600">
-                    {isAnchor
-                      ? `Updated ${timeAgo(account.balance_updated_at)} — manual anchor, no bank feed`
-                      : `Checked ${timeAgo(account.balance_updated_at)}${account.bank_data_as_of ? ` · bank data through ${account.bank_data_as_of}` : ''}`}
-                  </p>
-                  {isAnchor && anchorEditId !== account.id && (
-                    <button onClick={e => { e.stopPropagation(); setAnchorEditId(account.id); setAnchorValue(''); setAnchorMsg(''); }}
-                      className="text-[10px] text-blue-400 hover:text-blue-300">update balance</button>
-                  )}
-                  {/* Reassign the account to its correct store */}
-                  <select value={account.store_id || ''}
-                    onClick={e => e.stopPropagation()}
-                    onChange={async e => {
-                      e.stopPropagation();
-                      const sid = e.target.value;
-                      if (!sid) return;
-                      await fetch('/api/banking', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: account.id, storeId: sid }) });
-                      loadAccounts();
-                    }}
-                    className="text-[10px] bg-slate-800 border border-slate-700 text-slate-400 rounded px-1 py-0.5 max-w-[90px]">
-                    <option value="">store…</option>
-                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-                {isAnchor && anchorEditId === account.id && (
-                  <div className="mt-2 flex gap-2" onClick={e => e.stopPropagation()}>
-                    <input type="number" step="0.01" value={anchorValue} onChange={e => setAnchorValue(e.target.value)}
-                      placeholder="Current balance $" autoFocus
-                      className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500" />
-                    <button onClick={() => saveAnchor(account)} disabled={anchorSaving}
-                      className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg px-3 py-1">
-                      {anchorSaving ? 'Checking…' : 'Save'}
-                    </button>
-                    <button onClick={() => setAnchorEditId(null)} className="text-xs text-slate-400 hover:text-white">✕</button>
-                  </div>
-                )}
-                {isAnchor && anchorMsg && (
-                  <p className="text-[10px] text-amber-400 mt-1.5" onClick={e => e.stopPropagation()}>{anchorMsg}</p>
+              )}
+            </div>
+          )}
+
+          {/* Controls */}
+          <div className="flex items-center gap-2 mb-3">
+            <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search accounts"
+              className="w-56 bg-slate-900/70 rounded-lg px-3 py-1.5 text-[13px] text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-600" />
+            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+              className="bg-slate-900/70 text-slate-300 text-[13px] rounded-lg px-2.5 py-1.5">
+              <option value="all">All statuses</option>
+              <option value="attention">Needs attention</option>
+              <option value="HEALTHY">Healthy</option>
+              <option value="STALE">Stale</option>
+              <option value="UNKNOWN">Unknown</option>
+            </select>
+            <label className="flex items-center gap-1.5 text-[12px] text-slate-400 cursor-pointer select-none">
+              <input type="checkbox" checked={showZero} onChange={e => setShowZero(e.target.checked)} className="accent-blue-500" />
+              Show zero-balance
+            </label>
+          </div>
+
+          {/* Accounts table — connection state comes from provider evidence,
+              freshness is descriptive. No date-math ever claims "disconnected". */}
+          {(() => {
+            const sName = (id: string) => stores.find(s => s.id === id)?.name || '—';
+            const visible = accounts.filter(a => {
+              if (!showZero && Math.abs(a.balance_available_cents || 0) < 100 && !a.connection.requiresUserAction) return false;
+              if (statusFilter === 'attention' && !a.connection.requiresUserAction) return false;
+              if (statusFilter !== 'all' && statusFilter !== 'attention' && a.connection.status !== statusFilter) return false;
+              const s = q.trim().toLowerCase();
+              if (s && !`${a.institution_name} ${a.nickname || ''} ${a.account_name} ${a.last_four} ${sName(a.store_id)}`.toLowerCase().includes(s)) return false;
+              return true;
+            });
+            const hidden = accounts.length - visible.length;
+            return (
+              <div className="rounded-xl bg-slate-900/60 overflow-hidden mb-6">
+                <table className="w-full text-[13px]">
+                  <thead>
+                    <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/60">
+                      <th className="px-4 py-2.5 font-semibold">Account</th>
+                      <th className="px-4 py-2.5 font-semibold">Store</th>
+                      <th className="px-4 py-2.5 font-semibold text-right">Bank balance</th>
+                      <th className="px-4 py-2.5 font-semibold text-right">Verified</th>
+                      <th className="px-4 py-2.5 font-semibold">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visible.map(a => (
+                      <tr key={a.id} onClick={() => openDrawer(a.id)}
+                        className={`border-b border-slate-800/30 last:border-b-0 cursor-pointer transition-colors hover:bg-slate-800/30 ${drawerId === a.id ? 'bg-slate-800/40' : ''}`}>
+                        <td className="px-4 py-2.5">
+                          <span className="text-slate-100">{a.nickname || a.institution_name}</span>
+                          <span className="text-slate-500"> {a.nickname ? '' : (a.account_name || '')} ····{a.last_four}</span>
+                        </td>
+                        <td className="px-4 py-2.5 text-slate-400">{sName(a.store_id)}</td>
+                        <td className={`px-4 py-2.5 text-right tabular-nums font-medium ${a.balance_verified ? 'text-slate-100' : 'text-slate-400'}`}>
+                          {cents(a.balance_available_cents || 0)}
+                          {!a.balance_verified && <span className="block text-[10px] font-normal text-slate-500">last-known</span>}
+                        </td>
+                        <td className="px-4 py-2.5 text-right text-slate-500 whitespace-nowrap">{timeAgo(a.freshness.balance_verified_at)}</td>
+                        <td className="px-4 py-2.5"><StatusPill c={a.connection} /></td>
+                      </tr>
+                    ))}
+                    {visible.length === 0 && (
+                      <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500 text-[13px]">No accounts match</td></tr>
+                    )}
+                  </tbody>
+                </table>
+                {hidden > 0 && (
+                  <p className="px-4 py-2 text-[11px] text-slate-500 border-t border-slate-800/40">{hidden} zero-balance accounts hidden — toggle &quot;Show zero-balance&quot; to see them</p>
                 )}
               </div>
-            );})}
-          </div>
+            );
+          })()}
 
           {/* Transactions */}
           {selectedAccount && (
@@ -944,6 +1025,149 @@ function BankingContent() {
             </div>
           )}
         </div>
+      )}
+
+      {/* Account detail drawer — progressive disclosure: technical evidence on
+          demand, never crowding the main list. Everything shown is provable. */}
+      {drawerId && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-40" onClick={() => { setDrawerId(null); setDrawer(null); }} />
+          <aside className="fixed right-0 top-0 bottom-0 w-full sm:w-[420px] bg-slate-900 z-50 overflow-y-auto shadow-2xl">
+            {!drawer ? (
+              <div className="flex items-center justify-center h-40"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400" /></div>
+            ) : (() => {
+              const a = drawer.account as BankAccount;
+              const isAnchor = a.institution_name === 'Shopify Balance' && a.provider !== 'plaid';
+              return (
+                <div className="p-6">
+                  <div className="flex items-start justify-between mb-5">
+                    <div>
+                      <h2 className="text-lg font-semibold text-white">{a.nickname || a.institution_name}</h2>
+                      <p className="text-[12px] text-slate-400">{a.account_name} ····{a.last_four}</p>
+                    </div>
+                    <button onClick={() => { setDrawerId(null); setDrawer(null); }} className="text-slate-500 hover:text-white text-lg leading-none">✕</button>
+                  </div>
+
+                  <div className="mb-5">
+                    <StatusPill c={a.connection} />
+                    <p className="text-[12px] text-slate-400 mt-2 leading-relaxed">{a.connection.reason}</p>
+                    {a.connection.requiresUserAction && (
+                      <button onClick={() => handlePlaidConnect({ accountId: a.id, storeId: a.store_id })} disabled={connecting}
+                        className="mt-3 w-full px-3 py-2 bg-slate-100 hover:bg-white disabled:opacity-50 text-slate-900 text-[13px] font-semibold rounded-lg">
+                        {connecting ? 'Opening…' : 'Fix connection'}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="rounded-lg bg-slate-800/40 p-4 mb-5">
+                    <div className="flex items-baseline justify-between mb-1">
+                      <p className="text-[11px] uppercase tracking-wider text-slate-500">{a.balance_verified ? 'Bank-verified balance' : 'Last verified balance'}</p>
+                      <p className="text-[11px] text-slate-500">{timeAgo(a.freshness.balance_verified_at)}</p>
+                    </div>
+                    <p className="text-2xl font-semibold text-white tabular-nums">{cents(a.balance_available_cents || 0)}</p>
+                    {(a.balance_ledger_cents || 0) !== (a.balance_available_cents || 0) && (
+                      <p className="text-[12px] text-slate-400 mt-1 tabular-nums">Ledger {cents(a.balance_ledger_cents || 0)} <span className="text-slate-500">(includes pending)</span></p>
+                    )}
+                    {!a.balance_verified && (
+                      <p className="text-[11px] text-amber-300/80 mt-2">Not freshly verified — this is the last balance the bank confirmed, preserved until the connection verifies again.</p>
+                    )}
+                  </div>
+
+                  <div className="mb-5">
+                    <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Data freshness</p>
+                    <div className="space-y-1.5 text-[12px]">
+                      <div className="flex justify-between"><span className="text-slate-400">Balance verified</span><span className="text-slate-200">{a.freshness.balance_verified_at ? timeAgo(a.freshness.balance_verified_at) : 'never'}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-400">Transactions checked</span><span className="text-slate-200">{a.freshness.transactions_checked_at ? timeAgo(a.freshness.transactions_checked_at) : 'no record'}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-400">Transactions through</span><span className="text-slate-200">{a.freshness.transactions_through || '—'}</span></div>
+                      {drawer.transactions?.n > 0 && (
+                        <div className="flex justify-between"><span className="text-slate-400">History held</span><span className="text-slate-200 tabular-nums">{drawer.transactions.n.toLocaleString()} txns · {drawer.transactions.first} → {drawer.transactions.last}</span></div>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-600 mt-2">Freshness describes data recency only — it is never used to judge the connection.</p>
+                  </div>
+
+                  {drawer.item && (
+                    <div className="mb-5">
+                      <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Connection health</p>
+                      <div className="space-y-1.5 text-[12px]">
+                        <div className="flex justify-between"><span className="text-slate-400">Provider</span><span className="text-slate-200">Plaid</span></div>
+                        <div className="flex justify-between"><span className="text-slate-400">Authorization</span><span className={drawer.item.provider_error_code ? 'text-amber-300' : 'text-emerald-300'}>{drawer.item.provider_error_code ? 'Action required' : 'Valid'}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-400">Institution</span><span className="text-slate-200">{drawer.item.institution_health === 'UNKNOWN' ? 'Not monitored' : drawer.item.institution_health}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-400">Last sync attempt</span><span className="text-slate-200">{drawer.item.last_sync_attempt_at ? timeAgo(drawer.item.last_sync_attempt_at) : 'no record'}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-400">Last successful sync</span><span className="text-slate-200">{drawer.item.last_sync_success_at ? timeAgo(drawer.item.last_sync_success_at) : 'no record'}</span></div>
+                      </div>
+                      {drawer.item.provider_error_code && (
+                        <div className="mt-3 rounded-lg bg-red-500/5 px-3 py-2.5">
+                          <p className="text-[12px] font-semibold text-red-300">{drawer.item.provider_error_code}</p>
+                          <p className="text-[11px] text-slate-400 mt-0.5">{drawer.item.provider_error_message}</p>
+                          {drawer.item.error_detected_at && <p className="text-[10px] text-slate-500 mt-1">detected {timeAgo(drawer.item.error_detected_at)}</p>}
+                        </div>
+                      )}
+                      {drawer.siblings?.length > 0 && (
+                        <p className="text-[11px] text-slate-500 mt-2">Same bank login also covers: {drawer.siblings.map((s: any) => `${s.nickname || s.account_name} ····${s.last_four}`).join(', ')} — one repair fixes all.</p>
+                      )}
+                    </div>
+                  )}
+
+                  {drawer.sync_runs?.length > 0 && (
+                    <div className="mb-5">
+                      <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Recent sync history</p>
+                      <div className="space-y-1">
+                        {drawer.sync_runs.map((r: any, i: number) => (
+                          <div key={i} className="flex items-center gap-2 text-[11px]">
+                            <span className="text-slate-500 w-24 flex-shrink-0">{(r.started_at || '').slice(5, 16).replace('T', ' ')}</span>
+                            <span className={r.status === 'success' ? 'text-emerald-400' : r.status === 'partial' ? 'text-amber-400' : 'text-red-400'}>{r.status}</span>
+                            <span className="text-slate-500 truncate">{r.error_code || (r.records_added ? `${r.records_added} new txns` : 'no changes')}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="mb-5">
+                    <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Store</p>
+                    <select value={a.store_id || ''}
+                      onChange={async e => {
+                        if (!e.target.value) return;
+                        await fetch('/api/banking', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: a.id, storeId: e.target.value }) });
+                        loadAccounts(); openDrawer(a.id);
+                      }}
+                      className="w-full text-[13px] bg-slate-800 text-slate-200 rounded-lg px-2.5 py-2">
+                      <option value="">Unassigned</option>
+                      {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+
+                  {isAnchor && (
+                    <div className="mb-5">
+                      <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Manual anchor (no bank feed)</p>
+                      {anchorEditId === a.id ? (
+                        <div className="flex gap-2">
+                          <input type="number" step="0.01" value={anchorValue} onChange={e => setAnchorValue(e.target.value)}
+                            placeholder="Current balance $" autoFocus
+                            className="flex-1 bg-slate-800 rounded-lg px-2.5 py-2 text-[13px] text-white focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                          <button onClick={() => saveAnchor(a)} disabled={anchorSaving}
+                            className="text-[13px] bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg px-3 py-2">{anchorSaving ? '…' : 'Save'}</button>
+                        </div>
+                      ) : (
+                        <button onClick={() => { setAnchorEditId(a.id); setAnchorValue(''); setAnchorMsg(''); }}
+                          className="text-[12px] text-blue-400 hover:text-blue-300">Update balance manually</button>
+                      )}
+                      {anchorMsg && <p className="text-[11px] text-amber-300 mt-1.5">{anchorMsg}</p>}
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 pt-2 border-t border-slate-800/60">
+                    <button onClick={() => { loadTransactions(a.id); setDrawerId(null); setDrawer(null); }}
+                      className="flex-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-[13px] font-medium rounded-lg">View transactions</button>
+                    <button onClick={() => { handleDisconnect(a.id); setDrawerId(null); setDrawer(null); }}
+                      className="px-3 py-2 text-red-400/80 hover:text-red-300 text-[13px] rounded-lg">Disconnect</button>
+                  </div>
+                </div>
+              );
+            })()}
+          </aside>
+        </>
       )}
     </div>
   );
