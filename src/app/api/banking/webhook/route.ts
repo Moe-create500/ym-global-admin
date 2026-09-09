@@ -73,6 +73,11 @@ export async function POST(req: NextRequest) {
         default:
           console.log(`[plaid-webhook] unhandled ITEM code ${code}`);
       }
+    } else if ((payload.webhook_type === 'LIABILITIES' || payload.webhook_type === 'TRANSACTIONS') && itemId) {
+      // Fresh data available at the provider — stamp the item so the next
+      // sync cycle picks it up (sync is idempotent; no user action needed)
+      db.prepare("UPDATE plaid_items SET updated_at = datetime('now') WHERE item_id = ?").run(itemId);
+      console.log(`[plaid-webhook] ${payload.webhook_type}/${code} on ${itemId} — refresh flagged`);
     } else {
       console.log(`[plaid-webhook] ${payload.webhook_type}/${code} — no action needed`);
     }

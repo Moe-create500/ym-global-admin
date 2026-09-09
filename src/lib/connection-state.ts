@@ -248,6 +248,7 @@ export function ensureConnectionSchema(db: Database.Database) {
     "ALTER TABLE plaid_items ADD COLUMN last_sync_attempt_at TEXT",
     "ALTER TABLE plaid_items ADD COLUMN last_sync_success_at TEXT",
     "ALTER TABLE plaid_items ADD COLUMN last_sync_status TEXT",
+    "ALTER TABLE plaid_items ADD COLUMN liabilities_status TEXT",
     "ALTER TABLE bank_accounts ADD COLUMN last_txn_success_at TEXT",
     "ALTER TABLE bank_accounts ADD COLUMN archived INTEGER DEFAULT 0",
   ];

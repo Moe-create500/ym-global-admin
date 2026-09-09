@@ -212,8 +212,13 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
     try {
       const bal = await plaidPost('/accounts/balance/get', { access_token: item.access_token });
       for (const a of bal.accounts || []) {
-        const available = Math.round(((a.balances?.available ?? a.balances?.current) || 0) * 100);
-        const ledger = Math.round((a.balances?.current || 0) * 100);
+        // NULL from Plaid is ABSENCE, not zero — skip the update and keep the
+        // last verified balance rather than writing a fake \$0 (audit 2026-09-09)
+        const rawAvail = a.balances?.available ?? a.balances?.current;
+        const rawLedger = a.balances?.current;
+        if (rawAvail == null && rawLedger == null) continue;
+        const available = Math.round(((rawAvail ?? rawLedger) || 0) * 100);
+        const ledger = Math.round(((rawLedger ?? rawAvail) || 0) * 100);
         const r = db.prepare(`UPDATE bank_accounts SET balance_available_cents = ?, balance_ledger_cents = ?,
             balance_updated_at = datetime('now'), updated_at = datetime('now'), last_sync_error = NULL
           WHERE teller_account_id = ?`).run(available, ledger, a.account_id);
@@ -257,7 +262,13 @@ export async function syncPlaidItems(db: Database.Database): Promise<{ accounts_
               c.last_statement_issue_date || null, c.next_payment_due_date || null,
               c.minimum_payment_amount != null ? Math.round(c.minimum_payment_amount * 100) : null);
         }
-      } catch { /* consent not granted yet — manual entry covers these cards */ }
+        db.prepare("UPDATE plaid_items SET liabilities_status = 'ok' WHERE item_id = ?").run(item.item_id);
+      } catch (le: any) {
+        // Consent-gated or product errors are per-item EVIDENCE (which cards
+        // can't get bank statement data and WHY) — recorded, never swallowed
+        const code = le instanceof PlaidApiError ? le.errorCode : 'API_ERROR';
+        db.prepare('UPDATE plaid_items SET liabilities_status = ? WHERE item_id = ?').run(code || 'API_ERROR', item.item_id);
+      }
 
       try {
       let cursor: string | undefined = item.cursor || undefined;
