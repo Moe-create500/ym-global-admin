@@ -37,12 +37,25 @@ export async function GET(req: NextRequest) {
     params.push(beforeDate, beforeDate, beforeId);
   }
 
+  // Reconciliation surfaced inline: each row carries its classification
+  // verdict (category/store/method/confidence/evidence) and, when paired,
+  // a summary of the OTHER leg — so "what's connected to what" is visible.
   const rows: any[] = db.prepare(`
     SELECT bt.id, bt.date, bt.description, bt.amount_cents, bt.status,
       bt.counterparty, bt.category, bt.custom_category,
-      a.id AS account_id, a.institution_name, a.account_name, a.nickname, a.last_four, a.account_type
+      a.id AS account_id, a.institution_name, a.account_name, a.nickname, a.last_four, a.account_type,
+      r.category AS cls_category, r.method AS cls_method, r.confidence AS cls_confidence,
+      r.reason AS cls_reason, r.evidence_json, r.needs_review AS cls_needs_review,
+      s.name AS store_name,
+      pt.description AS pair_description, pt.date AS pair_date,
+      pa.institution_name AS pair_institution, pa.last_four AS pair_last_four,
+      pa.nickname AS pair_nickname, pa.account_name AS pair_account_name
     FROM bank_transactions bt
     JOIN bank_accounts a ON a.id = bt.bank_account_id
+    LEFT JOIN classification_results r ON r.txn_id = bt.id
+    LEFT JOIN stores s ON s.id = r.store_id
+    LEFT JOIN bank_transactions pt ON pt.id = r.related_txn_id
+    LEFT JOIN bank_accounts pa ON pa.id = pt.bank_account_id
     WHERE ${where.join(' AND ')}
     ORDER BY bt.date DESC, bt.id DESC
     LIMIT ?

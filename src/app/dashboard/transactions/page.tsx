@@ -22,7 +22,29 @@ interface Txn {
   nickname: string | null;
   last_four: string;
   account_type: string;
+  // reconciliation verdict (classification_results)
+  cls_category: string | null;
+  cls_method: string | null;
+  cls_confidence: number | null;
+  cls_reason: string | null;
+  evidence_json: string | null;
+  cls_needs_review: number | null;
+  store_name: string | null;
+  // the OTHER leg when paired
+  pair_description: string | null;
+  pair_date: string | null;
+  pair_institution: string | null;
+  pair_last_four: string | null;
+  pair_nickname: string | null;
+  pair_account_name: string | null;
 }
+
+const METHOD_LABEL: Record<string, string> = {
+  MANUAL: '✓ manual', TRANSFER_MATCH: '↔ transfer pair', CARD_PAYMENT_MATCH: '↔ card payment',
+  INVOICE_MATCH: '🧾 invoice', PAYOUT_MATCH: '⬇ payout', EXACT_HISTORY: '✓ verified history',
+  MERCHANT_RULE: '§ rule', MERCHANT_KNOWLEDGE: '~ merchant', SEMANTIC_HISTORY: '~ similar',
+  LLM_ASSISTED: '🤖 suggested', TRANSFER_SUSPECT: '⚠ ambiguous pair', UNKNOWN: '',
+};
 
 interface Account {
   id: string;
@@ -59,6 +81,7 @@ export default function TransactionsPage() {
   const [kind, setKind] = useState<'all' | 'bank' | 'card'>('all');
   const [accountId, setAccountId] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => setQDebounced(q), 300);
@@ -180,13 +203,21 @@ export default function TransactionsPage() {
               {byDate.map(([date, rows]) => (
                 <Fragment key={date}>
                   <tr className="bg-slate-800/30">
-                    <td colSpan={4} className="px-4 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+                    <td colSpan={6} className="px-4 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
                       {date} <span className="normal-case font-normal">· {timeAgoStr(date + ' 12:00:00')}</span>
                     </td>
                   </tr>
-                  {rows.map(t => (
-                    <tr key={t.id} className="border-b border-slate-800/30 last:border-b-0 hover:bg-slate-800/30 transition-colors">
-                      <td className="px-4 py-2 max-w-[420px]">
+                  {rows.map(t => {
+                    const cat = t.custom_category || t.cls_category;
+                    const isPaired = !!t.pair_description;
+                    const evidence: { type: string; reference: string }[] = (() => {
+                      try { return JSON.parse(t.evidence_json || '[]'); } catch { return []; }
+                    })();
+                    return (
+                    <Fragment key={t.id}>
+                    <tr onClick={() => setExpanded(expanded === t.id ? null : t.id)}
+                      className={`border-b border-slate-800/30 last:border-b-0 hover:bg-slate-800/30 transition-colors cursor-pointer ${expanded === t.id ? 'bg-slate-800/40' : ''}`}>
+                      <td className="px-4 py-2 max-w-[380px]">
                         <span className="text-slate-100 truncate block">{t.description || t.counterparty || '—'}</span>
                         {t.status === 'pending' && <span className="text-[10px] text-blue-300">pending</span>}
                       </td>
@@ -194,7 +225,19 @@ export default function TransactionsPage() {
                         {acctLabel(t)}
                         {t.account_type === 'credit' && <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-slate-800 text-slate-500">card</span>}
                       </td>
-                      <td className="px-4 py-2">
+                      <td className="px-4 py-2 text-slate-400 whitespace-nowrap">
+                        {t.store_name || <span className="text-slate-600">—</span>}
+                      </td>
+                      <td className="px-4 py-2 whitespace-nowrap">
+                        {t.cls_method && METHOD_LABEL[t.cls_method] ? (
+                          <span title={t.cls_reason || ''} className={`text-[11px] ${
+                            t.cls_method === 'TRANSFER_SUSPECT' ? 'text-amber-300'
+                            : isPaired ? 'text-blue-300' : 'text-slate-400'}`}>
+                            {METHOD_LABEL[t.cls_method]}
+                          </span>
+                        ) : t.cls_needs_review ? <span className="text-[11px] text-slate-600">needs review</span> : null}
+                      </td>
+                      <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                         {editing === t.id ? (
                           <select autoFocus defaultValue={t.custom_category || ''} onBlur={() => setEditing(null)}
                             onChange={e => setCategory(t.id, e.target.value)}
@@ -204,8 +247,8 @@ export default function TransactionsPage() {
                           </select>
                         ) : (
                           <button onClick={() => setEditing(t.id)}
-                            className={`text-[11px] px-2 py-0.5 rounded-full ${t.custom_category || t.category ? 'bg-slate-800 text-slate-300' : 'text-slate-600 hover:text-slate-400'}`}>
-                            {t.custom_category || t.category || '+ categorize'}
+                            className={`text-[11px] px-2 py-0.5 rounded-full ${cat ? (t.custom_category ? 'bg-blue-500/10 text-blue-300' : 'bg-slate-800 text-slate-300') : 'text-slate-600 hover:text-slate-400'}`}>
+                            {cat || '+ categorize'}
                           </button>
                         )}
                       </td>
@@ -213,7 +256,38 @@ export default function TransactionsPage() {
                         {t.amount_cents >= 0 ? '+' : ''}{fmtCents(t.amount_cents)}
                       </td>
                     </tr>
-                  ))}
+                    {expanded === t.id && (
+                      <tr className="bg-slate-950/50">
+                        <td colSpan={6} className="px-6 py-3">
+                          {/* WHY does YM believe this — the reconciliation evidence */}
+                          {t.cls_reason ? (
+                            <div className="space-y-1.5">
+                              <p className="text-[12px] text-slate-300">
+                                {t.cls_reason}
+                                {t.cls_confidence != null && t.cls_method !== 'MANUAL' && (
+                                  <span className="text-slate-500"> · confidence {(t.cls_confidence * 100).toFixed(0)}%</span>
+                                )}
+                              </p>
+                              {isPaired && (
+                                <p className="text-[12px] text-blue-300">
+                                  ↔ connected to: <span className="text-slate-200">{t.pair_description}</span>
+                                  <span className="text-slate-500"> on {t.pair_nickname || t.pair_account_name || t.pair_institution} ····{t.pair_last_four} · {t.pair_date}</span>
+                                </p>
+                              )}
+                              {evidence.length > 0 && (
+                                <p className="text-[11px] text-slate-500">
+                                  evidence: {evidence.map(e => `${e.type.replace(/_/g, ' ')} (${String(e.reference).slice(0, 40)})`).join(' · ')}
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-[12px] text-slate-500">Not yet reconciled — run the categorizer or categorize manually.</p>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                  );})}
                 </Fragment>
               ))}
             </tbody>
