@@ -2,11 +2,13 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Script from 'next/script';
+import { StatusPill, type Connection, type Freshness } from '@/components/finance-ui';
 
 interface CreditCard {
   id: string;
   institution_name: string;
   account_name: string;
+  nickname?: string | null;
   account_type: string;
   account_subtype: string;
   last_four: string;
@@ -14,6 +16,18 @@ interface CreditCard {
   balance_ledger_cents: number;
   balance_updated_at: string | null;
   teller_enrollment_id: string | null;
+  item_id?: string | null;
+  connection: Connection;
+  balance_verified: boolean;
+  freshness: Freshness;
+}
+
+interface RepairGroup {
+  item_id: string | null;
+  institution_name: string;
+  connection: Connection;
+  affected_count: number;
+  accounts: { id: string; name: string; last_four: string }[];
 }
 
 interface Transaction {
@@ -62,7 +76,10 @@ function timeAgo(dateStr: string | null): string {
 
 export default function CreditCardsPage() {
   const [cards, setCards] = useState<CreditCard[]>([]);
-  const [summary, setSummary] = useState({ total_available_cents: 0, total_ledger_cents: 0, card_count: 0 });
+  const [summary, setSummary] = useState({ total_available_cents: 0, verified_owed_cents: 0, last_known_owed_cents: 0, verified_cards: 0, card_count: 0, attention_count: 0 });
+  const [repairGroups, setRepairGroups] = useState<RepairGroup[]>([]);
+  const [drawerId, setDrawerId] = useState<string | null>(null);
+  const [drawer, setDrawer] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
@@ -133,8 +150,17 @@ export default function CreditCardsPage() {
     const res = await fetch('/api/credit-cards');
     const data = await res.json();
     setCards(data.cards || []);
-    setSummary(data.summary || { total_available_cents: 0, total_ledger_cents: 0, card_count: 0 });
+    setRepairGroups(data.repair_groups || []);
+    setSummary(data.summary || { total_available_cents: 0, verified_owed_cents: 0, last_known_owed_cents: 0, verified_cards: 0, card_count: 0, attention_count: 0 });
     setLoading(false);
+  }
+
+  async function openDrawer(cardId: string) {
+    setDrawerId(cardId);
+    setDrawer(null);
+    // detail endpoint is account-generic — works for credit accounts too
+    const d = await fetch(`/api/banking?detail=${cardId}`).then(r => r.json()).catch(() => null);
+    setDrawer(d);
   }
 
   async function loadTransactions(cardId: string) {
@@ -250,91 +276,105 @@ export default function CreditCardsPage() {
         </div>
       ) : (
         <>
-          {/* KPIs */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-              <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Real Available (lines)</p>
-              <p className={`text-xl font-bold ${summary.total_available_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {cents(summary.total_available_cents)}
-              </p>
+          {/* Coverage-aware headline — verified vs last-known debt never blended */}
+          <div className="flex flex-wrap items-end gap-x-12 gap-y-4 mb-8">
+            <div>
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">Owed (bank-verified)</p>
+              <p className="text-3xl font-semibold text-white tabular-nums">{cents(summary.verified_owed_cents)}</p>
+              <p className="text-[11px] text-slate-500 mt-1.5">{summary.verified_cards} of {summary.card_count} cards verified within 36h</p>
             </div>
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-              <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Total Ledger</p>
-              <p className="text-xl font-bold text-white">{cents(summary.total_ledger_cents)}</p>
-            </div>
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-              <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Cards</p>
-              <p className="text-xl font-bold text-blue-400">{summary.card_count}</p>
+            {summary.last_known_owed_cents !== 0 && (
+              <div>
+                <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">Owed (last-known)</p>
+                <p className="text-2xl font-semibold text-slate-300 tabular-nums">{cents(summary.last_known_owed_cents)}</p>
+                <p className="text-[11px] text-slate-500 mt-1.5">{summary.card_count - summary.verified_cards} cards awaiting verification</p>
+              </div>
+            )}
+            <div>
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">Real available (lines)</p>
+              <p className={`text-2xl font-semibold tabular-nums ${summary.total_available_cents >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{cents(summary.total_available_cents)}</p>
+              <p className="text-[11px] text-slate-500 mt-1.5">child-card ceilings excluded</p>
             </div>
           </div>
 
-          {/* Card Grid — corporate credit LINES first, their cards indented
-              beneath (mirrors how BoA presents CORP parent + employee cards) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-            {[...cards].sort((a, b) => {
-              const fam = (c: CreditCard) => c.account_name.replace(/^CORP Account - /i, '').replace(/ LINE$/i, '').slice(0, 14).toLowerCase();
-              const isParent = (c: CreditCard) => /^CORP Account/i.test(c.account_name) ? 0 : 1;
-              return fam(a).localeCompare(fam(b)) || isParent(a) - isParent(b);
-            }).map(card => {
-              const fam = (c: CreditCard) => c.account_name.replace(/^CORP Account - /i, '').replace(/ LINE$/i, '').slice(0, 14).toLowerCase();
-              const isLine = /^CORP Account/i.test(card.account_name);
-              const parent = !isLine ? cards.find(c => /^CORP Account/i.test(c.account_name) && fam(c) === fam(card)) : undefined;
-              const hasParent = !!parent;
-              // A card can only spend what its LINE has left — the card's own
-              // "available" is just its allocation ceiling
-              const lineAvail = parent ? (parent.balance_available_cents || 0) : null;
-              const overstated = lineAvail !== null && lineAvail < (card.balance_available_cents || 0);
-              return (
-              <button
-                key={card.id}
-                onClick={() => loadTransactions(card.id)}
-                className={`bg-slate-900 border rounded-xl p-5 text-left transition-colors ${
-                  selectedCard === card.id ? 'border-blue-600' : isLine ? 'border-slate-600' : 'border-slate-800 hover:border-slate-700'
-                } ${hasParent ? 'sm:ml-4 opacity-95' : ''}`}
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 className="font-semibold text-white text-sm">{isLine ? '🏦 ' : '↳ '}{card.institution_name}</h3>
-                    <p className="text-xs text-slate-400">{card.account_name} ****{card.last_four}</p>
+          {/* Repair center — one issue per bank login */}
+          {repairGroups.length > 0 && (
+            <div className="mb-6 rounded-xl bg-slate-900/70 overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-slate-800/60">
+                <p className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Needs attention <span className="ml-1.5 text-slate-500">{repairGroups.length}</span></p>
+              </div>
+              {repairGroups.map(g => (
+                <div key={g.item_id || g.accounts[0]?.id} className="px-4 py-3 flex items-center gap-4 border-b border-slate-800/40 last:border-b-0">
+                  <StatusPill c={g.connection} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-white truncate">{g.institution_name}{g.affected_count > 1 && <span className="text-slate-500"> · {g.affected_count} cards on this login</span>}</p>
+                    <p className="text-[12px] text-slate-400 truncate">{g.connection.reason}</p>
                   </div>
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${isLine ? 'bg-blue-900/60 text-blue-300' : 'bg-slate-800 text-slate-400'}`}>
-                    {isLine ? 'credit line' : 'card'}
-                  </span>
+                  {g.connection.requiresUserAction && (
+                    <button onClick={() => handlePlaidConnect(g.accounts[0]?.id)} disabled={connecting}
+                      className="flex-shrink-0 px-3 py-1.5 bg-slate-100 hover:bg-white disabled:opacity-50 text-slate-900 text-[12px] font-semibold rounded-lg transition-colors">
+                      {g.connection.userActionType === 'reauth' ? 'Fix connection' : 'Review'}
+                    </button>
+                  )}
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <p className="text-[10px] text-slate-500 uppercase">{hasParent ? 'Card limit open' : 'Available'}</p>
-                    <p className={`text-sm font-semibold ${card.balance_available_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {cents(card.balance_available_cents || 0)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-slate-500 uppercase">Ledger</p>
-                    <p className="text-sm font-semibold text-white">{cents(card.balance_ledger_cents || 0)}</p>
-                  </div>
-                </div>
-                {overstated && (
-                  <p className="mt-1.5 text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 rounded px-2 py-1">
-                    ⚠ Real spendable ≈ {cents(lineAvail!)} — capped by the credit line ({parent!.account_name.replace(/^CORP Account - /i, '')} owes {cents(parent!.balance_ledger_cents || 0)})
-                  </p>
-                )}
-                <div className="flex items-center justify-between mt-2">
-                  <p className="text-[10px] text-slate-600">Updated {timeAgo(card.balance_updated_at)}</p>
-                  <span
-                    role="button"
-                    onClick={e => { e.stopPropagation(); handlePlaidConnect(card.id); }}
-                    className={`text-[10px] px-2 py-0.5 rounded font-semibold cursor-pointer ${(card as any).last_sync_error ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'text-slate-500 hover:text-white'}`}>
-                    ↻ Reconnect
-                  </span>
-                </div>
-                {(card as any).last_sync_error && (
-                  <p className="text-[10px] text-red-300 mt-1 bg-red-950/40 border border-red-900/50 rounded px-2 py-1">
-                    ⚠ {(card as any).last_sync_error}
-                  </p>
-                )}
-              </button>
-              );
-            })}
+              ))}
+            </div>
+          )}
+
+          {/* Cards table — credit LINES as parent rows, their cards indented.
+              Connection state from provider evidence only; freshness descriptive. */}
+          <div className="rounded-xl bg-slate-900/60 overflow-hidden mb-6">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/60">
+                  <th className="px-4 py-2.5 font-semibold">Card</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Owed</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Available</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Verified</th>
+                  <th className="px-4 py-2.5 font-semibold">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...cards].sort((a, b) => {
+                  const fam = (c: CreditCard) => c.account_name.replace(/^CORP Account - /i, '').replace(/ LINE$/i, '').slice(0, 14).toLowerCase();
+                  const isParent = (c: CreditCard) => /^CORP Account/i.test(c.account_name) ? 0 : 1;
+                  return fam(a).localeCompare(fam(b)) || isParent(a) - isParent(b);
+                }).map(card => {
+                  const fam = (c: CreditCard) => c.account_name.replace(/^CORP Account - /i, '').replace(/ LINE$/i, '').slice(0, 14).toLowerCase();
+                  const isLine = /^CORP Account/i.test(card.account_name);
+                  const parent = !isLine ? cards.find(c => /^CORP Account/i.test(c.account_name) && fam(c) === fam(card)) : undefined;
+                  // A card can only spend what its LINE has left — its own
+                  // "available" is just an allocation ceiling
+                  const lineAvail = parent ? (parent.balance_available_cents || 0) : null;
+                  const overstated = lineAvail !== null && lineAvail < (card.balance_available_cents || 0);
+                  return (
+                    <tr key={card.id} onClick={() => openDrawer(card.id)}
+                      className={`border-b border-slate-800/30 last:border-b-0 cursor-pointer transition-colors hover:bg-slate-800/30 ${drawerId === card.id ? 'bg-slate-800/40' : ''} ${isLine ? 'bg-slate-800/20' : ''}`}>
+                      <td className={`px-4 py-2.5 ${parent ? 'pl-8' : ''}`}>
+                        <span className={isLine ? 'text-slate-100 font-medium' : 'text-slate-100'}>{card.nickname || card.account_name}</span>
+                        <span className="text-slate-500"> ····{card.last_four}</span>
+                        {isLine && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300">credit line</span>}
+                      </td>
+                      <td className={`px-4 py-2.5 text-right tabular-nums font-medium ${card.balance_verified ? 'text-slate-100' : 'text-slate-400'}`}>
+                        {cents(Math.abs(card.balance_ledger_cents || 0))}
+                        {!card.balance_verified && <span className="block text-[10px] font-normal text-slate-500">last-known</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">
+                        <span className={card.balance_available_cents >= 0 ? 'text-emerald-300' : 'text-red-300'}>{cents(card.balance_available_cents || 0)}</span>
+                        {overstated && <span className="block text-[10px] text-amber-400" title={`Capped by the ${parent!.account_name.replace(/^CORP Account - /i, '')} line`}>real ≈ {cents(lineAvail!)}</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-slate-500 whitespace-nowrap">{timeAgo(card.freshness?.balance_verified_at || card.balance_updated_at)}</td>
+                      <td className="px-4 py-2.5 max-w-[300px]">
+                        <StatusPill c={card.connection} />
+                        {card.connection.status !== 'HEALTHY' && card.connection.status !== 'SYNCING' && (
+                          <p className="text-[10px] text-slate-500 mt-1 truncate" title={card.connection.reason}>{card.connection.reason}</p>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
 
           {/* Transactions */}
@@ -463,6 +503,106 @@ export default function CreditCardsPage() {
               </div>
             </>
           )}
+        </>
+      )}
+
+      {/* Card detail drawer — same evidence-on-demand pattern as Banking */}
+      {drawerId && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-40" onClick={() => { setDrawerId(null); setDrawer(null); }} />
+          <aside className="fixed right-0 top-0 bottom-0 w-full sm:w-[420px] bg-slate-900 z-50 overflow-y-auto shadow-2xl">
+            {!drawer ? (
+              <div className="flex items-center justify-center h-40"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400" /></div>
+            ) : (() => {
+              const a = drawer.account;
+              return (
+                <div className="p-6">
+                  <div className="flex items-start justify-between mb-5">
+                    <div>
+                      <h2 className="text-lg font-semibold text-white">{a.nickname || a.account_name}</h2>
+                      <p className="text-[12px] text-slate-400">{a.institution_name} ····{a.last_four}</p>
+                    </div>
+                    <button onClick={() => { setDrawerId(null); setDrawer(null); }} className="text-slate-500 hover:text-white text-lg leading-none">✕</button>
+                  </div>
+
+                  <div className="mb-5">
+                    <StatusPill c={a.connection} />
+                    <p className="text-[12px] text-slate-400 mt-2 leading-relaxed">{a.connection.reason}</p>
+                    {a.connection.requiresUserAction && (
+                      <button onClick={() => handlePlaidConnect(a.id)} disabled={connecting}
+                        className="mt-3 w-full px-3 py-2 bg-slate-100 hover:bg-white disabled:opacity-50 text-slate-900 text-[13px] font-semibold rounded-lg">
+                        {connecting ? 'Opening…' : 'Fix connection'}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="rounded-lg bg-slate-800/40 p-4 mb-5">
+                    <div className="flex items-baseline justify-between mb-1">
+                      <p className="text-[11px] uppercase tracking-wider text-slate-500">{a.balance_verified ? 'Bank-verified balance owed' : 'Last verified balance owed'}</p>
+                      <p className="text-[11px] text-slate-500">{timeAgo(a.freshness?.balance_verified_at)}</p>
+                    </div>
+                    <p className="text-2xl font-semibold text-white tabular-nums">{cents(Math.abs(a.balance_ledger_cents || 0))}</p>
+                    <p className="text-[12px] text-slate-400 mt-1 tabular-nums">Available {cents(a.balance_available_cents || 0)}</p>
+                    {!a.balance_verified && (
+                      <p className="text-[11px] text-amber-300/80 mt-2">Not freshly verified — last balance the bank confirmed, preserved until the connection verifies again.</p>
+                    )}
+                  </div>
+
+                  <div className="mb-5">
+                    <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Data freshness</p>
+                    <div className="space-y-1.5 text-[12px]">
+                      <div className="flex justify-between"><span className="text-slate-400">Balance verified</span><span className="text-slate-200">{a.freshness?.balance_verified_at ? timeAgo(a.freshness.balance_verified_at) : 'never'}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-400">Transactions checked</span><span className="text-slate-200">{a.freshness?.transactions_checked_at ? timeAgo(a.freshness.transactions_checked_at) : 'no record'}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-400">Transactions through</span><span className="text-slate-200">{a.freshness?.transactions_through || '—'}</span></div>
+                      {drawer.transactions?.n > 0 && (
+                        <div className="flex justify-between"><span className="text-slate-400">History held</span><span className="text-slate-200 tabular-nums">{drawer.transactions.n.toLocaleString()} txns · {drawer.transactions.first} → {drawer.transactions.last}</span></div>
+                      )}
+                    </div>
+                  </div>
+
+                  {drawer.item && (
+                    <div className="mb-5">
+                      <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Connection health</p>
+                      <div className="space-y-1.5 text-[12px]">
+                        <div className="flex justify-between"><span className="text-slate-400">Authorization</span><span className={drawer.item.provider_error_code ? 'text-amber-300' : 'text-emerald-300'}>{drawer.item.provider_error_code ? 'Action required' : 'Valid'}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-400">Last sync attempt</span><span className="text-slate-200">{drawer.item.last_sync_attempt_at ? timeAgo(drawer.item.last_sync_attempt_at) : 'no record'}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-400">Last successful sync</span><span className="text-slate-200">{drawer.item.last_sync_success_at ? timeAgo(drawer.item.last_sync_success_at) : 'no record'}</span></div>
+                      </div>
+                      {drawer.item.provider_error_code && (
+                        <div className="mt-3 rounded-lg bg-red-500/5 px-3 py-2.5">
+                          <p className="text-[12px] font-semibold text-red-300">{drawer.item.provider_error_code}</p>
+                          <p className="text-[11px] text-slate-400 mt-0.5">{drawer.item.provider_error_message}</p>
+                        </div>
+                      )}
+                      {drawer.siblings?.length > 0 && (
+                        <p className="text-[11px] text-slate-500 mt-2">Same login also covers: {drawer.siblings.map((s: any) => `${s.nickname || s.account_name} ····${s.last_four}`).join(', ')} — one repair fixes all.</p>
+                      )}
+                    </div>
+                  )}
+
+                  {drawer.sync_runs?.length > 0 && (
+                    <div className="mb-5">
+                      <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Recent sync history</p>
+                      <div className="space-y-1">
+                        {drawer.sync_runs.map((r: any, i: number) => (
+                          <div key={i} className="flex items-center gap-2 text-[11px]">
+                            <span className="text-slate-500 w-24 flex-shrink-0">{(r.started_at || '').slice(5, 16).replace('T', ' ')}</span>
+                            <span className={r.status === 'success' ? 'text-emerald-400' : r.status === 'partial' ? 'text-amber-400' : 'text-red-400'}>{r.status}</span>
+                            <span className="text-slate-500 truncate">{r.error_code || (r.records_added ? `${r.records_added} new txns` : 'no changes')}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 pt-2 border-t border-slate-800/60">
+                    <button onClick={() => { loadTransactions(drawerId!); setDrawerId(null); setDrawer(null); }}
+                      className="flex-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-[13px] font-medium rounded-lg">View transactions</button>
+                  </div>
+                </div>
+              );
+            })()}
+          </aside>
         </>
       )}
     </div>

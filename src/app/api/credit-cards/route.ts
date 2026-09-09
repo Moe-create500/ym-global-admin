@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getAccounts, getAccountBalance, getAllAccountTransactions } from '@/lib/teller';
 import crypto from 'crypto';
+import { deriveConnectionState, evidenceFromPlaidItem, ensureConnectionSchema } from '@/lib/connection-state';
+import { findCanonicalMatch, ensureIdentitySchema } from '@/lib/account-identity';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,11 +40,46 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const cards: any[] = db.prepare(`
+  ensureConnectionSchema(db);
+  ensureIdentitySchema(db);
+  const items = new Map<string, any>(
+    (db.prepare('SELECT * FROM plaid_items').all() as any[]).map((i: any) => [i.item_id, i])
+  );
+  const FRESH_MS = 36 * 3_600_000;
+  const rawCards: any[] = db.prepare(`
     SELECT * FROM bank_accounts
     WHERE account_type = 'credit' AND status = 'active'
     ORDER BY institution_name, account_name
   `).all();
+
+  // Same evidence-derived connection model as Banking: status from provider
+  // signals only, freshness descriptive, last-known balances preserved.
+  const cards = rawCards.map((a: any) => {
+    const item = a.provider === 'plaid' ? items.get(a.teller_enrollment_id) : null;
+    const connection = item
+      ? deriveConnectionState(evidenceFromPlaidItem(item))
+      : deriveConnectionState({
+          provider: a.provider || null,
+          itemStatus: a.status === 'disconnected' ? 'disconnected' : 'active',
+          lastSyncSuccessAt: a.balance_updated_at,
+          lastSyncStatus: a.balance_updated_at ? 'success' : null,
+        });
+    const balTs = a.balance_updated_at ? Date.parse(a.balance_updated_at.replace(' ', 'T') + (a.balance_updated_at.includes('Z') ? '' : 'Z')) : NaN;
+    const verified = !Number.isNaN(balTs) && Date.now() - balTs <= FRESH_MS
+      && ['HEALTHY', 'SYNCING', 'DEGRADED', 'PENDING_DISCONNECT'].includes(connection.status);
+    const { access_token: _t, ...safe } = a;
+    return {
+      ...safe,
+      item_id: item?.item_id || null,
+      connection,
+      balance_verified: verified,
+      freshness: {
+        balance_verified_at: a.balance_updated_at || null,
+        transactions_through: a.bank_data_as_of || null,
+        transactions_checked_at: a.last_txn_success_at || null,
+      },
+    };
+  });
 
   // REAL available: credit LINES only — a child card's "available" is its
   // allocation ceiling, spendable is capped by its parent line. Cards with no
@@ -54,14 +91,38 @@ export async function GET(req: NextRequest) {
     if (isLine(c)) return s + (c.balance_available_cents || 0);
     return parents.some((p: any) => fam(p) === fam(c)) ? s : s + (c.balance_available_cents || 0);
   }, 0);
-  const totalLedger = cards.reduce((s: number, c: any) => s + (c.balance_ledger_cents || 0), 0);
+
+  // Coverage-aware owed totals: verified debt vs last-known debt, never blended
+  let verifiedOwed = 0, lastKnownOwed = 0, verifiedCount = 0;
+  for (const c of cards) {
+    if (c.balance_verified) { verifiedOwed += c.balance_ledger_cents || 0; verifiedCount++; }
+    else lastKnownOwed += c.balance_ledger_cents || 0;
+  }
+  const attention = cards.filter((c: any) => c.connection.requiresUserAction);
+  const groups: any[] = [];
+  const seen = new Set<string>();
+  for (const c of attention) {
+    const key = c.item_id || c.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const affected = c.item_id ? cards.filter((x: any) => x.item_id === c.item_id) : [c];
+    groups.push({
+      item_id: c.item_id, institution_name: c.institution_name,
+      connection: c.connection, affected_count: affected.length,
+      accounts: affected.map((x: any) => ({ id: x.id, name: x.nickname || x.account_name, last_four: x.last_four })),
+    });
+  }
 
   return NextResponse.json({
     cards,
+    repair_groups: groups,
     summary: {
       total_available_cents: totalAvailable,
-      total_ledger_cents: totalLedger,
+      verified_owed_cents: verifiedOwed,
+      last_known_owed_cents: lastKnownOwed,
+      verified_cards: verifiedCount,
       card_count: cards.length,
+      attention_count: attention.length,
     },
   });
 }
@@ -168,6 +229,7 @@ export async function PUT(req: NextRequest) {
   }
 
   const db = getDb();
+  ensureIdentitySchema(db);
 
   // Use first store as placeholder (credit cards are global)
   const firstStore: any = db.prepare('SELECT id FROM stores ORDER BY name LIMIT 1').get();
@@ -185,11 +247,12 @@ export async function PUT(req: NextRequest) {
       // Only import credit card accounts
       if (account.type !== 'credit') continue;
 
-      // Match by teller_account_id, else institution + last_four + type — ids
-      // are application-scoped, so a new Teller app must re-attach to the same rows
-      const existing: any = db.prepare('SELECT id FROM bank_accounts WHERE teller_account_id = ?').get(account.id)
-        || db.prepare(`SELECT id FROM bank_accounts WHERE last_four = ? AND account_type = ? AND institution_name = ? ORDER BY updated_at DESC LIMIT 1`)
-          .get(account.last_four, account.type, account.institution?.name || 'Unknown');
+      // Canonical identity guard — name-aware layered matching (twin masks
+      // like Gold/Platinum ·1009 are never guessed; ambiguity parks for review)
+      const { match: existing } = findCanonicalMatch(db, {
+        institution: account.institution?.name || 'Unknown', mask: account.last_four,
+        type: account.type, name: account.name, providerAccountId: account.id,
+      });
       if (existing) {
         // Reconnect: refresh token + enrollment + account id on the existing row
         db.prepare(`UPDATE bank_accounts SET access_token = ?, teller_enrollment_id = ?, teller_account_id = ?, status = 'active', updated_at = datetime('now') WHERE id = ?`)
