@@ -647,7 +647,12 @@ function BankingContent() {
                           {!a.balance_verified && <span className="block text-[10px] font-normal text-slate-500">last-known</span>}
                         </td>
                         <td className="px-4 py-2.5 text-right text-slate-500 whitespace-nowrap">{timeAgo(a.freshness.balance_verified_at)}</td>
-                        <td className="px-4 py-2.5"><StatusPill c={a.connection} /></td>
+                        <td className="px-4 py-2.5 max-w-[300px]">
+                          <StatusPill c={a.connection} />
+                          {a.connection.status !== 'HEALTHY' && a.connection.status !== 'SYNCING' && (
+                            <p className="text-[10px] text-slate-500 mt-1 truncate" title={a.connection.reason}>{a.connection.reason}</p>
+                          )}
+                        </td>
                       </tr>
                     ))}
                     {visible.length === 0 && (

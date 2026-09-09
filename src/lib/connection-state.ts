@@ -110,17 +110,18 @@ export function deriveConnectionState(e: ConnectionEvidence): DerivedConnection 
         source: 'provider', requiresUserAction: false, userActionType: null,
       };
     }
+    const detail = e.providerErrorMessage ? ` — ${String(e.providerErrorMessage).slice(0, 110)}` : '';
     if (TRANSIENT_CODES.test(code)) {
       return {
         status: 'ERROR',
-        reason: `Provider error ${code} on last sync — usually transient; no user action proven necessary`,
+        reason: `Sync failed (${code})${detail}. Usually transient; no user action proven necessary`,
         source: 'provider', requiresUserAction: false, userActionType: null,
       };
     }
     // Unrecognized provider code: report honestly, require review, invent nothing
     return {
       status: 'ERROR',
-      reason: `Unrecognized provider error ${code} — needs review`,
+      reason: `Unrecognized provider error ${code}${detail} — needs review`,
       source: 'provider', requiresUserAction: true, userActionType: 'review',
     };
   }
