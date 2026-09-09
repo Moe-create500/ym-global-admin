@@ -25,6 +25,16 @@ export async function GET(req: NextRequest) {
     JOIN classification_results r ON r.txn_id = bt.id AND r.store_id = ?
     WHERE bt.amount_cents < 0
       AND COALESCE(r.category, '') NOT IN ('Credit Card Payment', 'Transfer Out', 'Transfer In')
+      -- Charges already represented by the invoice systems on the CFO sheet
+      -- (Shopify app bills, FB invoices, Google invoices) are EXCLUDED —
+      -- this section is only the store's OTHER card spend (software fees,
+      -- one-off purchases) that nothing else accounts for.
+      AND COALESCE(r.method, '') != 'INVOICE_MATCH'
+      AND COALESCE(r.merchant_name, '') NOT IN ('Meta', 'Google Ads', 'Shopify')
+      AND LOWER(bt.description) NOT LIKE '%shopify%'
+      AND LOWER(bt.description) NOT LIKE '%facebk%'
+      AND LOWER(bt.description) NOT LIKE '%facebook%'
+      AND LOWER(bt.description) NOT LIKE '%google%'
     ORDER BY bt.date DESC, bt.id DESC LIMIT 500`).all(storeId);
   const openCents = charges.filter(c => !c.settled_at).reduce((s, c) => s + Math.abs(c.amount_cents), 0);
   const settledCents = charges.filter(c => c.settled_at).reduce((s, c) => s + Math.abs(c.amount_cents), 0);
