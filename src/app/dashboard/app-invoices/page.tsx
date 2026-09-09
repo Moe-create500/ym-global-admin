@@ -333,11 +333,11 @@ function AppInvoicesContent() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-white">App Invoices</h1>
-            <p className="text-sm text-slate-400 mt-1">
+      <div className="flex items-center justify-between gap-3 mb-6">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <h1 className="text-[12px] uppercase tracking-wider text-slate-500 whitespace-nowrap">App Invoices</h1>
+            <p className="text-[11px] text-slate-600 truncate">
               {selectedStore ? selectedStore.name : 'Select a store'} — Shopify & Chargeflow invoices
             </p>
           </div>
@@ -346,7 +346,7 @@ function AppInvoicesContent() {
         <div className="flex gap-2">
           <button
             onClick={() => { setShowAddPayment(!showAddPayment); setShowImport(false); }}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg flex items-center gap-2"
+            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-[12px] font-semibold rounded-lg flex items-center gap-2"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
@@ -355,7 +355,7 @@ function AppInvoicesContent() {
           </button>
           <button
             onClick={() => { setShowImport(!showImport); setShowAddPayment(false); }}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg flex items-center gap-2"
+            className="px-3 py-1.5 bg-slate-100 hover:bg-white text-slate-900 text-[12px] font-semibold rounded-lg flex items-center gap-2"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
@@ -367,46 +367,46 @@ function AppInvoicesContent() {
 
       {/* Add Card Payment Panel */}
       {showAddPayment && (
-        <div className="bg-slate-900 border border-emerald-900/50 rounded-xl p-5 mb-6">
-          <h2 className="text-sm font-semibold text-white mb-4">Record Card Payment</h2>
+        <div className="rounded-xl bg-slate-900/60 p-5 mb-6">
+          <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider mb-4">Record Card Payment</h2>
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-4">
             <div>
-              <label className="block text-[10px] text-slate-500 uppercase mb-1">Card</label>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Card</label>
               <select
                 value={newPayCard}
                 onChange={(e) => setNewPayCard(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                className="w-full bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none"
               >
                 <option value="">Select card...</option>
                 {allCards.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-[10px] text-slate-500 uppercase mb-1">Date</label>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Date</label>
               <input
                 type="date"
                 value={newPayDate}
                 onChange={(e) => setNewPayDate(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                className="w-full bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none"
               />
             </div>
             <div>
-              <label className="block text-[10px] text-slate-500 uppercase mb-1">Amount ($)</label>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Amount ($)</label>
               <input
                 type="number"
                 step="0.01"
                 placeholder="500.00"
                 value={newPayAmount}
                 onChange={(e) => setNewPayAmount(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                className="w-full bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none"
               />
             </div>
             <div>
-              <label className="block text-[10px] text-slate-500 uppercase mb-1">Method</label>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Method</label>
               <select
                 value={newPayMethod}
                 onChange={(e) => setNewPayMethod(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                className="w-full bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none"
               >
                 <option value="">Select...</option>
                 <option value="bank_transfer">Bank Transfer</option>
@@ -416,20 +416,20 @@ function AppInvoicesContent() {
               </select>
             </div>
             <div>
-              <label className="block text-[10px] text-slate-500 uppercase mb-1">Notes</label>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Notes</label>
               <input
                 type="text"
                 placeholder="Optional"
                 value={newPayNotes}
                 onChange={(e) => setNewPayNotes(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                className="w-full bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none"
               />
             </div>
           </div>
           <button
             onClick={handleAddCardPayment}
             disabled={!newPayCard || !newPayAmount || addingPayment}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg"
+            className="px-3 py-1.5 bg-slate-100 hover:bg-white disabled:opacity-50 text-slate-900 text-[12px] font-semibold rounded-lg"
           >
             {addingPayment ? 'Saving...' : 'Record Payment'}
           </button>
@@ -438,27 +438,27 @@ function AppInvoicesContent() {
 
       {/* Import Panel */}
       {showImport && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
-          <h2 className="text-sm font-semibold text-white mb-3">Import Shopify Charges or Chargeflow Invoices</h2>
+        <div className="rounded-xl bg-slate-900/60 p-5 mb-6">
+          <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider mb-3">Import Shopify Charges or Chargeflow Invoices</h2>
           <p className="text-xs text-slate-500 mb-4">Auto-detects CSV format (Shopify charges_export or Chargeflow invoices)</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
             <div>
-              <label className="block text-[10px] text-slate-500 uppercase mb-1">Store</label>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Store</label>
               <select value={importStoreId} onChange={(e) => setImportStoreId(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500">
+                className="w-full bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none">
                 <option value="">Select store...</option>
                 {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-[10px] text-slate-500 uppercase mb-1">CSV File</label>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">CSV File</label>
               <input ref={fileRef} type="file" accept=".csv" onChange={handleFile}
-                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:bg-slate-700 file:text-slate-300 file:cursor-pointer" />
+                className="w-full bg-slate-800 rounded-lg px-2.5 py-1.5 text-[13px] text-white file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:bg-slate-700 file:text-slate-300 file:cursor-pointer" />
             </div>
           </div>
           <div className="flex items-center gap-3">
             <button onClick={handleImport} disabled={!importStoreId || !csvText || importing}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg">
+              className="px-3 py-1.5 bg-slate-100 hover:bg-white disabled:opacity-50 text-slate-900 text-[12px] font-semibold rounded-lg">
               {importing ? 'Importing...' : 'Import'}
             </button>
             {fileName && <span className="text-xs text-slate-400">{fileName}</span>}
@@ -474,13 +474,13 @@ function AppInvoicesContent() {
       )}
 
       {!storeFilter ? (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 text-center">
+        <div className="rounded-xl bg-slate-900/60 p-12 text-center">
           <p className="text-slate-400">Select a store to view app invoices</p>
         </div>
       ) : loading ? (
         <div className="flex items-center justify-center h-32"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400" /></div>
       ) : invoices.length === 0 && cardLog.length === 0 ? (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 text-center">
+        <div className="rounded-xl bg-slate-900/60 p-12 text-center">
           <p className="text-slate-400 mb-3">No invoices imported for {selectedStore?.name}</p>
           <button onClick={() => setShowImport(true)} className="text-sm text-blue-400 hover:text-blue-300">Import your first CSV</button>
         </div>
@@ -488,28 +488,28 @@ function AppInvoicesContent() {
         <>
           {/* KPIs */}
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-              <p className="text-xs text-slate-500 uppercase mb-1">Total Charged</p>
-              <p className="text-xl font-bold text-white">{cents(totalCharged)}</p>
+            <div className="rounded-xl bg-slate-900/60 p-4">
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">Total Charged</p>
+              <p className="text-2xl font-semibold text-white tabular-nums">{cents(totalCharged)}</p>
               <p className="text-[10px] text-slate-500">{totals ? totals.invoice_count - (totals.cf_shopify_count || 0) : 0} invoices</p>
             </div>
-            <div className="bg-slate-900 border border-emerald-900/50 rounded-xl p-4">
-              <p className="text-xs text-emerald-500 uppercase mb-1">Total Paid</p>
-              <p className="text-xl font-bold text-emerald-400">{cents(totalPaid)}</p>
+            <div className="rounded-xl bg-slate-900/60 p-4">
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">Total Paid</p>
+              <p className="text-2xl font-semibold text-emerald-300 tabular-nums">{cents(totalPaid)}</p>
             </div>
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-              <p className="text-xs text-slate-500 uppercase mb-1">Balance Due</p>
-              <p className={`text-xl font-bold ${totalBalance > 0 ? 'text-orange-400' : 'text-emerald-400'}`}>{cents(totalBalance)}</p>
+            <div className="rounded-xl bg-slate-900/60 p-4">
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">Balance Due</p>
+              <p className={`text-2xl font-semibold tabular-nums ${totalBalance > 0 ? 'text-amber-300' : 'text-emerald-300'}`}>{cents(totalBalance)}</p>
             </div>
-            <div className="bg-slate-900 border border-purple-900/50 rounded-xl p-4">
-              <p className="text-xs text-purple-500 uppercase mb-1">CF via Shopify</p>
-              <p className="text-xl font-bold text-purple-400">{cents(totals?.cf_shopify_cents || 0)}</p>
+            <div className="rounded-xl bg-slate-900/60 p-4">
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">CF via Shopify</p>
+              <p className="text-2xl font-semibold text-purple-300 tabular-nums">{cents(totals?.cf_shopify_cents || 0)}</p>
               <p className="text-[10px] text-slate-500">{totals?.cf_shopify_count || 0} in Shopify bills</p>
             </div>
             {sourceSummary.map(s => (
-              <div key={s.source} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                <p className="text-xs text-slate-500 uppercase mb-1">{s.source === 'shopify' ? 'Shopify' : 'Chargeflow'}</p>
-                <p className="text-lg font-bold text-white">{cents(s.total_cents)}</p>
+              <div key={s.source} className="rounded-xl bg-slate-900/60 p-4">
+                <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">{s.source === 'shopify' ? 'Shopify' : 'Chargeflow'}</p>
+                <p className="text-2xl font-semibold text-white tabular-nums">{cents(s.total_cents)}</p>
                 <p className="text-[10px] text-slate-500">{s.count} invoices</p>
               </div>
             ))}
@@ -517,21 +517,21 @@ function AppInvoicesContent() {
 
           {/* Card Balances */}
           {cards.length > 0 && (
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
-              <h2 className="text-sm font-semibold text-white mb-4">Card Balances</h2>
+            <div className="rounded-xl bg-slate-900/60 p-5 mb-6">
+              <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider mb-4">Card Balances</h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {cards.map(card => (
                   <button
                     key={card.card}
                     onClick={() => setCardFilter(cardFilter === card.card ? '' : card.card)}
-                    className={`p-4 rounded-lg border text-left transition-colors ${
-                      cardFilter === card.card ? 'bg-blue-950/30 border-blue-700' : 'bg-slate-800/50 border-slate-700 hover:border-slate-600'
+                    className={`p-4 rounded-lg text-left transition-colors ${
+                      cardFilter === card.card ? 'bg-blue-500/10 ring-1 ring-blue-500/40' : 'bg-slate-800/40 hover:bg-slate-800/60'
                     }`}
                   >
                     <div className="flex items-center justify-between mb-2">
                       <p className="text-sm font-semibold text-white">{card.card}</p>
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${
-                        card.balance_cents <= 0 ? 'bg-emerald-900/30 text-emerald-400' : 'bg-orange-900/30 text-orange-400'
+                      <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
+                        card.balance_cents <= 0 ? 'bg-emerald-500/10 text-emerald-300' : 'bg-amber-500/10 text-amber-300'
                       }`}>
                         {card.balance_cents <= 0 ? 'Paid' : 'Due'}
                       </span>
@@ -539,15 +539,15 @@ function AppInvoicesContent() {
                     <div className="grid grid-cols-3 gap-2 text-center">
                       <div>
                         <p className="text-[10px] text-slate-500">Charged</p>
-                        <p className="text-xs font-semibold text-white">{cents(card.charged_cents)}</p>
+                        <p className="text-xs font-semibold text-white tabular-nums">{cents(card.charged_cents)}</p>
                       </div>
                       <div>
                         <p className="text-[10px] text-slate-500">Paid</p>
-                        <p className="text-xs font-semibold text-emerald-400">{cents(card.paid_cents)}</p>
+                        <p className="text-xs font-semibold text-emerald-300 tabular-nums">{cents(card.paid_cents)}</p>
                       </div>
                       <div>
                         <p className="text-[10px] text-slate-500">Balance</p>
-                        <p className={`text-xs font-semibold ${card.balance_cents > 0 ? 'text-orange-400' : 'text-emerald-400'}`}>{cents(card.balance_cents)}</p>
+                        <p className={`text-xs font-semibold tabular-nums ${card.balance_cents > 0 ? 'text-amber-300' : 'text-emerald-300'}`}>{cents(card.balance_cents)}</p>
                       </div>
                     </div>
                     <p className="text-[10px] text-slate-600 mt-2">{card.invoice_count} invoices · {card.payment_count} payments</p>
@@ -559,32 +559,32 @@ function AppInvoicesContent() {
 
           {/* Card Payments Log */}
           {cardLog.length > 0 && (
-            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden mb-6">
-              <div className="px-5 py-4 border-b border-slate-800">
-                <h2 className="text-sm font-semibold text-white">Card Payments Made</h2>
+            <div className="rounded-xl bg-slate-900/60 overflow-hidden mb-6">
+              <div className="px-5 py-3 border-b border-slate-800/60">
+                <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Card Payments Made</h2>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
-                      <th className="text-left px-5 py-3">Date</th>
-                      <th className="text-left px-5 py-3">Card</th>
-                      <th className="text-right px-5 py-3">Amount</th>
-                      <th className="text-left px-5 py-3">Method</th>
-                      <th className="text-left px-5 py-3">Notes</th>
-                      <th className="px-5 py-3"></th>
+                    <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/60">
+                      <th className="text-left px-4 py-2">Date</th>
+                      <th className="text-left px-4 py-2">Card</th>
+                      <th className="text-right px-4 py-2">Amount</th>
+                      <th className="text-left px-4 py-2">Method</th>
+                      <th className="text-left px-4 py-2">Notes</th>
+                      <th className="px-4 py-2"></th>
                     </tr>
                   </thead>
                   <tbody>
                     {cardLog.map(cp => (
-                      <tr key={cp.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                        <td className="px-5 py-3 text-slate-300">{cp.date}</td>
-                        <td className="px-5 py-3 text-white text-xs">{cp.card_last4}</td>
-                        <td className="px-5 py-3 text-right text-emerald-400 font-medium">{cents(cp.amount_cents)}</td>
-                        <td className="px-5 py-3 text-slate-400 text-xs">{cp.method || '—'}</td>
-                        <td className="px-5 py-3 text-slate-500 text-xs whitespace-pre-wrap">{cp.notes || '—'}</td>
-                        <td className="px-5 py-3">
-                          <button onClick={() => handleDeleteCardPayment(cp.id)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
+                      <tr key={cp.id} className="border-b border-slate-800/30 hover:bg-slate-800/30">
+                        <td className="px-4 py-2 text-slate-300">{cp.date}</td>
+                        <td className="px-4 py-2 text-white text-xs">{cp.card_last4}</td>
+                        <td className="px-4 py-2 text-right text-emerald-300 font-medium tabular-nums">{cents(cp.amount_cents)}</td>
+                        <td className="px-4 py-2 text-slate-400 text-xs">{cp.method || '—'}</td>
+                        <td className="px-4 py-2 text-slate-500 text-xs whitespace-pre-wrap">{cp.notes || '—'}</td>
+                        <td className="px-4 py-2">
+                          <button onClick={() => handleDeleteCardPayment(cp.id)} className="text-xs text-red-400/80 hover:text-red-300">Delete</button>
                         </td>
                       </tr>
                     ))}
@@ -596,8 +596,8 @@ function AppInvoicesContent() {
 
           {/* Monthly Charges */}
           {monthlyTotals.length > 0 && (
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
-              <h2 className="text-sm font-semibold text-white mb-4">Monthly Charges</h2>
+            <div className="rounded-xl bg-slate-900/60 p-5 mb-6">
+              <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider mb-4">Monthly Charges</h2>
               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
                 {monthlyTotals.map(m => (
                   <div key={m.month} className="px-3 py-2 bg-slate-800/50 rounded-lg">
@@ -612,8 +612,8 @@ function AppInvoicesContent() {
 
           {/* App Breakdown */}
           {appSummary.length > 0 && (
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
-              <h2 className="text-sm font-semibold text-white mb-3">Spend by App</h2>
+            <div className="rounded-xl bg-slate-900/60 p-5 mb-6">
+              <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider mb-3">Spend by App</h2>
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
                 {appSummary.filter(a => a.total_cents > 0).map(app => (
                   <div key={app.app_name} className="px-3 py-2 bg-slate-800/50 rounded-lg">
@@ -632,7 +632,7 @@ function AppInvoicesContent() {
               {['', 'shopify', 'chargeflow'].map(s => (
                 <button key={s} onClick={() => setSourceFilter(s)}
                   className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${sourceFilter === s
-                    ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>
+                    ? 'bg-slate-100 text-slate-900 font-semibold' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>
                   {s === '' ? 'All' : s === 'shopify' ? 'Shopify' : 'Chargeflow'}
                 </button>
               ))}
@@ -641,7 +641,7 @@ function AppInvoicesContent() {
               {['', 'paid', 'unpaid'].map(s => (
                 <button key={s} onClick={() => setPaidFilter(s)}
                   className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${paidFilter === s
-                    ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>
+                    ? 'bg-slate-100 text-slate-900 font-semibold' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>
                   {s === '' ? 'All Status' : s === 'paid' ? 'Paid' : 'Unpaid'}
                 </button>
               ))}
@@ -656,7 +656,7 @@ function AppInvoicesContent() {
 
           {/* Bulk Action Bar */}
           {selected.size > 0 && (
-            <div className="flex items-center gap-3 mb-4 px-4 py-3 bg-blue-950/30 border border-blue-800 rounded-xl">
+            <div className="flex items-center gap-3 mb-4 px-4 py-2 rounded-lg bg-blue-500/10">
               <span className="text-sm text-blue-300 font-medium">{selected.size} selected</span>
               <span className="text-slate-600">|</span>
               <select value={bulkMethod} onChange={(e) => {
@@ -664,7 +664,7 @@ function AppInvoicesContent() {
                 const saved = savedMethods.find(m => m.label === e.target.value);
                 if (saved?.card_last4) setBulkCard(saved.card_last4);
               }}
-                className="px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none">
+                className="px-2 py-1.5 bg-slate-800 rounded-lg text-xs text-white focus:outline-none">
                 <option value="">Payment method...</option>
                 {savedMethods.map(m => (
                   <option key={m.id} value={m.label}>{m.label}{m.card_last4 ? ` - ${m.card_last4}` : ''}</option>
@@ -679,13 +679,13 @@ function AppInvoicesContent() {
                 <option value="Other">Other</option>
               </select>
               <input type="text" placeholder="Last 4" value={bulkCard} onChange={(e) => setBulkCard(e.target.value)}
-                className="w-20 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none" />
+                className="w-20 px-2 py-1.5 bg-slate-800 rounded-lg text-xs text-white focus:outline-none" />
               <button onClick={() => handleBulkUpdate(true)} disabled={bulkApplying}
-                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-medium rounded">
+                className="px-3 py-1.5 bg-slate-100 hover:bg-white disabled:opacity-50 text-slate-900 text-xs font-semibold rounded-lg">
                 {bulkApplying ? 'Applying...' : 'Mark Paid'}
               </button>
               <button onClick={() => handleBulkUpdate(false)} disabled={bulkApplying}
-                className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white text-xs font-medium rounded">
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-medium rounded-lg">
                 Mark Unpaid
               </button>
               <button onClick={() => setSelected(new Set())} className="text-xs text-slate-500 hover:text-white ml-auto">
@@ -695,82 +695,82 @@ function AppInvoicesContent() {
           )}
 
           {/* Invoices Table */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div className="rounded-xl bg-slate-900/60 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-xs text-slate-500 uppercase border-b border-slate-800">
-                    <th className="px-3 py-3 w-8">
+                  <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/60">
+                    <th className="px-3 py-2 w-8">
                       <input type="checkbox" checked={selected.size === filtered.length && filtered.length > 0}
                         onChange={toggleSelectAll}
                         className="rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-0 focus:ring-offset-0 cursor-pointer" />
                     </th>
-                    <th className="text-left px-5 py-3">Invoice #</th>
-                    <th className="text-left px-5 py-3">Date</th>
-                    <th className="text-left px-5 py-3">Source</th>
-                    <th className="text-right px-5 py-3">Amount</th>
-                    <th className="text-left px-5 py-3">Items</th>
-                    <th className="text-left px-5 py-3">Payment</th>
-                    <th className="text-center px-5 py-3">Status</th>
-                    <th className="px-5 py-3"></th>
+                    <th className="text-left px-4 py-2">Invoice #</th>
+                    <th className="text-left px-4 py-2">Date</th>
+                    <th className="text-left px-4 py-2">Source</th>
+                    <th className="text-right px-4 py-2">Amount</th>
+                    <th className="text-left px-4 py-2">Items</th>
+                    <th className="text-left px-4 py-2">Payment</th>
+                    <th className="text-center px-4 py-2">Status</th>
+                    <th className="px-4 py-2"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.map(inv => (
                     <>
-                      <tr key={inv.id} className={`border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer ${selected.has(inv.id) ? 'bg-blue-950/20' : ''}`}
+                      <tr key={inv.id} className={`border-b border-slate-800/30 hover:bg-slate-800/30 cursor-pointer ${selected.has(inv.id) ? 'bg-blue-500/5' : ''}`}
                         onClick={() => setExpandedInvoice(expandedInvoice === inv.id ? null : inv.id)}>
-                        <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                        <td className="px-3 py-2" onClick={e => e.stopPropagation()}>
                           <input type="checkbox" checked={selected.has(inv.id)}
                             onChange={() => toggleSelect(inv.id)}
                             className="rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-0 focus:ring-offset-0 cursor-pointer" />
                         </td>
-                        <td className="px-5 py-3 text-slate-300 font-mono text-xs">{inv.bill_number}</td>
-                        <td className="px-5 py-3 text-slate-300">{inv.date}</td>
-                        <td className="px-5 py-3">
-                          <span className={`text-xs px-2 py-0.5 rounded-full ${
-                            inv.source === 'chargeflow' ? 'bg-violet-900/30 text-violet-400' : 'bg-emerald-900/30 text-emerald-400'
+                        <td className="px-4 py-2 text-slate-300 font-mono text-xs">{inv.bill_number}</td>
+                        <td className="px-4 py-2 text-slate-300">{inv.date}</td>
+                        <td className="px-4 py-2">
+                          <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
+                            inv.source === 'chargeflow' ? 'bg-violet-500/10 text-violet-300' : 'bg-emerald-500/10 text-emerald-300'
                           }`}>{inv.source}</span>
                         </td>
-                        <td className="px-5 py-3 text-right text-white font-medium">{cents(inv.total_cents)}</td>
-                        <td className="px-5 py-3 text-slate-400 text-xs">
+                        <td className="px-4 py-2 text-right text-white font-medium tabular-nums">{cents(inv.total_cents)}</td>
+                        <td className="px-4 py-2 text-slate-400 text-xs">
                           {inv.items.slice(0, 2).map(it => it.app_name || it.description).join(', ')}
                           {inv.items.length > 2 && ` +${inv.items.length - 2}`}
                         </td>
-                        <td className="px-5 py-3 text-xs text-slate-400">
+                        <td className="px-4 py-2 text-xs text-slate-400">
                           {inv.payment_method
                             ? inv.card_last4
                               ? `${inv.payment_method} - ${inv.card_last4}`
                               : inv.payment_method
                             : '—'}
                         </td>
-                        <td className="px-5 py-3 text-center">
+                        <td className="px-4 py-2 text-center">
                           {inv.source === 'chargeflow' && inv.payment_method?.toLowerCase().includes('shopify') ? (
-                            <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/30 text-purple-400">In Shopify Bill</span>
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-purple-500/10 text-purple-300">In Shopify Bill</span>
                           ) : (
-                            <span className={`text-xs px-2 py-0.5 rounded-full ${
-                              inv.paid ? 'bg-emerald-900/30 text-emerald-400' : 'bg-orange-900/30 text-orange-400'
+                            <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
+                              inv.paid ? 'bg-emerald-500/10 text-emerald-300' : 'bg-amber-500/10 text-amber-300'
                             }`}>{inv.paid ? 'Paid' : 'Unpaid'}</span>
                           )}
                         </td>
-                        <td className="px-5 py-3 text-right">
+                        <td className="px-4 py-2 text-right">
                           <button onClick={(e) => { e.stopPropagation(); setEditingPayment(editingPayment === inv.id ? null : inv.id); setPayMethod(inv.payment_method || ''); setPayCard(inv.card_last4 || ''); setPayNotes(inv.notes || ''); }}
                             className="text-xs text-blue-400 hover:text-blue-300 mr-2">Edit</button>
                           <button onClick={(e) => { e.stopPropagation(); handleDelete(inv.id); }}
-                            className="text-xs text-red-400 hover:text-red-300">Del</button>
+                            className="text-xs text-red-400/80 hover:text-red-300">Del</button>
                         </td>
                       </tr>
                       {/* Payment edit row */}
                       {editingPayment === inv.id && (
                         <tr key={`${inv.id}-edit`} className="bg-slate-800/50">
-                          <td colSpan={9} className="px-5 py-3">
+                          <td colSpan={9} className="px-4 py-2">
                             <div className="flex items-center gap-3">
                               <select value={payMethod} onChange={(e) => {
                                 setPayMethod(e.target.value);
                                 const saved = savedMethods.find(m => m.label === e.target.value);
                                 if (saved?.card_last4) setPayCard(saved.card_last4);
                               }}
-                                className="px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none">
+                                className="px-2 py-1.5 bg-slate-800 rounded-lg text-xs text-white focus:outline-none">
                                 <option value="">Payment method...</option>
                                 {savedMethods.map(m => (
                                   <option key={m.id} value={m.label}>{m.label}{m.card_last4 ? ` - ${m.card_last4}` : ''}</option>
@@ -785,16 +785,16 @@ function AppInvoicesContent() {
                                 <option value="Other">Other</option>
                               </select>
                               <input type="text" placeholder="Card last 4" value={payCard} onChange={(e) => setPayCard(e.target.value)}
-                                className="w-20 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none" />
+                                className="w-20 px-2 py-1.5 bg-slate-800 rounded-lg text-xs text-white focus:outline-none" />
                               <input type="text" placeholder="Notes" value={payNotes} onChange={(e) => setPayNotes(e.target.value)}
-                                className="flex-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none" />
+                                className="flex-1 px-2 py-1.5 bg-slate-800 rounded-lg text-xs text-white focus:outline-none" />
                               <button onClick={() => handleUpdatePayment(inv.id, true)}
-                                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded">
+                                className="px-3 py-1.5 bg-slate-100 hover:bg-white text-slate-900 text-xs font-semibold rounded-lg">
                                 Mark Paid
                               </button>
                               {inv.paid ? (
                                 <button onClick={() => handleUpdatePayment(inv.id, false)}
-                                  className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white text-xs rounded">
+                                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-lg">
                                   Mark Unpaid
                                 </button>
                               ) : null}
@@ -810,7 +810,7 @@ function AppInvoicesContent() {
                           <td colSpan={9} className="px-6 py-3">
                             <table className="w-full text-xs">
                               <thead>
-                                <tr className="text-[10px] text-slate-600 uppercase">
+                                <tr className="text-[10px] uppercase tracking-wider text-slate-600">
                                   <th className="text-left py-1">Category</th>
                                   <th className="text-left py-1">App</th>
                                   <th className="text-left py-1">Description</th>
