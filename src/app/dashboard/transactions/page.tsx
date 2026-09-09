@@ -83,6 +83,11 @@ export default function TransactionsPage() {
   const [qDebounced, setQDebounced] = useState('');
   const [kind, setKind] = useState<'all' | 'bank' | 'card'>('all');
   const [accountId, setAccountId] = useState('');
+  const [status, setStatus] = useState('all');
+  const [storeFilter, setStoreFilter] = useState('');
+  const [methodFilter, setMethodFilter] = useState('');
+  const [confFilter, setConfFilter] = useState('');
+  const [storesList, setStoresList] = useState<{ id: string; name: string }[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -97,18 +102,23 @@ export default function TransactionsPage() {
     if (qDebounced) p.set('q', qDebounced);
     if (kind !== 'all') p.set('kind', kind);
     if (accountId) p.set('accountId', accountId);
+    if (status !== 'all') p.set('status', status);
+    if (storeFilter) p.set('store', storeFilter);
+    if (methodFilter) p.set('method', methodFilter);
+    if (confFilter) p.set('conf', confFilter);
     if (append && cur) { p.set('beforeDate', cur.beforeDate); p.set('beforeId', cur.beforeId); }
     const d = await fetch(`/api/transactions?${p}`).then(r => r.json()).catch(() => null);
     if (d) {
       setTxns(prev => append ? [...prev, ...(d.transactions || [])] : (d.transactions || []));
       setAccounts(d.accounts || []);
+      setStoresList(d.stores || []);
       setTotals(d.totals || { n: 0, inflow_cents: 0, outflow_cents: 0 });
       setHasMore(!!d.hasMore);
       setCursor(d.nextCursor || null);
     }
     setLoading(false);
     setLoadingMore(false);
-  }, [qDebounced, kind, accountId]);
+  }, [qDebounced, kind, accountId, status, storeFilter, methodFilter, confFilter]);
 
   useEffect(() => { load(false); }, [load]);
 
@@ -173,23 +183,56 @@ export default function TransactionsPage() {
         <p className="text-[12px] text-slate-500 pb-1 ml-auto tabular-nums">{totals.n.toLocaleString()} transactions match</p>
       </div>
 
-      {/* Controls */}
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search description, merchant, category, or exact amount"
-          className="w-80 bg-slate-900/70 rounded-lg px-3 py-1.5 text-[13px] text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-600" />
-        <div className="flex rounded-lg overflow-hidden bg-slate-900/70">
-          {(['all', 'bank', 'card'] as const).map(k => (
-            <button key={k} onClick={() => setKind(k)}
-              className={`px-3 py-1.5 text-[12px] font-medium capitalize ${kind === k ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>
-              {k === 'all' ? 'All' : k === 'bank' ? 'Banks' : 'Cards'}
+      {/* Controls — status pills + dimension filters */}
+      <div className="space-y-2 mb-4">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {([['all', 'All'], ['categorized', '✓ Categorized'], ['suggested', '~ Suggested'], ['uncategorized', '∅ Uncategorized'], ['review', '⚠ Needs review'], ['paired', '↔ Paired']] as const).map(([k, label]) => (
+            <button key={k} onClick={() => setStatus(k)}
+              className={`px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
+                status === k ? 'bg-slate-100 text-slate-900' : 'bg-slate-900/70 text-slate-400 hover:text-white'}`}>
+              {label}
             </button>
           ))}
         </div>
-        <select value={accountId} onChange={e => setAccountId(e.target.value)}
-          className="bg-slate-900/70 text-slate-300 text-[13px] rounded-lg px-2.5 py-1.5 max-w-[280px]">
-          <option value="">All accounts</option>
-          {accounts.map(a => <option key={a.id} value={a.id}>{acctLabel(a)}{a.account_type === 'credit' ? ' (card)' : ''}</option>)}
-        </select>
+        <div className="flex flex-wrap items-center gap-2">
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search description, merchant, or exact amount"
+            className="w-72 bg-slate-900/70 rounded-lg px-3 py-1.5 text-[13px] text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-600" />
+          <div className="flex rounded-lg overflow-hidden bg-slate-900/70">
+            {(['all', 'bank', 'card'] as const).map(k => (
+              <button key={k} onClick={() => setKind(k)}
+                className={`px-3 py-1.5 text-[12px] font-medium capitalize ${kind === k ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>
+                {k === 'all' ? 'All' : k === 'bank' ? 'Banks' : 'Cards'}
+              </button>
+            ))}
+          </div>
+          <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
+            className={`text-[13px] rounded-lg px-2.5 py-1.5 ${storeFilter ? 'bg-slate-700 text-white' : 'bg-slate-900/70 text-slate-300'}`}>
+            <option value="">All stores</option>
+            <option value="unattributed">⚠ Unattributed</option>
+            {storesList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          <select value={confFilter} onChange={e => setConfFilter(e.target.value)}
+            className={`text-[13px] rounded-lg px-2.5 py-1.5 ${confFilter ? 'bg-slate-700 text-white' : 'bg-slate-900/70 text-slate-300'}`}>
+            <option value="">Any confidence</option>
+            <option value="high">≥ 95% (asserted)</option>
+            <option value="mid">80–95% (suggestions)</option>
+            <option value="low">&lt; 80% (unknown)</option>
+          </select>
+          <select value={methodFilter} onChange={e => setMethodFilter(e.target.value)}
+            className={`text-[13px] rounded-lg px-2.5 py-1.5 ${methodFilter ? 'bg-slate-700 text-white' : 'bg-slate-900/70 text-slate-300'}`}>
+            <option value="">Any method</option>
+            {Object.entries(METHOD_LABEL).filter(([, v]) => v).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+          <select value={accountId} onChange={e => setAccountId(e.target.value)}
+            className={`text-[13px] rounded-lg px-2.5 py-1.5 max-w-[240px] ${accountId ? 'bg-slate-700 text-white' : 'bg-slate-900/70 text-slate-300'}`}>
+            <option value="">All accounts</option>
+            {accounts.map(a => <option key={a.id} value={a.id}>{acctLabel(a)}{a.account_type === 'credit' ? ' (card)' : ''}</option>)}
+          </select>
+          {(status !== 'all' || storeFilter || methodFilter || confFilter || accountId || q) && (
+            <button onClick={() => { setStatus('all'); setStoreFilter(''); setMethodFilter(''); setConfFilter(''); setAccountId(''); setQ(''); }}
+              className="text-[12px] text-slate-500 hover:text-white px-1">✕ Clear</button>
+          )}
+        </div>
       </div>
 
       {/* Feed */}

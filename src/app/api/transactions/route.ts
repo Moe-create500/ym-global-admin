@@ -32,6 +32,23 @@ export async function GET(req: NextRequest) {
       params.push(`%${q}%`, `%${q}%`, `%${q}%`);
     }
   }
+  // Reconciliation filters — every dimension of the verdict is filterable
+  const status = sp.get('status') || 'all';
+  if (status === 'categorized') where.push('r.category IS NOT NULL');
+  if (status === 'suggested') where.push('r.category IS NULL AND r.suggested_category IS NOT NULL');
+  if (status === 'uncategorized') where.push("(r.txn_id IS NULL OR (r.category IS NULL AND COALESCE(bt.custom_category, '') = ''))");
+  if (status === 'review') where.push('r.needs_review = 1');
+  if (status === 'paired') where.push('r.related_txn_id IS NOT NULL');
+  const storeFilter = sp.get('store') || '';
+  if (storeFilter === 'unattributed') where.push('r.store_id IS NULL');
+  else if (storeFilter) { where.push('r.store_id = ?'); params.push(storeFilter); }
+  const method = sp.get('method') || '';
+  if (method) { where.push('r.method = ?'); params.push(method); }
+  const conf = sp.get('conf') || '';
+  if (conf === 'high') where.push('r.confidence >= 0.95');
+  if (conf === 'mid') where.push('r.confidence >= 0.8 AND r.confidence < 0.95');
+  if (conf === 'low') where.push('(r.txn_id IS NULL OR r.confidence < 0.8)');
+
   if (beforeDate && beforeId) {
     where.push('(bt.date < ? OR (bt.date = ? AND bt.id < ?))');
     params.push(beforeDate, beforeDate, beforeId);
@@ -72,6 +89,7 @@ export async function GET(req: NextRequest) {
       COALESCE(SUM(CASE WHEN bt.amount_cents < 0 THEN bt.amount_cents END), 0) outflow_cents
     FROM bank_transactions bt
     JOIN bank_accounts a ON a.id = bt.bank_account_id
+    LEFT JOIN classification_results r ON r.txn_id = bt.id
     WHERE ${where.filter(w => !w.startsWith('(bt.date <')).join(' AND ')}
   `).get(...params.slice(0, beforeDate && beforeId ? -3 : params.length));
 
@@ -80,6 +98,7 @@ export async function GET(req: NextRequest) {
     FROM bank_accounts WHERE status IN ('active','disconnected')
     ORDER BY account_type, institution_name, account_name
   `).all();
+  const stores = db.prepare('SELECT id, name FROM stores WHERE is_active = 1 OR is_active IS NULL ORDER BY name').all();
 
   return NextResponse.json({
     transactions: page,
@@ -87,6 +106,7 @@ export async function GET(req: NextRequest) {
     nextCursor: hasMore ? { beforeDate: page[page.length - 1].date, beforeId: page[page.length - 1].id } : null,
     totals,
     accounts,
+    stores,
   });
 }
 
