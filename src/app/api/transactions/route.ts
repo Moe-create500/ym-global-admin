@@ -110,32 +110,47 @@ export async function GET(req: NextRequest) {
   });
 }
 
-// PATCH { transactionId, category } — manual categorization.
-// The correction is recorded as FEEDBACK: it locks this transaction (MANUAL,
-// automation can't override) and becomes a verified retrieval example that
-// makes future classification smarter.
+// PATCH { transactionId | transactionIds[], category } — manual categorization,
+// single or BULK. Every row is recorded as FEEDBACK (locks as MANUAL,
+// becomes verified learning). Bulk is capped and audited per-row — the UI
+// shows count + dollar impact before applying (mass-action safety).
 export async function PATCH(req: NextRequest) {
-  const { transactionId, category } = await req.json().catch(() => ({}));
-  if (!transactionId) return NextResponse.json({ error: 'transactionId required' }, { status: 400 });
+  const body = await req.json().catch(() => ({}));
+  const ids: string[] = Array.isArray(body.transactionIds)
+    ? body.transactionIds
+    : body.transactionId ? [body.transactionId] : [];
+  const category = body.category;
+  if (ids.length === 0) return NextResponse.json({ error: 'transactionId(s) required' }, { status: 400 });
+  if (ids.length > 500) return NextResponse.json({ error: 'max 500 per bulk action' }, { status: 400 });
+
   const db = getDb();
-  const txn: any = db.prepare('SELECT * FROM bank_transactions WHERE id = ?').get(transactionId);
-  if (!txn) return NextResponse.json({ error: 'transaction not found' }, { status: 404 });
-  db.prepare('UPDATE bank_transactions SET custom_category = ? WHERE id = ?').run(category || null, transactionId);
-  if (category) {
-    const { ensureCategorizeSchema, recordFeedback, resolveMerchant } = await import('@/lib/categorize/merchants');
-    ensureCategorizeSchema(db);
-    const prior: any = db.prepare('SELECT category, method FROM classification_results WHERE txn_id = ?').get(transactionId);
-    recordFeedback(db, {
-      txnId: transactionId,
-      predictedCategory: prior?.category ?? null,
-      predictedMethod: prior?.method ?? null,
-      correctedCategory: category,
-      merchantName: resolveMerchant(db, txn.description || '')?.name,
-      description: txn.description,
-      amountCents: txn.amount_cents,
-      accountId: txn.bank_account_id,
-      actor: 'admin',
-    });
-  }
-  return NextResponse.json({ success: true });
+  const { ensureCategorizeSchema, recordFeedback, resolveMerchant } = await import('@/lib/categorize/merchants');
+  ensureCategorizeSchema(db);
+  let updated = 0;
+  let totalCents = 0;
+  const apply = db.transaction(() => {
+    for (const id of ids) {
+      const txn: any = db.prepare('SELECT * FROM bank_transactions WHERE id = ?').get(id);
+      if (!txn) continue;
+      db.prepare('UPDATE bank_transactions SET custom_category = ? WHERE id = ?').run(category || null, id);
+      if (category) {
+        const prior: any = db.prepare('SELECT category, method FROM classification_results WHERE txn_id = ?').get(id);
+        recordFeedback(db, {
+          txnId: id,
+          predictedCategory: prior?.category ?? null,
+          predictedMethod: prior?.method ?? null,
+          correctedCategory: category,
+          merchantName: resolveMerchant(db, txn.description || '')?.name,
+          description: txn.description,
+          amountCents: txn.amount_cents,
+          accountId: txn.bank_account_id,
+          actor: 'admin',
+        });
+      }
+      updated++;
+      totalCents += Math.abs(txn.amount_cents || 0);
+    }
+  });
+  apply();
+  return NextResponse.json({ success: true, updated, total_cents: totalCents });
 }

@@ -90,6 +90,28 @@ export default function TransactionsPage() {
   const [storesList, setStoresList] = useState<{ id: string; name: string }[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  // bulk selection
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkApplying, setBulkApplying] = useState(false);
+  const toggleSel = (id: string) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  async function applyBulk(category: string) {
+    if (!category || selected.size === 0) return;
+    setBulkApplying(true);
+    const res = await fetch('/api/transactions', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transactionIds: [...selected], category }),
+    }).then(r => r.json()).catch(() => null);
+    setBulkApplying(false);
+    if (res?.success) {
+      setTxns(prev => prev.map(t => selected.has(t.id) ? { ...t, custom_category: category } : t));
+      setSelected(new Set());
+    }
+  }
 
   useEffect(() => {
     const t = setTimeout(() => setQDebounced(q), 300);
@@ -146,6 +168,14 @@ export default function TransactionsPage() {
           <h1 className="text-2xl font-bold text-white">Transactions</h1>
           <p className="text-sm text-slate-400 mt-1">Every movement across all bank accounts and credit cards</p>
         </div>
+        <button onClick={async () => {
+            setBulkApplying(true);
+            await fetch('/api/categorize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 90, limit: 5000 }) }).catch(() => {});
+            setBulkApplying(false); load(false);
+          }} disabled={bulkApplying}
+          className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-sm font-medium rounded-lg">
+          {bulkApplying ? 'Working…' : '⟳ Run categorizer'}
+        </button>
       </div>
 
       {/* Integrity issues — the system reports what's wrong, you don't hunt */}
@@ -249,7 +279,16 @@ export default function TransactionsPage() {
               {byDate.map(([date, rows]) => (
                 <Fragment key={date}>
                   <tr className="bg-slate-800/30">
-                    <td colSpan={6} className="px-4 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+                    <td className="pl-4 py-1.5 w-8" onClick={e => e.stopPropagation()}>
+                      <input type="checkbox" className="accent-blue-500 cursor-pointer"
+                        checked={rows.every(r => selected.has(r.id))}
+                        onChange={e => setSelected(prev => {
+                          const next = new Set(prev);
+                          for (const r of rows) { if (e.target.checked) next.add(r.id); else next.delete(r.id); }
+                          return next;
+                        })} />
+                    </td>
+                    <td colSpan={6} className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
                       {date} <span className="normal-case font-normal">· {timeAgoStr(date + ' 12:00:00')}</span>
                     </td>
                   </tr>
@@ -262,8 +301,11 @@ export default function TransactionsPage() {
                     return (
                     <Fragment key={t.id}>
                     <tr onClick={() => setExpanded(expanded === t.id ? null : t.id)}
-                      className={`border-b border-slate-800/30 last:border-b-0 hover:bg-slate-800/30 transition-colors cursor-pointer ${expanded === t.id ? 'bg-slate-800/40' : ''}`}>
-                      <td className="px-4 py-2 max-w-[380px]">
+                      className={`border-b border-slate-800/30 last:border-b-0 hover:bg-slate-800/30 transition-colors cursor-pointer ${expanded === t.id ? 'bg-slate-800/40' : ''} ${selected.has(t.id) ? 'bg-blue-500/5' : ''}`}>
+                      <td className="pl-4 py-2 w-8" onClick={e => e.stopPropagation()}>
+                        <input type="checkbox" className="accent-blue-500 cursor-pointer" checked={selected.has(t.id)} onChange={() => toggleSel(t.id)} />
+                      </td>
+                      <td className="px-2 py-2 max-w-[380px]">
                         <span className="text-slate-100 truncate block">{t.description || t.counterparty || '—'}</span>
                         {t.status === 'pending' && <span className="text-[10px] text-blue-300">pending</span>}
                       </td>
@@ -292,11 +334,17 @@ export default function TransactionsPage() {
                             {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                           </select>
                         ) : (
-                          <button onClick={() => setEditing(t.id)}
-                            className={`text-[11px] px-2 py-0.5 rounded-full ${cat ? (t.custom_category ? 'bg-blue-500/10 text-blue-300' : 'bg-slate-800 text-slate-300')
-                              : t.suggested_category ? 'bg-amber-500/5 text-amber-300/70 italic' : 'text-slate-600 hover:text-slate-400'}`}>
-                            {cat || (t.suggested_category ? `suggest: ${t.suggested_category}?` : '+ categorize')}
-                          </button>
+                          <span className="inline-flex items-center gap-1">
+                            <button onClick={() => setEditing(t.id)}
+                              className={`text-[11px] px-2 py-0.5 rounded-full ${cat ? (t.custom_category ? 'bg-blue-500/10 text-blue-300' : 'bg-slate-800 text-slate-300')
+                                : t.suggested_category ? 'bg-amber-500/5 text-amber-300/70 italic' : 'text-slate-600 hover:text-slate-400'}`}>
+                              {cat || (t.suggested_category ? `suggest: ${t.suggested_category}?` : '+ categorize')}
+                            </button>
+                            {!cat && t.suggested_category && (
+                              <button title={`Confirm ${t.suggested_category}`} onClick={() => setCategory(t.id, t.suggested_category!)}
+                                className="text-[11px] text-emerald-400 hover:text-emerald-300 font-bold px-1">✓</button>
+                            )}
+                          </span>
                         )}
                       </td>
                       <td className={`px-4 py-2 text-right tabular-nums font-medium whitespace-nowrap ${t.amount_cents >= 0 ? 'text-emerald-300' : 'text-slate-100'}`}>
@@ -305,7 +353,7 @@ export default function TransactionsPage() {
                     </tr>
                     {expanded === t.id && (
                       <tr className="bg-slate-950/50">
-                        <td colSpan={6} className="px-6 py-3">
+                        <td colSpan={7} className="px-6 py-3">
                           {/* WHY does YM believe this — the reconciliation evidence */}
                           {t.cls_reason ? (
                             <div className="space-y-1.5">
@@ -334,6 +382,16 @@ export default function TransactionsPage() {
                           ) : (
                             <p className="text-[12px] text-slate-500">Not yet reconciled — run the categorizer or categorize manually.</p>
                           )}
+                          <button onClick={e => { e.stopPropagation();
+                              const key = (t.description || '').toLowerCase().replace(/[^a-z]+/g, ' ').trim().split(' ')[0];
+                              if (!key || key.length < 4) return;
+                              setSelected(prev => {
+                                const next = new Set(prev);
+                                for (const x of txns) if ((x.description || '').toLowerCase().includes(key)) next.add(x.id);
+                                return next;
+                              });
+                            }}
+                            className="mt-2 text-[11px] text-blue-400 hover:text-blue-300">⊕ Select all loaded like this</button>
                         </td>
                       </tr>
                     )}
@@ -343,6 +401,21 @@ export default function TransactionsPage() {
               ))}
             </tbody>
           </table>
+          {/* Floating bulk action bar — count + dollar impact = the preview */}
+          {selected.size > 0 && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-slate-800 shadow-2xl rounded-xl px-4 py-2.5">
+              <span className="text-[13px] text-white font-medium tabular-nums">
+                {selected.size} selected · {fmtCents(txns.filter(t => selected.has(t.id)).reduce((s, t) => s + Math.abs(t.amount_cents), 0))}
+              </span>
+              <select defaultValue="" disabled={bulkApplying}
+                onChange={e => { if (e.target.value) applyBulk(e.target.value); e.target.value = ''; }}
+                className="bg-slate-700 text-white text-[13px] rounded-lg px-2.5 py-1.5">
+                <option value="">{bulkApplying ? 'Applying…' : 'Categorize all as…'}</option>
+                {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <button onClick={() => setSelected(new Set())} className="text-[13px] text-slate-400 hover:text-white">Cancel</button>
+            </div>
+          )}
           {hasMore && (
             <button onClick={() => load(true, cursor)} disabled={loadingMore}
               className="w-full py-2.5 text-[13px] text-blue-400 hover:text-blue-300 hover:bg-slate-800/30 disabled:opacity-50 border-t border-slate-800/40">
