@@ -252,6 +252,11 @@ export default function TransactionsPage() {
               {label}
             </button>
           ))}
+          <button onClick={() => setStoreFilter(storeFilter === 'unattributed' ? '' : 'unattributed')}
+            className={`px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
+              storeFilter === 'unattributed' ? 'bg-amber-300 text-slate-900' : 'bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'}`}>
+            ⚠ Unpaired (no store)
+          </button>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search description, merchant, or exact amount"
