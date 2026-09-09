@@ -152,26 +152,38 @@ async function classifyTransaction(db: Database.Database, txn: any, opts: { allo
   }
 
   // ---- 3. BUSINESS CONTEXT: invoices & payouts ---------------------------
+  // Invoice matches require DESCRIPTION COMPATIBILITY, not just an exact
+  // amount — a $16 make.com charge must never match a coincidental $16
+  // Shopify invoice (real false positive found 2026-09-09). Amount + date
+  // window + the descriptor actually naming the platform.
   if (txn.amount_cents < 0) {
+    const descL = (txn.description || '').toLowerCase();
     const adInv: any = db.prepare(`
       SELECT id, platform, date FROM ad_payments
       WHERE amount_cents = ? AND ABS(JULIANDAY(date) - JULIANDAY(?)) <= 3 LIMIT 1`)
       .get(Math.abs(txn.amount_cents), txn.date);
     if (adInv) {
-      return { ...base, category: 'Ad Spend', subcategory: adInv.platform === 'google' ? 'Google Ads' : 'Meta Ads',
-        method: 'INVOICE_MATCH', confidence: 0.98,
-        reason: `Exact amount matches ${adInv.platform} ad invoice dated ${adInv.date}`,
-        evidence: [{ type: 'ad_invoice', reference: adInv.id }], needs_review: false };
+      const platOk = adInv.platform === 'google'
+        ? /google|adword/.test(descL)
+        : /facebk|facebook|meta|fb /.test(descL);
+      if (platOk) {
+        return { ...base, category: 'Ad Spend', subcategory: adInv.platform === 'google' ? 'Google Ads' : 'Meta Ads',
+          method: 'INVOICE_MATCH', confidence: 0.98,
+          reason: `Amount matches ${adInv.platform} ad invoice dated ${adInv.date} and descriptor names the platform`,
+          evidence: [{ type: 'ad_invoice', reference: adInv.id }], needs_review: false };
+      }
     }
-    const appInv: any = db.prepare(`
-      SELECT id, store_id, date FROM shopify_invoices
-      WHERE total_cents = ? AND ABS(JULIANDAY(date) - JULIANDAY(?)) <= 5 LIMIT 1`)
-      .get(Math.abs(txn.amount_cents), txn.date);
-    if (appInv) {
-      return { ...base, category: 'Software', subcategory: 'Shopify Apps', store_id: appInv.store_id,
-        method: 'INVOICE_MATCH', confidence: 0.96,
-        reason: `Exact amount matches Shopify app invoice dated ${appInv.date}`,
-        evidence: [{ type: 'shopify_invoice', reference: appInv.id }], needs_review: false };
+    if (/shopify/.test(descL)) {
+      const appInv: any = db.prepare(`
+        SELECT id, store_id, date FROM shopify_invoices
+        WHERE total_cents = ? AND ABS(JULIANDAY(date) - JULIANDAY(?)) <= 5 LIMIT 1`)
+        .get(Math.abs(txn.amount_cents), txn.date);
+      if (appInv) {
+        return { ...base, category: 'Software', subcategory: 'Shopify Apps', store_id: appInv.store_id,
+          method: 'INVOICE_MATCH', confidence: 0.96,
+          reason: `Shopify descriptor + amount matches app invoice dated ${appInv.date}`,
+          evidence: [{ type: 'shopify_invoice', reference: appInv.id }], needs_review: false };
+      }
     }
   } else if (merchant?.name === 'Shopify' || /shopify|shoppay/i.test(txn.description || '')) {
     // A payout is a SETTLEMENT of underlying sales, not raw revenue.

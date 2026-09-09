@@ -259,3 +259,24 @@ describe('transfer hardening (adversarial)', () => {
     expect(r.method).not.toBe('TRANSFER_MATCH');
   });
 });
+
+describe('invoice-match false positive regression (make.com bug, 2026-09-09)', () => {
+  it('a coincidental same-amount Shopify invoice must NOT match a non-Shopify descriptor', async () => {
+    const db = freshDb();
+    acct(db, 'chk');
+    db.prepare("INSERT INTO shopify_invoices (id, store_id, date, total_cents) VALUES ('si1','st1','2026-09-01',1600)").run();
+    const t = txn(db, { id: 't1', acct: 'chk', desc: 'WWW.MAKE.COM', amt: -1600 });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.method).not.toBe('INVOICE_MATCH');
+    expect(r.category).not.toBe('Software');
+  });
+
+  it('an ad invoice must NOT match a descriptor that does not name the platform', async () => {
+    const db = freshDb();
+    acct(db, 'chk');
+    db.prepare("INSERT INTO ad_payments (id, platform, date, amount_cents) VALUES ('inv1','facebook','2026-09-01',1600)").run();
+    const t = txn(db, { id: 't1', acct: 'chk', desc: 'RANDOM SAAS SUBSCRIPTION', amt: -1600 });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.method).not.toBe('INVOICE_MATCH');
+  });
+});
