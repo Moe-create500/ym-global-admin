@@ -52,6 +52,13 @@ export async function GET(req: NextRequest) {
     ORDER BY institution_name, account_name
   `).all();
 
+  // Statement data = the BANK's own numbers via Plaid liabilities (or manual
+  // entry where consent is missing) — balance, due date, minimum payment.
+  const stmts = new Map<string, any>(
+    (db.prepare('SELECT * FROM card_statements').all() as any[]).map((s: any) => [s.bank_account_id, s])
+  );
+  const today = new Date().toISOString().slice(0, 10);
+
   // Same evidence-derived connection model as Banking: status from provider
   // signals only, freshness descriptive, last-known balances preserved.
   const cards = rawCards.map((a: any) => {
@@ -68,6 +75,10 @@ export async function GET(req: NextRequest) {
     const verified = !Number.isNaN(balTs) && Date.now() - balTs <= FRESH_MS
       && ['HEALTHY', 'SYNCING', 'DEGRADED', 'PENDING_DISCONNECT'].includes(connection.status);
     const { access_token: _t, ...safe } = a;
+    const st = stmts.get(a.id);
+    const daysToDue = st?.due_date
+      ? Math.round((Date.parse(st.due_date) - Date.parse(today)) / 86_400_000)
+      : null;
     return {
       ...safe,
       item_id: item?.item_id || null,
@@ -78,6 +89,15 @@ export async function GET(req: NextRequest) {
         transactions_through: a.bank_data_as_of || null,
         transactions_checked_at: a.last_txn_success_at || null,
       },
+      statement: st ? {
+        balance_cents: st.statement_balance_cents,
+        statement_date: st.statement_date,
+        due_date: st.due_date,
+        days_to_due: daysToDue,
+        min_payment_cents: st.min_payment_cents,
+        source: st.source || 'manual',
+        updated_at: st.updated_at,
+      } : null,
     };
   });
 

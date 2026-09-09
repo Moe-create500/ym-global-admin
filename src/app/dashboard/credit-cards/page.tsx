@@ -20,6 +20,14 @@ interface CreditCard {
   connection: Connection;
   balance_verified: boolean;
   freshness: Freshness;
+  statement?: {
+    balance_cents: number | null;
+    statement_date: string | null;
+    due_date: string | null;
+    days_to_due: number | null;
+    min_payment_cents: number | null;
+    source: string;
+  } | null;
 }
 
 interface RepairGroup {
@@ -291,6 +299,11 @@ export default function CreditCardsPage() {
               </div>
             )}
             <div>
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">Statements outstanding</p>
+              <p className="text-2xl font-semibold text-slate-200 tabular-nums">{cents(cards.reduce((s, c) => s + (c.statement?.balance_cents || 0), 0))}</p>
+              <p className="text-[11px] text-slate-500 mt-1.5">min due {cents(cards.reduce((s, c) => s + (c.statement?.min_payment_cents || 0), 0))} · bank-reported</p>
+            </div>
+            <div>
               <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">Real available (lines)</p>
               <p className={`text-2xl font-semibold tabular-nums ${summary.total_available_cents >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{cents(summary.total_available_cents)}</p>
               <p className="text-[11px] text-slate-500 mt-1.5">child-card ceilings excluded</p>
@@ -328,9 +341,11 @@ export default function CreditCardsPage() {
               <thead>
                 <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/60">
                   <th className="px-4 py-2.5 font-semibold">Card</th>
-                  <th className="px-4 py-2.5 font-semibold text-right">Owed</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Remaining balance</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Statement</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Min due</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Due</th>
                   <th className="px-4 py-2.5 font-semibold text-right">Available</th>
-                  <th className="px-4 py-2.5 font-semibold text-right">Verified</th>
                   <th className="px-4 py-2.5 font-semibold">Status</th>
                 </tr>
               </thead>
@@ -357,13 +372,30 @@ export default function CreditCardsPage() {
                       </td>
                       <td className={`px-4 py-2.5 text-right tabular-nums font-medium ${card.balance_verified ? 'text-slate-100' : 'text-slate-400'}`}>
                         {cents(Math.abs(card.balance_ledger_cents || 0))}
-                        {!card.balance_verified && <span className="block text-[10px] font-normal text-slate-500">last-known</span>}
+                        {!card.balance_verified && <span className="block text-[10px] font-normal text-slate-500">last-known {timeAgo(card.freshness?.balance_verified_at || card.balance_updated_at)}</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-slate-200">
+                        {card.statement?.balance_cents != null ? cents(card.statement.balance_cents) : <span className="text-slate-600">—</span>}
+                        {card.statement?.statement_date && <span className="block text-[10px] text-slate-500">closed {card.statement.statement_date.slice(5)}</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-slate-200">
+                        {card.statement?.min_payment_cents != null && card.statement.min_payment_cents > 0
+                          ? cents(card.statement.min_payment_cents)
+                          : card.statement ? <span className="text-slate-600">$0</span> : <span className="text-slate-600">—</span>}
+                      </td>
+                      <td className={`px-4 py-2.5 text-right whitespace-nowrap tabular-nums ${
+                        card.statement?.days_to_due == null ? 'text-slate-600'
+                          : card.statement.days_to_due < 0 ? 'text-red-400 font-semibold'
+                          : card.statement.days_to_due <= 3 ? 'text-red-300'
+                          : card.statement.days_to_due <= 7 ? 'text-amber-300' : 'text-slate-300'}`}>
+                        {card.statement?.due_date
+                          ? <>{card.statement.due_date.slice(5)}<span className="block text-[10px] font-normal opacity-70">{card.statement.days_to_due! < 0 ? `${-card.statement.days_to_due!}d late` : `${card.statement.days_to_due}d`}</span></>
+                          : '—'}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         <span className={card.balance_available_cents >= 0 ? 'text-emerald-300' : 'text-red-300'}>{cents(card.balance_available_cents || 0)}</span>
                         {overstated && <span className="block text-[10px] text-amber-400" title={`Capped by the ${parent!.account_name.replace(/^CORP Account - /i, '')} line`}>real ≈ {cents(lineAvail!)}</span>}
                       </td>
-                      <td className="px-4 py-2.5 text-right text-slate-500 whitespace-nowrap">{timeAgo(card.freshness?.balance_verified_at || card.balance_updated_at)}</td>
                       <td className="px-4 py-2.5 max-w-[300px]">
                         <StatusPill c={card.connection} />
                         {card.connection.status !== 'HEALTHY' && card.connection.status !== 'SYNCING' && (
@@ -547,6 +579,26 @@ export default function CreditCardsPage() {
                       <p className="text-[11px] text-amber-300/80 mt-2">Not freshly verified — last balance the bank confirmed, preserved until the connection verifies again.</p>
                     )}
                   </div>
+
+                  {(() => {
+                    const st = cards.find(c => c.id === drawerId)?.statement;
+                    if (!st) return null;
+                    return (
+                      <div className="rounded-lg bg-slate-800/40 p-4 mb-5">
+                        <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Statement <span className="normal-case">({st.source === 'plaid' ? 'from the bank' : 'manual entry'})</span></p>
+                        <div className="space-y-1.5 text-[12px]">
+                          <div className="flex justify-between"><span className="text-slate-400">Statement balance</span><span className="text-slate-100 font-medium tabular-nums">{st.balance_cents != null ? cents(st.balance_cents) : '—'}</span></div>
+                          <div className="flex justify-between"><span className="text-slate-400">Minimum payment</span><span className="text-slate-100 tabular-nums">{st.min_payment_cents != null ? cents(st.min_payment_cents) : '—'}</span></div>
+                          <div className="flex justify-between"><span className="text-slate-400">Statement closed</span><span className="text-slate-200">{st.statement_date || '—'}</span></div>
+                          <div className="flex justify-between"><span className="text-slate-400">Payment due</span>
+                            <span className={st.days_to_due != null && st.days_to_due < 0 ? 'text-red-300 font-semibold' : st.days_to_due != null && st.days_to_due <= 7 ? 'text-amber-300' : 'text-slate-200'}>
+                              {st.due_date || '—'}{st.days_to_due != null && ` (${st.days_to_due < 0 ? `${-st.days_to_due}d late` : `${st.days_to_due}d`})`}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div className="mb-5">
                     <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Data freshness</p>
