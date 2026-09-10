@@ -212,6 +212,7 @@ function DashboardContent() {
   useEffect(() => { try { setTestsOpen(localStorage.getItem('ym_tests_open') === '1'); } catch {} }, []);
   const toggleTests = () => setTestsOpen(v => { try { localStorage.setItem('ym_tests_open', v ? '0' : '1'); } catch {} return !v; });
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [showAllIssues, setShowAllIssues] = useState(false);
   const [sparklines, setSparklines] = useState<Record<string, SparkPoint[]>>({});
   const [totals, setTotals] = useState<Totals | null>(null);
   const [prevTotals, setPrevTotals] = useState<Totals | null>(null);
@@ -446,11 +447,17 @@ function DashboardContent() {
       if (rev > 10000 && margin < -50) issues.push({ store: s.name, msg: `Margin at ${margin.toFixed(0)}% — bleeding cash`, severity: 'critical' });
       else if (rev > 5000 && margin < -20) issues.push({ store: s.name, msg: `Negative margin ${margin.toFixed(0)}%`, severity: 'warn' });
       if (adSpend > rev * 2 && adSpend > 5000) issues.push({ store: s.name, msg: `Ad spend (${centsCompact(adSpend)}) is ${(adSpend / (rev || 1)).toFixed(1)}x revenue`, severity: 'critical' });
-      const spark = sparklines[s.id];
-      if (spark && spark.length >= 3) {
+      // Partial-day safety (audit 2026-09-09): today is INCOMPLETE data, and
+      // an unsynced yesterday is missing data — neither is evidence of a
+      // revenue collapse. Drop detection only uses complete, synced days.
+      const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+      const spark = (sparklines[s.id] || []).filter(p => p.date < todayStr);
+      if (spark.length >= 4) {
         const recent = spark.slice(-2).reduce((s, p) => s + p.rev, 0) / 2;
         const older = spark.slice(0, -2).reduce((s, p) => s + p.rev, 0) / Math.max(1, spark.length - 2);
-        if (older > 5000 && recent < older * 0.3) issues.push({ store: s.name, msg: `Revenue dropped ${((1 - recent / older) * 100).toFixed(0)}% vs prior days`, severity: 'warn' });
+        const syncFresh = s.last_synced_at && (Date.now() - new Date(s.last_synced_at + 'Z').getTime()) < 6 * 3600000;
+        if (older > 5000 && recent < older * 0.3 && syncFresh) issues.push({ store: s.name, msg: `Revenue dropped ${((1 - recent / older) * 100).toFixed(0)}% vs prior complete days`, severity: 'warn' });
+        if (older > 5000 && recent < older * 0.3 && !syncFresh) issues.push({ store: s.name, msg: `Revenue feed may be stale (last sync ${s.last_synced_at ? s.last_synced_at.slice(5, 16) : 'unknown'}) — low recent revenue is unverified`, severity: 'warn' });
       }
     }
     return issues;
@@ -530,40 +537,38 @@ function DashboardContent() {
       )}
 
       {/* Anomaly Alerts */}
-      {anomalies.length > 0 && (
-        <div className="mb-6 space-y-2">
-          {anomalies.map((a, i) => (
-            <div key={i} className={`flex items-start gap-3 px-4 py-3 rounded-lg border ${
-              a.severity === 'critical'
-                ? 'bg-red-900/20 border-red-800/50'
-                : 'bg-amber-900/20 border-amber-800/50'
-            }`}>
-              <span className={`mt-0.5 text-sm ${a.severity === 'critical' ? 'text-red-400' : 'text-amber-400'}`}>
-                {a.severity === 'critical' ? '!!' : '!'}
-              </span>
-              <div>
-                <span className={`text-sm font-medium ${a.severity === 'critical' ? 'text-red-300' : 'text-amber-300'}`}>{a.store}:</span>
-                <span className={`text-sm ml-1.5 ${a.severity === 'critical' ? 'text-red-200/80' : 'text-amber-200/80'}`}>{a.msg}</span>
-              </div>
+      {/* NEEDS ATTENTION — one calm summary, not a wall of banners */}
+      {(() => {
+        const externalAlerts = alerts.filter(a => !stores.find(st => st.id === a.store_id));
+        const all = [
+          ...anomalies.map(a => ({ key: a.store + a.msg, store: a.store, msg: a.msg, severity: a.severity })),
+          ...externalAlerts.map(a => ({ key: a.id, store: a.store_name, msg: a.note, severity: 'warn' as const })),
+        ];
+        if (all.length === 0) return null;
+        const crit = all.filter(a => a.severity === 'critical');
+        return (
+          <div className="mb-6 rounded-xl bg-slate-900/60 overflow-hidden">
+            <div className="px-5 py-3 border-b border-slate-800/60 flex items-center gap-3">
+              <p className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Needs attention</p>
+              <span className="text-[11px] text-slate-500">{all.length} issue{all.length > 1 ? 's' : ''}{crit.length ? ` · ${crit.length} critical` : ''}</span>
             </div>
-          ))}
-        </div>
-      )}
-
-      {/* Action Required Alerts */}
-      {alerts.filter(a => !stores.find(s => s.id === a.store_id)).length > 0 && (
-        <div className="mb-6 space-y-2">
-          {alerts.filter(a => !stores.find(s => s.id === a.store_id)).map((alert) => (
-            <div key={alert.id} className="flex items-start gap-3 px-4 py-3 bg-amber-900/20 border border-amber-800/50 rounded-lg">
-              <span className="text-amber-400 mt-0.5 text-sm">!</span>
-              <div>
-                <span className="text-sm font-medium text-amber-300">{alert.store_name}:</span>
-                <span className="text-sm text-amber-200/80 ml-1.5">{alert.note}</span>
-              </div>
+            <div className="px-5 py-2 divide-y divide-slate-800/40">
+              {all.slice(0, showAllIssues ? 99 : 3).map(a => (
+                <div key={a.key} className="py-1.5 flex items-baseline gap-2 text-[13px]">
+                  <span className={a.severity === 'critical' ? 'text-red-300' : 'text-amber-300'}>{a.severity === 'critical' ? '!!' : '!'}</span>
+                  <span className="text-slate-200 font-medium">{a.store}</span>
+                  <span className="text-slate-400">{a.msg}</span>
+                </div>
+              ))}
+              {all.length > 3 && (
+                <button onClick={() => setShowAllIssues(v => !v)} className="py-1.5 text-[12px] text-blue-400 hover:text-blue-300">
+                  {showAllIssues ? 'Show less' : `View all ${all.length} →`}
+                </button>
+              )}
             </div>
-          ))}
-        </div>
-      )}
+          </div>
+        );
+      })()}
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 2xl:grid-cols-9 gap-3 mb-6">
@@ -722,111 +727,80 @@ function DashboardContent() {
               <p className="text-slate-400 mb-3">{search ? 'No stores match your search' : 'No stores configured yet'}</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredStores.map((store) => {
-                const margin = (store.mtd_revenue || 0) > 0
-                  ? ((store.mtd_profit || 0) / (store.mtd_revenue || 1)) * 100
-                  : 0;
-                const storeRoas = (store.mtd_ad_spend || 0) > 0
-                  ? (store.mtd_revenue || 0) / (store.mtd_ad_spend || 1)
-                  : 0;
-                const sync = syncStatus(store.last_synced_at);
-                const spark = sparklines[store.id] || [];
-                const sparkRevData = spark.map(p => p.rev);
-                const sparkColor = margin >= 0 ? '#10b981' : '#ef4444';
-                return (
-                  <Link
-                    key={store.id}
-                    href={`/dashboard/stores/${store.id}`}
-                    className="bg-slate-900 border border-slate-800 rounded-xl p-5 hover:border-slate-700 transition-colors"
-                  >
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-semibold text-white">{store.name}</h3>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {sparkRevData.length >= 2 && <Sparkline data={sparkRevData} color={sparkColor} />}
-                        {store.shipsourced_client_id && (
-                          <div className="flex items-center gap-1.5">
-                            <div className={`w-2 h-2 rounded-full ${sync.color}`} />
-                            <span className="text-[10px] text-slate-500">{timeAgo(store.last_synced_at)}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-4 gap-2">
-                      <div>
-                        <p className="text-[10px] text-slate-500 uppercase">Revenue</p>
-                        <p className="text-sm font-semibold text-white">{centsCompact(store.mtd_revenue || 0)}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] text-slate-500 uppercase">Profit</p>
-                        <p className={`text-sm font-semibold ${(store.mtd_profit || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {centsCompact(store.mtd_profit || 0)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] text-slate-500 uppercase">ROAS</p>
-                        <p className={`text-sm font-semibold ${storeRoas >= 2 ? 'text-emerald-400' : storeRoas >= 1 ? 'text-yellow-400' : storeRoas > 0 ? 'text-red-400' : 'text-slate-500'}`}>
-                          {storeRoas > 0 ? `${storeRoas.toFixed(1)}x` : '--'}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] text-slate-500 uppercase">Margin</p>
-                        <p className={`text-sm font-semibold ${margin >= 20 ? 'text-emerald-400' : margin >= 10 ? 'text-yellow-400' : 'text-red-400'}`}>
-                          {pct(margin)}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="mt-2 flex items-center justify-between">
-                      <span className="text-[10px] text-slate-500">
-                        {(store.mtd_orders || 0).toLocaleString()} orders {range === 'daily' ? 'today' : range === 'yesterday' ? 'yesterday' : range === 'monthly' ? 'this month' : 'this year'}
-                        {(store.mtd_ad_spend || 0) > 0 && <> &middot; {centsCompact(store.mtd_ad_spend || 0)} ad spend</>}
-                      </span>
-                    </div>
-                    {productPerf?.topByStore?.[store.id] && (
-                      <div className="mt-1 text-[10px] text-slate-400 truncate" title={productPerf.topByStore[store.id].title}>
-                        <span className="text-slate-600">top:</span> <span className="text-slate-300">{productPerf.topByStore[store.id].title.slice(0, 30)}</span>
-                        <span className="text-emerald-400 font-medium"> {centsCompact(productPerf.topByStore[store.id].revenue_cents)}</span>
-                        <span className="text-slate-600"> · {productPerf.topByStore[store.id].units}u</span>
-                      </div>
-                    )}
-                    <div className="mt-2 flex items-center gap-2 flex-wrap">
-                      <span className={`inline-flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded ${
-                        store.fb_connected ? 'bg-emerald-900/40 text-emerald-400' : 'bg-slate-800 text-slate-500'
-                      }`}>
-                        {store.fb_connected ? '\u2713' : '\u2717'} FB
-                      </span>
-                      <span className={`inline-flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded ${
-                        store.chargeflow_connected ? 'bg-emerald-900/40 text-emerald-400' : 'bg-slate-800 text-slate-500'
-                      }`}>
-                        {store.chargeflow_connected ? '\u2713' : '\u2717'} Chargeflow
-                      </span>
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          fetch('/api/stores', {
-                            method: 'PATCH',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ storeId: store.id, invoices_verified: !store.invoices_verified }),
-                          }).then(() => loadData());
-                        }}
-                        className={`inline-flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded transition-colors ${
-                          store.invoices_verified ? 'bg-emerald-900/40 text-emerald-400' : 'bg-slate-800 text-slate-500 hover:bg-slate-700'
-                        }`}
-                      >
-                        {store.invoices_verified ? '\u2713' : '\u2717'} Invoices
-                      </button>
-                    </div>
-                    {alerts.filter(a => a.store_id === store.id).map((alert) => (
-                      <div key={alert.id} className="mt-2 px-2 py-1.5 bg-amber-900/20 border border-amber-800/40 rounded text-[10px] text-amber-300/80 leading-tight">
-                        {alert.note}
-                      </div>
-                    ))}
-                  </Link>
-                );
-              })}
+            <div className="rounded-xl bg-slate-900/60 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-[13px]">
+                  <thead>
+                    <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/60">
+                      <th className="text-left px-4 py-2.5 font-semibold">Store</th>
+                      <th className="text-right px-3 py-2.5 font-semibold">Revenue</th>
+                      <th className="text-right px-3 py-2.5 font-semibold">Ad Spend</th>
+                      <th className="text-right px-3 py-2.5 font-semibold">Profit</th>
+                      <th className="text-right px-3 py-2.5 font-semibold">Margin</th>
+                      <th className="text-right px-3 py-2.5 font-semibold">ROAS</th>
+                      <th className="text-right px-3 py-2.5 font-semibold">Orders</th>
+                      <th className="text-center px-3 py-2.5 font-semibold">Trend</th>
+                      <th className="text-center px-4 py-2.5 font-semibold">Health</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredStores.map((store) => {
+                      const rev = store.mtd_revenue || 0;
+                      const profit = store.mtd_profit || 0;
+                      const adSpend = store.mtd_ad_spend || 0;
+                      const margin = rev > 0 ? (profit / rev) * 100 : null;
+                      const storeRoas = adSpend > 0 ? rev / adSpend : null;
+                      const sync = syncStatus(store.last_synced_at);
+                      const spark = sparklines[store.id] || [];
+                      const storeIssues = anomalies.filter(a => a.store === store.name);
+                      const storeAlerts = alerts.filter(a => a.store_id === store.id);
+                      // Highest-priority health state only — details on hover
+                      const health = storeIssues.some(a => a.severity === 'critical')
+                        ? { label: '!!', cls: 'text-red-300', title: storeIssues.map(a => a.msg).join(' · ') }
+                        : storeIssues.length || storeAlerts.length
+                        ? { label: '⚠', cls: 'text-amber-300', title: [...storeIssues.map(a => a.msg), ...storeAlerts.map(a => a.note)].join(' · ') }
+                        : sync.color.includes('red') || sync.color.includes('amber')
+                        ? { label: '⚠', cls: 'text-amber-300/70', title: `Sync ${timeAgo(store.last_synced_at)}` }
+                        : { label: '✓', cls: 'text-emerald-300', title: 'Clean' };
+                      return (
+                        <tr key={store.id} onClick={() => window.location.href = `/dashboard/stores/${store.id}`}
+                          className="border-b border-slate-800/30 last:border-b-0 hover:bg-slate-800/30 transition-colors cursor-pointer">
+                          <td className="px-4 py-2.5 text-slate-100 font-medium whitespace-nowrap">{store.name}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-100">{centsCompact(rev)}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-400">{adSpend > 0 ? centsCompact(adSpend) : '—'}</td>
+                          <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${profit >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{centsCompact(profit)}</td>
+                          <td className={`px-3 py-2.5 text-right tabular-nums ${margin == null ? 'text-slate-600' : margin >= 10 ? 'text-slate-300' : margin >= 0 ? 'text-amber-300' : 'text-red-300'}`}>{margin == null ? '—' : pct(margin)}</td>
+                          <td className={`px-3 py-2.5 text-right tabular-nums ${storeRoas == null ? 'text-slate-600' : storeRoas >= 2 ? 'text-emerald-300' : storeRoas >= 1.3 ? 'text-slate-300' : 'text-amber-300'}`}>{storeRoas == null ? '—' : `${storeRoas.toFixed(1)}x`}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-400">{(store.mtd_orders || 0).toLocaleString()}</td>
+                          <td className="px-3 py-2.5 text-center">{spark.length >= 2 && <Sparkline data={spark.map(pt => pt.rev)} color={profit >= 0 ? '#6ee7b7' : '#fca5a5'} />}</td>
+                          <td className="px-4 py-2.5 text-center"><span title={health.title} className={`${health.cls} text-sm cursor-help`}>{health.label}</span></td>
+                        </tr>
+                      );
+                    })}
+                    {/* TOTALS — must equal headline KPIs (same source rows) */}
+                    {(() => {
+                      const t = filteredStores.reduce((acc, st) => ({
+                        rev: acc.rev + (st.mtd_revenue || 0), profit: acc.profit + (st.mtd_profit || 0),
+                        ads: acc.ads + (st.mtd_ad_spend || 0), orders: acc.orders + (st.mtd_orders || 0),
+                      }), { rev: 0, profit: 0, ads: 0, orders: 0 });
+                      const tMargin = t.rev > 0 ? (t.profit / t.rev) * 100 : null;
+                      const tRoas = t.ads > 0 ? t.rev / t.ads : null;
+                      return (
+                        <tr className="bg-slate-800/30 font-semibold">
+                          <td className="px-4 py-2.5 text-slate-200">All stores</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-white">{centsCompact(t.rev)}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-300">{centsCompact(t.ads)}</td>
+                          <td className={`px-3 py-2.5 text-right tabular-nums ${t.profit >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{centsCompact(t.profit)}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-300">{tMargin == null ? '—' : pct(tMargin)}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-300">{tRoas == null ? '—' : `${tRoas.toFixed(1)}x`}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-300">{t.orders.toLocaleString()}</td>
+                          <td colSpan={2} />
+                        </tr>
+                      );
+                    })()}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
@@ -854,9 +828,13 @@ function DashboardContent() {
               <tbody>
                 {rows.map((row) => {
                   const rowRoas = (row.ad_spend_cents || 0) > 0 ? (row.revenue_cents || 0) / (row.ad_spend_cents || 1) : 0;
+                  // A day still in progress (or not yet synced) is INCOMPLETE — label
+                  // it instead of letting \$0 revenue read as a collapse
+                  const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+                  const partial = row.period >= todayStr;
                   return (
-                    <tr key={row.period} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-5 py-3 text-slate-300">{row.period}</td>
+                    <tr key={row.period} className={`border-b border-slate-800/50 hover:bg-slate-800/30 ${partial ? 'opacity-60' : ''}`}>
+                      <td className="px-5 py-3 text-slate-300">{row.period}{partial && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300">partial</span>}</td>
                       <td className="px-5 py-3 text-right text-white font-medium">{cents(row.revenue_cents || 0)}</td>
                       <td className="px-5 py-3 text-right text-orange-400">{cents(row.ad_spend_cents || 0)}</td>
                       <td className={`px-5 py-3 text-right ${rowRoas >= 2 ? 'text-emerald-400' : rowRoas >= 1 ? 'text-yellow-400' : 'text-red-400'}`}>
