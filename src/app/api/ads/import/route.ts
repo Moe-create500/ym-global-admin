@@ -484,31 +484,61 @@ export async function GET(req: NextRequest) {
     ORDER BY month DESC
   `).all(...params);
 
-  // Pending amount: ad spend accumulated since last invoiced charge per platform
-  let pendingWhere = 'WHERE a.ad_set_id IS NULL';
-  const pendingParams: any[] = [];
-  if (storeId) { pendingWhere += ' AND a.store_id = ?'; pendingParams.push(storeId); }
+  // Pending amount: spend the platform has recorded but not yet billed to a card.
+  //
+  // This used to filter `ad_set_id IS NULL` and sum spend dated after the last
+  // invoice. Both halves were wrong. Every ad_spend row ever written is ad-set
+  // level — there are zero account-level rows for any store — so the filter
+  // matched nothing and this metric read $0.00 forever. And the date cutoff
+  // cannot work either: Meta bills in arrears chunks, so the newest invoice is
+  // routinely dated the same day as the newest spend, leaving "after the last
+  // invoice" empty even when real spend is unbilled.
+  //
+  // Measured instead as what it actually means: spend recorded this month minus
+  // what has been invoiced this month, floored at zero. Comparing the running
+  // totals is the only sound way to do it, because a single Meta charge covers
+  // several days of spend and never lines up day-for-day.
+  const monthStart = `${new Date().toISOString().slice(0, 7)}-01`;
 
-  const pendingByPlatform = db.prepare(`
-    SELECT
-      a.platform,
-      SUM(a.spend_cents) as pending_cents
+  // Guard against double counting if account-level rows are ever introduced
+  // alongside ad-set rows: take the ad-set rows, and an account-level row only
+  // when that store/platform/day has no ad-set detail.
+  const spendByPlatform = db.prepare(`
+    SELECT a.platform, SUM(a.spend_cents) AS spend_cents
     FROM ad_spend a
-    ${pendingWhere}
-      AND a.date > COALESCE(
-        (SELECT MAX(p.date) FROM ad_payments p
-         WHERE p.platform = a.platform
-         ${storeId ? 'AND p.store_id = ?' : ''}),
-        '1970-01-01'
+    WHERE a.date >= ?
+      ${storeId ? 'AND a.store_id = ?' : ''}
+      AND (
+        a.ad_set_id IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM ad_spend b
+          WHERE b.store_id = a.store_id AND b.platform = a.platform
+            AND b.date = a.date AND b.ad_set_id IS NOT NULL
+        )
       )
     GROUP BY a.platform
-  `).all(...pendingParams, ...(storeId ? [storeId] : []));
+  `).all(monthStart, ...(storeId ? [storeId] : []));
+
+  const billedByPlatform = db.prepare(`
+    SELECT p.platform, SUM(p.amount_cents) AS billed_cents
+    FROM ad_payments p
+    WHERE p.date >= ?
+      ${storeId ? 'AND p.store_id = ?' : ''}
+    GROUP BY p.platform
+  `).all(monthStart, ...(storeId ? [storeId] : []));
+
+  const billedMap = new Map<string, number>(
+    (billedByPlatform as any[]).map(r => [r.platform, r.billed_cents || 0])
+  );
 
   const pendingCents: Record<string, number> = {};
   let totalPendingCents = 0;
-  for (const row of pendingByPlatform as any[]) {
-    pendingCents[row.platform] = row.pending_cents || 0;
-    totalPendingCents += row.pending_cents || 0;
+  for (const row of spendByPlatform as any[]) {
+    // Floored at zero: billing ahead of recorded spend means the spend feed is
+    // behind, not that the platform owes us money.
+    const pending = Math.max(0, (row.spend_cents || 0) - (billedMap.get(row.platform) || 0));
+    if (pending > 0) pendingCents[row.platform] = pending;
+    totalPendingCents += pending;
   }
 
   // Hidden cards

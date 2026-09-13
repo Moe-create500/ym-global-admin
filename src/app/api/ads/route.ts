@@ -14,8 +14,24 @@ export async function GET(req: NextRequest) {
 
   const db = getDb();
 
-  // Exclude ad-level rows (ad_set_id IS NOT NULL) — those are for the Creatives performance view only
-  let where = 'WHERE a.ad_set_id IS NULL';
+  // Roll up to campaign level without counting a day twice.
+  //
+  // This used to say `ad_set_id IS NULL`, meaning to keep only account-level
+  // rows. No such row has ever been written — all 155,993 ad_spend rows carry an
+  // ad_set_id — so the filter matched nothing and this endpoint returned an
+  // empty list. The GROUP BY below already aggregates to campaign/day, so the
+  // detail rows sum to the same total; the only real risk is double counting if
+  // account-level rows are ever introduced alongside them. Guard that instead:
+  // take the detail rows, and an account-level row only for a store/platform/day
+  // that has no detail.
+  let where = `WHERE (
+    a.ad_set_id IS NOT NULL
+    OR NOT EXISTS (
+      SELECT 1 FROM ad_spend b
+      WHERE b.store_id = a.store_id AND b.platform = a.platform
+        AND b.date = a.date AND b.ad_set_id IS NOT NULL
+    )
+  )`;
   const params: any[] = [];
 
   if (storeId) { where += ' AND a.store_id = ?'; params.push(storeId); }
@@ -83,8 +99,14 @@ export async function POST(req: NextRequest) {
   `).run(id, storeId, date, platform, campaignName || null, spendCents || 0, impressions || 0, clicks || 0, roas || 0);
 
   // Also update daily_pnl ad_spend_cents total for that day
+  // Every row for the day, not just account-level ones. Manual entries are
+  // written with a NULL ad_set_id while every synced row has one, so the old
+  // `ad_set_id IS NULL` filter meant a single manual entry would overwrite the
+  // day's daily_pnl ad spend with only that entry and silently drop the synced
+  // total. No manual row has ever been created, so this never fired — but it
+  // would have destroyed a day's ad spend the first time someone used the form.
   const totalAdSpend: any = db.prepare(
-    'SELECT SUM(spend_cents) as total FROM ad_spend WHERE store_id = ? AND date = ? AND ad_set_id IS NULL'
+    'SELECT SUM(spend_cents) as total FROM ad_spend WHERE store_id = ? AND date = ?'
   ).get(storeId, date);
 
   const existing: any = db.prepare(
