@@ -15,8 +15,11 @@ export async function GET() {
   return NextResponse.json({ proposals: detailed, ambiguous });
 }
 
-// POST { merges: [{keepId, dupId}] } — apply reviewed merges.
+// POST { merges: [{keepId, dupId, assertSameCard?}] } — apply reviewed merges.
 // Every merge is validated (identity match, direction) and audited.
+// assertSameCard is a human statement that two differing masks are one card
+// (a Bank of America card-number/account-number pair, say); it is the only way
+// past the mask guard and is recorded verbatim in the audit log.
 export async function POST(req: NextRequest) {
   const { merges } = await req.json().catch(() => ({}));
   if (!Array.isArray(merges) || merges.length === 0) {
@@ -26,7 +29,7 @@ export async function POST(req: NextRequest) {
   const results = [];
   for (const m of merges) {
     try {
-      results.push({ ...m, ...mergeAccounts(db, m.keepId, m.dupId, { actor: 'admin' }) });
+      results.push({ ...m, ...mergeAccounts(db, m.keepId, m.dupId, { actor: 'admin', assertSameCard: m.assertSameCard }) });
     } catch (e: any) {
       results.push({ ...m, merged: false, error: String(e?.message || e) });
     }

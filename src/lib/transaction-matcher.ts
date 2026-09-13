@@ -11,6 +11,7 @@
  */
 
 import type BetterSqlite3 from 'better-sqlite3';
+import { getCardAliasMap } from './funding-cards';
 
 type DB = BetterSqlite3.Database;
 
@@ -44,6 +45,7 @@ export interface BankTxnRecord {
   account_name: string;
   account_last4: string;
   account_type: string;
+  account_id: string;
 }
 
 export interface SSPaymentRecord {
@@ -172,7 +174,8 @@ export function matchTransactions(
       COALESCE(bt.description, '') as description,
       COALESCE(ba.account_name, ba.institution_name, '') as account_name,
       COALESCE(ba.last_four, '') as account_last4,
-      COALESCE(ba.account_type, '') as account_type
+      COALESCE(ba.account_type, '') as account_type,
+      ba.id as account_id
     FROM bank_transactions bt
     JOIN bank_accounts ba ON ba.id = bt.bank_account_id
     WHERE ba.store_id = ? AND bt.date >= ? AND bt.date <= ? AND bt.date != 'N/A'
@@ -191,6 +194,10 @@ export function matchTransactions(
     WHERE ba.store_id = ? AND bt.date >= ? AND bt.date <= ? AND bt.date != 'N/A'
       AND COALESCE(ba.cfo_hidden, 0) = 0
   `).all(storeId, periodStart, periodEnd) as any[]);
+
+  // One card can be labelled with several masks (card number vs account number,
+  // funding sub-cards, a merged twin's old mask) — resolve them all to accounts.
+  const cardAliases = getCardAliasMap(db);
 
   const ownerMovements: OwnerMovement[] = [];
   for (const t of ownerTxns) {
@@ -267,7 +274,7 @@ export function matchTransactions(
       matchedInvoiceIds.add(invoice.id);
 
       // Try to match payment → bank transaction
-      const bankTxn = matchPaymentToBank(bestPayment, bankTxns, usedBankTxnIds);
+      const bankTxn = matchPaymentToBank(bestPayment, bankTxns, usedBankTxnIds, cardAliases);
       if (bankTxn) usedBankTxnIds.add(bankTxn.id);
 
       matchedFlows.push({
@@ -338,15 +345,24 @@ export function matchTransactions(
 function matchPaymentToBank(
   payment: PaymentRecord,
   bankTxns: BankTxnRecord[],
-  usedIds: Set<string>
+  usedIds: Set<string>,
+  cardAliases?: Map<string, string>
 ): BankTxnRecord | null {
   const available = bankTxns.filter(b => !usedIds.has(b.id));
+
+  // The mask the payment carries is whatever the ad platform saw — often the
+  // card number, while the bank posts against the account number. Resolve it to
+  // a real account so ··1654 still finds its charges sitting on ··9215; fall
+  // back to comparing masks directly when there is no alias to resolve through.
+  const aliasAccountId = cardAliases?.get(payment.card_last4);
+  const sameCard = (b: BankTxnRecord) =>
+    aliasAccountId ? b.account_id === aliasAccountId : b.account_last4 === payment.card_last4;
 
   // For card payments, look for outflows on the matching credit card account
   // Credit card charges show as negative amounts on credit card accounts
   for (const b of available) {
     if (b.account_type === 'credit' &&
-        b.account_last4 === payment.card_last4 &&
+        sameCard(b) &&
         Math.abs(b.amount_cents) === payment.amount_cents &&
         daysBetween(b.date, payment.date) <= 3) {
       return b;
@@ -356,7 +372,7 @@ function matchPaymentToBank(
   // Probable: same card + amount within 5% + within 7 days
   for (const b of available) {
     if (b.account_type === 'credit' &&
-        b.account_last4 === payment.card_last4 &&
+        sameCard(b) &&
         amountMatch(Math.abs(b.amount_cents), payment.amount_cents, 0.05) &&
         daysBetween(b.date, payment.date) <= 7) {
       return b;

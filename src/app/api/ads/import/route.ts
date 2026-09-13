@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getFundingCardMap } from '@/lib/funding-cards';
+import { getCardAliasMap } from '@/lib/funding-cards';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -536,13 +536,12 @@ export async function GET(req: NextRequest) {
       WHERE l.entity_type = 'ad_payment' AND l.entity_id IS NOT NULL
     `).all();
     const byInvoice = new Map(matched.map(m => [m.entity_id, m]));
-    const linkedCards = new Set(
-      (db.prepare(`SELECT last_four FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'`).all() as any[])
-        .map(r => r.last_four).filter(Boolean)
-    );
-    // Funding sub-cards aliased to a linked account (·2976 → Platinum) ARE
-    // verifiable — without this every sub-card invoice reads "not linked"
-    for (const l4 of getFundingCardMap(db).keys()) linkedCards.add(l4);
+    // Every mask a charge can legitimately carry: a live account's own number,
+    // a funding sub-card aliased onto it (·2976 → Platinum), and the mask of a
+    // twin that has since been merged away (·1654 → ·9215). Without the last
+    // one, merging a Bank of America card/account pair would turn all of its
+    // historical charges into "card not linked".
+    const linkedCards = new Set(getCardAliasMap(db).keys());
     for (const inv of payments as any[]) {
       const m = byInvoice.get(inv.id);
       if (m) {

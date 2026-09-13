@@ -163,3 +163,70 @@ describe('findCanonicalMatch (pre-insert guard)', () => {
     expect(r.match).toBeNull();
   });
 });
+
+describe('same-card merge across differing masks (BoA card no. vs account no.)', () => {
+  let db: Database.Database;
+  beforeEach(() => { db = freshDb(); });
+
+  const pair = () => {
+    // one real card, exposed twice: ··1654 is the plastic, ··9215 the account
+    acct(db, { id: 'keep', name: 'CORP Account - Business Adv Unlimited Cash Rewards - 9215', mask: '9215', type: 'credit' });
+    acct(db, { id: 'dup', name: 'Business Adv Unlimited Cash Rewards - 1654', mask: '1654', type: 'credit' });
+  };
+
+  it('refuses a mask mismatch by default — a different number is normally a different account', () => {
+    pair();
+    expect(() => mergeAccounts(db, 'keep', 'dup')).toThrow(/mask mismatch/);
+  });
+
+  it('still refuses when institution or type differ, assertion or not', () => {
+    acct(db, { id: 'keep', inst: 'Bank of America', mask: '9215', type: 'credit' });
+    acct(db, { id: 'dup', inst: 'American Express', mask: '1654', type: 'credit' });
+    expect(() => mergeAccounts(db, 'keep', 'dup', { assertSameCard: 'same plastic' }))
+      .toThrow(/institution\/type mismatch/);
+  });
+
+  it('merges when a human asserts the two masks are one card', () => {
+    pair();
+    txn(db, 't1', 'dup', '2026-08-26', -115853, 'FACEBK *V7W4C56MD4');   // twin
+    txn(db, 't2', 'keep', '2026-08-26', -115853, 'FACEBK *V7W4C56MD4');  // twin
+    txn(db, 't3', 'dup', '2026-07-15', -50000, 'FACEBOOKAD* UNIQUE');    // unique history
+    const r = mergeAccounts(db, 'keep', 'dup', { assertSameCard: 'BoA: 9215 is the account number of card 1654' });
+    expect(r.merged).toBe(true);
+    expect(r.deduped).toBe(1);   // the double-counted copy is gone
+    expect(r.moved).toBe(1);     // unique history is preserved on the survivor
+    const dup: any = db.prepare('SELECT status, merged_into FROM bank_accounts WHERE id = ?').get('dup');
+    expect(dup.status).toBe('merged');
+    expect(dup.merged_into).toBe('keep');
+    const left = db.prepare('SELECT COUNT(*) n FROM bank_transactions WHERE bank_account_id = ?').get('dup') as any;
+    expect(left.n).toBe(0);
+  });
+
+  it('records the assertion and both masks in the audit log', () => {
+    pair();
+    mergeAccounts(db, 'keep', 'dup', { assertSameCard: 'confirmed by Moe', actor: 'admin' });
+    const log: any = db.prepare("SELECT details FROM activity_log WHERE action = 'account_merge'").get();
+    const d = JSON.parse(log.details);
+    expect(d.same_card_assertion).toBe('confirmed by Moe');
+    expect(d.keep_mask).toBe('9215');
+    expect(d.dup_mask).toBe('1654');
+  });
+
+  it('the losing mask still resolves to the survivor after the merge', async () => {
+    const { getCardAliasMap } = await import('./funding-cards');
+    pair();
+    mergeAccounts(db, 'keep', 'dup', { assertSameCard: 'one card' });
+    const aliases = getCardAliasMap(db);
+    expect(aliases.get('1654')).toBe('keep');   // Meta's label finds the real account
+    expect(aliases.get('9215')).toBe('keep');
+  });
+
+  it('a live mask always beats an inherited one', async () => {
+    const { getCardAliasMap } = await import('./funding-cards');
+    pair();
+    mergeAccounts(db, 'keep', 'dup', { assertSameCard: 'one card' });
+    // a genuinely different, live card later takes the ··1654 mask
+    acct(db, { id: 'other', name: 'Some Other Card', mask: '1654', type: 'credit' });
+    expect(getCardAliasMap(db).get('1654')).toBe('other');
+  });
+});

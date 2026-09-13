@@ -108,15 +108,23 @@ export function scanDuplicateAccounts(db: Database.Database): { proposals: Merge
  *  - both provider connections are preserved in account_connections
  *  - the dup row survives as status='merged' (audit), invisible everywhere
  *  Idempotent: merging an already-merged row is a no-op. */
-export function mergeAccounts(db: Database.Database, keepId: string, dupId: string, opts: { dryRun?: boolean; actor?: string } = {}) {
+export function mergeAccounts(db: Database.Database, keepId: string, dupId: string, opts: { dryRun?: boolean; actor?: string; assertSameCard?: string } = {}) {
   ensureIdentitySchema(db);
   const keep: any = db.prepare('SELECT * FROM bank_accounts WHERE id = ?').get(keepId);
   const dup: any = db.prepare('SELECT * FROM bank_accounts WHERE id = ?').get(dupId);
   if (!keep || !dup) throw new Error('account not found');
   if (dup.status === 'merged') return { merged: false, reason: 'already merged', moved: 0, deduped: 0 };
   if (keep.status === 'merged') throw new Error('cannot merge into a merged account');
-  if (keep.institution_name !== dup.institution_name || keep.last_four !== dup.last_four || keep.account_type !== dup.account_type) {
-    throw new Error('refusing merge: institution/mask/type mismatch — not provably the same real account');
+  if (keep.institution_name !== dup.institution_name || keep.account_type !== dup.account_type) {
+    throw new Error('refusing merge: institution/type mismatch — not provably the same real account');
+  }
+  // A differing mask is normally proof these are different accounts, so it stays
+  // a refusal. The exception is real and specific: some issuers (Bank of America
+  // consistently) expose one card twice — once under the card number, once under
+  // the account number. Only a human who knows the card can assert that, so it
+  // takes an explicit reason and never happens automatically.
+  if (keep.last_four !== dup.last_four && !opts.assertSameCard) {
+    throw new Error(`refusing merge: mask mismatch ··${keep.last_four} vs ··${dup.last_four} — pass assertSameCard with a reason if these are one card (e.g. a BoA card-number/account-number pair)`);
   }
   if (dup.status === 'active' && keep.status !== 'active') throw new Error('refusing merge: dup is active but keep is not — direction looks wrong');
 
@@ -160,7 +168,9 @@ export function mergeAccounts(db: Database.Database, keepId: string, dupId: stri
     db.prepare(`INSERT INTO activity_log (id, employee_id, action, entity_type, entity_id, details, created_at)
       VALUES (?, NULL, 'account_merge', 'bank_account', ?, ?, datetime('now'))`)
       .run(crypto.randomUUID(), dupId,
-        JSON.stringify({ actor: opts.actor || 'system', merged_into: keepId, txns_moved: moved, txns_deduped: deduped, dup_balance_cents: dup.balance_available_cents }));
+        JSON.stringify({ actor: opts.actor || 'system', merged_into: keepId, txns_moved: moved, txns_deduped: deduped, dup_balance_cents: dup.balance_available_cents,
+          keep_mask: keep.last_four, dup_mask: dup.last_four,
+          ...(keep.last_four !== dup.last_four ? { same_card_assertion: opts.assertSameCard } : {}) }));
   };
   if (opts.dryRun) {
     // simulate counts without writing
