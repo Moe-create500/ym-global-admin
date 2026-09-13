@@ -19,7 +19,7 @@ function freshDb(): Database.Database {
       date TEXT, description TEXT, amount_cents INTEGER, status TEXT);
     CREATE TABLE txn_links (txn_id TEXT PRIMARY KEY, pair_txn_id TEXT, class TEXT);
     CREATE TABLE card_statements (bank_account_id TEXT PRIMARY KEY, statement_balance_cents INTEGER);
-    CREATE TABLE fb_funding_cards (last4 TEXT PRIMARY KEY, bank_account_id TEXT);
+    CREATE TABLE fb_funding_cards (last4 TEXT PRIMARY KEY, bank_account_id TEXT, learned_from TEXT);
     CREATE TABLE activity_log (id TEXT PRIMARY KEY, employee_id TEXT, action TEXT, entity_type TEXT, entity_id TEXT, details TEXT, ip_address TEXT, created_at TEXT);
   `);
   ensureIdentitySchema(db);
@@ -217,8 +217,8 @@ describe('same-card merge across differing masks (BoA card no. vs account no.)',
     pair();
     mergeAccounts(db, 'keep', 'dup', { assertSameCard: 'one card' });
     const aliases = getCardAliasMap(db);
-    expect(aliases.get('1654')).toBe('keep');   // Meta's label finds the real account
-    expect(aliases.get('9215')).toBe('keep');
+    expect(aliases.get('1654')).toEqual(['keep']);   // Meta's label finds the real account
+    expect(aliases.get('9215')).toEqual(['keep']);
   });
 
   it('a live mask always beats an inherited one', async () => {
@@ -227,6 +227,48 @@ describe('same-card merge across differing masks (BoA card no. vs account no.)',
     mergeAccounts(db, 'keep', 'dup', { assertSameCard: 'one card' });
     // a genuinely different, live card later takes the ··1654 mask
     acct(db, { id: 'other', name: 'Some Other Card', mask: '1654', type: 'credit' });
-    expect(getCardAliasMap(db).get('1654')).toBe('other');
+    expect(getCardAliasMap(db).get('1654')).toEqual(['other']);
+  });
+});
+
+describe('card alias resolution (mask is not an account)', () => {
+  let db: Database.Database;
+  beforeEach(() => { db = freshDb(); });
+
+  const alias = (l4: string, acctId: string) =>
+    db.prepare('INSERT INTO fb_funding_cards (last4, bank_account_id, learned_from) VALUES (?, ?, ?)')
+      .run(l4, acctId, 'test');
+
+  it('an Amex supplementary card resolves to the account it bills to', async () => {
+    const { getCardAliasMap } = await import('./funding-cards');
+    acct(db, { id: 'plat', name: 'Business Platinum Card®', mask: '1009', type: 'credit' });
+    alias('2976', 'plat');   // ··2976 is a different plastic on the SAME account
+    const m = getCardAliasMap(db);
+    expect(m.get('2976')).toEqual(['plat']);
+    expect(m.get('1009')).toEqual(['plat']);
+  });
+
+  it('one mask on two genuinely different accounts keeps BOTH — never collapses', async () => {
+    const { getCardAliasMap } = await import('./funding-cards');
+    // Amex Platinum and Gold both really do end ··1009
+    acct(db, { id: 'plat', name: 'Business Platinum Card®', mask: '1009', type: 'credit' });
+    acct(db, { id: 'gold', name: 'Business Gold Card', mask: '1009', type: 'credit' });
+    const ids = getCardAliasMap(db).get('1009')!;
+    expect(ids).toHaveLength(2);
+    expect(ids.sort()).toEqual(['gold', 'plat']);
+  });
+
+  it('a live account beats a stale alias pointing elsewhere', async () => {
+    const { getCardAliasMap } = await import('./funding-cards');
+    acct(db, { id: 'plat', name: 'Business Platinum Card®', mask: '1009', type: 'credit' });
+    acct(db, { id: 'own', name: 'Its Own Card', mask: '3304', type: 'credit' });
+    alias('3304', 'plat');   // stale: ··3304 now has its own account
+    expect(getCardAliasMap(db).get('3304')).toEqual(['own']);
+  });
+
+  it('checking accounts never enter the card map', async () => {
+    const { getCardAliasMap } = await import('./funding-cards');
+    acct(db, { id: 'chk', name: 'Checking', mask: '4242', type: 'depository' });
+    expect(getCardAliasMap(db).has('4242')).toBe(false);
   });
 });

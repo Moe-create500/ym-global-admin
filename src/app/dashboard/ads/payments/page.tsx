@@ -72,6 +72,7 @@ function InvoiceDashboardContent() {
   const [cardPaidTotals, setCardPaidTotals] = useState<CardPaidTotal[]>([]);
   const [bankRecon, setBankRecon] = useState<any>({});
   const [chargeRecon, setChargeRecon] = useState<any>({});
+  const [cardAccounts, setCardAccounts] = useState<Record<string, { last4: string; name: string }[]>>({});
   const [cardPayments, setCardPayments] = useState<CardPaymentLog[]>([]);
   const [pendingCents, setPendingCents] = useState<Record<string, number>>({});
   const [totalPendingCents, setTotalPendingCents] = useState(0);
@@ -165,6 +166,7 @@ function InvoiceDashboardContent() {
     if (seq !== loadSeqRef.current) return; // superseded by a newer load — drop
 
     setChargeRecon(invoiceData.chargeRecon || {});
+    setCardAccounts(invoiceData.cardAccounts || {});
     setAdPayments(invoiceData.payments || []);
     setCardSummary(invoiceData.cardSummary || []);
     setPlatformSummary(invoiceData.platformSummary || []);
@@ -527,6 +529,11 @@ function InvoiceDashboardContent() {
               {cardSummary.filter(c => !hiddenCards.includes(c.card_last4)).map(card => {
                 const paid = paidMap[card.card_last4] || 0;
                 const balance = (card.total_cents || 0) - paid;
+                // Meta didn't name a funding source for these, so we never
+                // learned the card. It is not a card with a balance owing —
+                // say so plainly instead of dressing it up as one.
+                const unidentified = !card.card_last4;
+                const billsTo = card.card_last4 ? cardAccounts[card.card_last4] : undefined;
                 return (
                   <div
                     key={card.card_last4}
@@ -540,14 +547,30 @@ function InvoiceDashboardContent() {
                     >
                       <div className="flex items-center justify-between mb-2">
                         <div>
-                          <p className="text-xs text-slate-400">{card.payment_method?.split('····')[0]?.trim() || 'Card'}</p>
-                          <p className="text-sm font-semibold text-white">····{card.card_last4}</p>
+                          <p className="text-xs text-slate-400">
+                            {unidentified ? 'Unidentified' : (card.payment_method?.split('····')[0]?.trim() || 'Card')}
+                          </p>
+                          <p className={`text-sm font-semibold ${unidentified ? 'text-slate-400' : 'text-white'}`}>
+                            {unidentified ? 'card not reported by Meta' : `····${card.card_last4}`}
+                          </p>
+                          {billsTo && (
+                            <p className="text-[10px] text-slate-500 mt-0.5" title={billsTo.map(a => a.name).join(' / ')}>
+                              bills to {billsTo.map(a => `····${a.last4}`).join(' / ')}
+                            </p>
+                          )}
                         </div>
-                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
-                          balance <= 0 ? 'bg-emerald-500/10 text-emerald-300' : 'bg-amber-500/10 text-amber-300'
-                        }`}>
-                          {balance <= 0 ? 'Paid' : 'Due'}
-                        </span>
+                        {unidentified ? (
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-500/10 text-slate-400"
+                            title="Meta charged these without naming a funding source, so the card was never learned — this is not a card balance">
+                            unknown card
+                          </span>
+                        ) : (
+                          <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
+                            balance <= 0 ? 'bg-emerald-500/10 text-emerald-300' : 'bg-amber-500/10 text-amber-300'
+                          }`}>
+                            {balance <= 0 ? 'Paid' : 'Due'}
+                          </span>
+                        )}
                       </div>
                       <div className="grid grid-cols-3 gap-2 text-center">
                         <div>
@@ -560,7 +583,7 @@ function InvoiceDashboardContent() {
                         </div>
                         <div>
                           <p className="text-[10px] text-slate-500">Balance</p>
-                          <p className={`text-xs font-semibold tabular-nums ${balance > 0 ? 'text-amber-300' : 'text-emerald-300'}`}>{cents(balance)}</p>
+                          <p className={`text-xs font-semibold tabular-nums ${unidentified ? 'text-slate-400' : (balance > 0 ? 'text-amber-300' : 'text-emerald-300')}`}>{cents(balance)}</p>
                         </div>
                       </div>
                     </button>

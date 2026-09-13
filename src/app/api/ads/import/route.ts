@@ -554,7 +554,26 @@ export async function GET(req: NextRequest) {
     }
   } catch { /* verification is best-effort — the invoice list must render */ }
 
-  return NextResponse.json({ payments, cardSummary, platformSummary, monthlyTotals, pendingCents, totalPendingCents, hiddenCards, chargeRecon });
+  // Which real account each mask bills to. A supplementary card (··2976) is a
+  // different plastic on someone else's account (Platinum ··1009) — showing it
+  // as a standalone card with its own balance invites the reader to treat one
+  // account's debt as several.
+  const cardAccounts: Record<string, { last4: string; name: string }[]> = {};
+  try {
+    const aliases = getCardAliasMap(db);
+    const acctById = new Map((db.prepare(
+      `SELECT id, last_four, COALESCE(account_name, institution_name, '') AS name FROM bank_accounts`
+    ).all() as any[]).map(a => [a.id, a]));
+    for (const [l4, ids] of aliases) {
+      const accts = ids.map(id => acctById.get(id)).filter(Boolean) as any[];
+      // only interesting when the mask isn't simply the account's own number
+      if (accts.length && !accts.some(a => a.last_four === l4)) {
+        cardAccounts[l4] = accts.map(a => ({ last4: a.last_four, name: a.name }));
+      }
+    }
+  } catch { /* decoration only — the card list must still render */ }
+
+  return NextResponse.json({ payments, cardSummary, platformSummary, monthlyTotals, pendingCents, totalPendingCents, hiddenCards, chargeRecon, cardAccounts });
 }
 
 // PATCH: reassign an invoice to another store (wrong-box fix), or toggle card visibility

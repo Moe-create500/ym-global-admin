@@ -346,17 +346,21 @@ function matchPaymentToBank(
   payment: PaymentRecord,
   bankTxns: BankTxnRecord[],
   usedIds: Set<string>,
-  cardAliases?: Map<string, string>
+  cardAliases?: Map<string, string[]>
 ): BankTxnRecord | null {
   const available = bankTxns.filter(b => !usedIds.has(b.id));
 
   // The mask the payment carries is whatever the ad platform saw — often the
-  // card number, while the bank posts against the account number. Resolve it to
-  // a real account so ··1654 still finds its charges sitting on ··9215; fall
-  // back to comparing masks directly when there is no alias to resolve through.
-  const aliasAccountId = cardAliases?.get(payment.card_last4);
+  // number on the plastic, while the bank posts against the account. Resolve it
+  // to the account(s) that could hold the charge, so ··1654 finds its charges on
+  // ··9215 and ··2976 finds its charges on the Platinum ··1009 it bills to. A
+  // mask can legitimately resolve to more than one account (Amex Platinum and
+  // Gold both end ··1009), so any of them counts. With nothing to resolve
+  // through, fall back to comparing masks directly.
+  const aliasAccountIds = cardAliases?.get(payment.card_last4);
   const sameCard = (b: BankTxnRecord) =>
-    aliasAccountId ? b.account_id === aliasAccountId : b.account_last4 === payment.card_last4;
+    aliasAccountIds?.length ? aliasAccountIds.includes(b.account_id)
+                            : b.account_last4 === payment.card_last4;
 
   // For card payments, look for outflows on the matching credit card account
   // Credit card charges show as negative amounts on credit card accounts
