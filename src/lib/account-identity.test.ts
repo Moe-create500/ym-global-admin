@@ -21,6 +21,7 @@ function freshDb(): Database.Database {
     CREATE TABLE card_statements (bank_account_id TEXT PRIMARY KEY, statement_balance_cents INTEGER);
     CREATE TABLE fb_funding_cards (last4 TEXT PRIMARY KEY, bank_account_id TEXT, learned_from TEXT);
     CREATE TABLE activity_log (id TEXT PRIMARY KEY, employee_id TEXT, action TEXT, entity_type TEXT, entity_id TEXT, details TEXT, ip_address TEXT, created_at TEXT);
+    CREATE TABLE classification_results (txn_id TEXT PRIMARY KEY, method TEXT, category TEXT, store_id TEXT);
   `);
   ensureIdentitySchema(db);
   return db;
@@ -270,5 +271,31 @@ describe('card alias resolution (mask is not an account)', () => {
     const { getCardAliasMap } = await import('./funding-cards');
     acct(db, { id: 'chk', name: 'Checking', mask: '4242', type: 'depository' });
     expect(getCardAliasMap(db).has('4242')).toBe(false);
+  });
+});
+
+describe('merge leaves no verdict behind', () => {
+  let db: Database.Database;
+  beforeEach(() => { db = freshDb(); });
+  const verdict = (txn: string, method: string) =>
+    db.prepare("INSERT INTO classification_results (txn_id, method, category) VALUES (?, ?, 'Ad Spend')").run(txn, method);
+
+  it("drops the copy's automatic verdict when the survivor has its own", () => {
+    acct(db, { id: 'keep', mask: '9215', type: 'credit' }); acct(db, { id: 'dup', mask: '1654', type: 'credit' });
+    txn(db, 'k1', 'keep', '2026-08-26', -115853, 'FACEBK *V7W4C56MD4'); verdict('k1', 'INVOICE_MATCH');
+    txn(db, 'd1', 'dup', '2026-08-26', -115853, 'FACEBK *V7W4C56MD4'); verdict('d1', 'INVOICE_MATCH');
+    mergeAccounts(db, 'keep', 'dup', { assertSameCard: 'one card' });
+    const orphans = db.prepare('SELECT COUNT(*) n FROM classification_results r WHERE NOT EXISTS (SELECT 1 FROM bank_transactions t WHERE t.id = r.txn_id)').get() as any;
+    expect(orphans.n).toBe(0);
+    expect((db.prepare("SELECT method FROM classification_results WHERE txn_id='k1'").get() as any).method).toBe('INVOICE_MATCH');
+  });
+
+  it("moves a human's MANUAL verdict onto the survivor when the survivor has none", () => {
+    acct(db, { id: 'keep', mask: '9215', type: 'credit' }); acct(db, { id: 'dup', mask: '1654', type: 'credit' });
+    txn(db, 'k1', 'keep', '2026-08-26', -115853, 'FACEBK *V7W4C56MD4');
+    txn(db, 'd1', 'dup', '2026-08-26', -115853, 'FACEBK *V7W4C56MD4'); verdict('d1', 'MANUAL');
+    mergeAccounts(db, 'keep', 'dup', { assertSameCard: 'one card' });
+    expect((db.prepare("SELECT method FROM classification_results WHERE txn_id='k1'").get() as any).method).toBe('MANUAL');
+    expect(db.prepare("SELECT COUNT(*) n FROM classification_results WHERE txn_id='d1'").get()).toMatchObject({ n: 0 });
   });
 });

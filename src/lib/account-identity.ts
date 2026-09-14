@@ -138,6 +138,19 @@ export function mergeAccounts(db: Database.Database, keepId: string, dupId: stri
         // same economic event exists on the canonical — drop the copy, clean lineage
         db.prepare('UPDATE txn_links SET pair_txn_id = NULL WHERE pair_txn_id = ?').run(t.id);
         db.prepare('DELETE FROM txn_links WHERE txn_id = ?').run(t.id);
+        // The copy's classification verdict must not outlive it. A human's
+        // MANUAL verdict moves to the survivor if the survivor has none; any
+        // other verdict is dropped — the survivor carries its own. (Found
+        // 2026-09-14: two merges left 11 verdicts pointing at deleted rows.)
+        try {
+          const surv = db.prepare('SELECT method FROM classification_results WHERE txn_id = ?').get(twin.id) as any;
+          const mine = db.prepare('SELECT method FROM classification_results WHERE txn_id = ?').get(t.id) as any;
+          if (mine && mine.method === 'MANUAL' && !surv) {
+            db.prepare('UPDATE classification_results SET txn_id = ? WHERE txn_id = ?').run(twin.id, t.id);
+          } else {
+            db.prepare('DELETE FROM classification_results WHERE txn_id = ?').run(t.id);
+          }
+        } catch { /* schema without classification_results (tests, early DBs) */ }
         db.prepare('DELETE FROM bank_transactions WHERE id = ?').run(t.id);
         deduped++;
       } else {
