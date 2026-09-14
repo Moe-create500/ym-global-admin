@@ -169,19 +169,45 @@ async function classifyTransaction(db: Database.Database, txn: any, opts: { allo
   // window + the descriptor actually naming the platform.
   if (txn.amount_cents < 0) {
     const descL = (txn.description || '').toLowerCase();
-    const adInv: any = db.prepare(`
-      SELECT id, platform, date FROM ad_payments
-      WHERE amount_cents = ? AND ABS(JULIANDAY(date) - JULIANDAY(?)) <= 3 LIMIT 1`)
-      .get(Math.abs(txn.amount_cents), txn.date);
-    if (adInv) {
-      const platOk = adInv.platform === 'google'
-        ? /google|adword/.test(descL)
-        : /facebk|facebook|meta|fb /.test(descL);
+    // Take EVERY invoice in the window, not `LIMIT 1`. The store the charge
+    // belongs to is sitting on the invoice, and dropping it left the charge
+    // categorised as Ad Spend but unpaired — 81 card charges, $54,024.09, that
+    // the system already had the answer for. The Shopify branch below has always
+    // carried store_id through; this one never did.
+    //
+    // Round top-up amounts collide badly ($2,000 appears on invoices for several
+    // stores at once), so assert the store ONLY when every candidate agrees.
+    // Where they disagree it stays a suggestion — the 100%-or-nothing rule, and
+    // the same class of mistake as the Marroomi payout misroute.
+    const adInvs: any[] = db.prepare(`
+      SELECT id, platform, date, store_id FROM ad_payments
+      WHERE amount_cents = ? AND ABS(JULIANDAY(date) - JULIANDAY(?)) <= 3`)
+      .all(Math.abs(txn.amount_cents), txn.date);
+    const isGoogleDesc = /google|adword/.test(descL);
+    const adMatches = adInvs.filter(i => (i.platform === 'google') === isGoogleDesc);
+    if (adMatches.length) {
+      const platOk = isGoogleDesc || /facebk|facebook|meta|fb /.test(descL);
       if (platOk) {
+        const adInv = adMatches[0];
+        const stores = [...new Set(adMatches.map(i => i.store_id).filter(Boolean))];
+        // Three distinct outcomes, and only one of them is a conflict:
+        //   one store   -> assert it, this is the whole point
+        //   no store    -> the invoice never carried one; categorise as before
+        //                  and leave the store alone. Not a conflict, not review.
+        //   many stores -> a round top-up amount shared across stores. Assert
+        //                  nothing and suggest nothing; a wrong store is worse
+        //                  than none. Flag it for a human.
+        const conflicted = stores.length > 1;
         return { ...base, category: 'Ad Spend', subcategory: adInv.platform === 'google' ? 'Google Ads' : 'Meta Ads',
+          ...(stores.length === 1 ? { store_id: stores[0] } : {}),
           method: 'INVOICE_MATCH', confidence: 0.98,
-          reason: `Amount matches ${adInv.platform} ad invoice dated ${adInv.date} and descriptor names the platform`,
-          evidence: [{ type: 'ad_invoice', reference: adInv.id }], needs_review: false };
+          reason: stores.length === 1
+            ? `Amount matches ${adInv.platform} ad invoice dated ${adInv.date}, descriptor names the platform, and all ${adMatches.length} matching invoice(s) belong to one store`
+            : conflicted
+              ? `Amount matches ${adInv.platform} ad invoice dated ${adInv.date} and descriptor names the platform, but ${stores.length} stores share this amount in the window — store left unassigned`
+              : `Amount matches ${adInv.platform} ad invoice dated ${adInv.date} and descriptor names the platform`,
+          evidence: adMatches.slice(0, 5).map(i => ({ type: 'ad_invoice', reference: i.id })),
+          needs_review: conflicted };
       }
     }
     if (/shopify/.test(descL)) {

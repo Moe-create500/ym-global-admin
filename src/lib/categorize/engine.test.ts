@@ -14,7 +14,7 @@ function freshDb(): Database.Database {
       institution_name TEXT, last_four TEXT, company TEXT, store_id TEXT, nickname TEXT, account_name TEXT);
     CREATE TABLE bank_transactions (id TEXT PRIMARY KEY, bank_account_id TEXT, date TEXT, description TEXT,
       amount_cents INTEGER, status TEXT, custom_category TEXT, category TEXT, counterparty TEXT, teller_transaction_id TEXT);
-    CREATE TABLE ad_payments (id TEXT PRIMARY KEY, platform TEXT, date TEXT, amount_cents INTEGER);
+    CREATE TABLE ad_payments (id TEXT PRIMARY KEY, platform TEXT, date TEXT, amount_cents INTEGER, store_id TEXT);
     CREATE TABLE shopify_invoices (id TEXT PRIMARY KEY, store_id TEXT, date TEXT, total_cents INTEGER);
     CREATE TABLE merchant_store_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT, store_id TEXT,
       class TEXT, source TEXT DEFAULT 'user', enabled INTEGER DEFAULT 1, direction TEXT, note TEXT, created_at TEXT, last_used_at TEXT);
@@ -311,5 +311,59 @@ describe('100%-or-nothing policy (2026-09-09)', () => {
       const r = await categorizeTransaction(db, t, { allowLlm: false });
       if (r.category) expect(r.confidence).toBeGreaterThanOrEqual(0.95);
     }
+  });
+});
+
+describe('ad invoice → store pairing (the store was being dropped)', () => {
+  let db: Database.Database;
+  beforeEach(() => { db = freshDb(); });
+
+  const inv = (id: string, amt: number, store: string | null, plat = 'facebook', date = '2026-09-01') =>
+    db.prepare('INSERT INTO ad_payments (id, platform, date, amount_cents, store_id) VALUES (?,?,?,?,?)')
+      .run(id, plat, date, amt, store);
+
+  it('asserts the store when one invoice matches', async () => {
+    inv('inv1', 13707, 'store-elvris');
+    const t = txn(db, { id: 't1', acct: 'chk', desc: 'FACEBK *4NHTR5228', amt: -13707, date: '2026-09-01' });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.category).toBe('Ad Spend');
+    expect(r.store_id).toBe('store-elvris');
+    expect(r.needs_review).toBe(false);
+  });
+
+  it('asserts the store when several invoices agree', async () => {
+    inv('inv1', 200000, 'store-areya');
+    inv('inv2', 200000, 'store-areya', 'facebook', '2026-09-02');
+    const t = txn(db, { id: 't1', acct: 'chk', desc: 'FACEBK *ABC', amt: -200000, date: '2026-09-01' });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.store_id).toBe('store-areya');
+    expect(r.needs_review).toBe(false);
+  });
+
+  it('assigns NO store when a round amount is shared by two stores', async () => {
+    inv('inv1', 200000, 'store-areya');
+    inv('inv2', 200000, 'store-marroomi', 'facebook', '2026-09-02');
+    const t = txn(db, { id: 't1', acct: 'chk', desc: 'FACEBK *ABC', amt: -200000, date: '2026-09-01' });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.category).toBe('Ad Spend');       // still categorised
+    expect(r.store_id).toBeFalsy();            // but never guessed
+    expect(r.needs_review).toBe(true);
+    expect(r.reason).toMatch(/2 stores share this amount/);
+  });
+
+  it('an invoice with no store is not a conflict', async () => {
+    inv('inv1', 13707, null);
+    const t = txn(db, { id: 't1', acct: 'chk', desc: 'FACEBK *X', amt: -13707, date: '2026-09-01' });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.category).toBe('Ad Spend');
+    expect(r.store_id).toBeFalsy();
+    expect(r.needs_review).toBe(false);
+  });
+
+  it('a google descriptor never pairs to a facebook invoice', async () => {
+    inv('inv1', 5000, 'store-elvris', 'facebook');
+    const t = txn(db, { id: 't1', acct: 'chk', desc: 'GOOGLE ADS 123', amt: -5000, date: '2026-09-01' });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.store_id).toBeFalsy();
   });
 });
