@@ -367,3 +367,37 @@ describe('ad invoice → store pairing (the store was being dropped)', () => {
     expect(r.store_id).toBeFalsy();
   });
 });
+
+describe('Shopify on a CREDIT CARD is an app fee, never a payout', () => {
+  let db: Database.Database;
+  beforeEach(() => { db = freshDb(); acct(db, 'card', 'credit', 'American Express'); });
+
+  it('negative with a matching app invoice → Software + the store', async () => {
+    db.prepare("INSERT INTO shopify_invoices (id, store_id, date, total_cents) VALUES ('inv1','store-areya','2026-09-01',6247)").run();
+    const t = txn(db, { id: 't1', acct: 'card', desc: 'SHOPIFY* 525647583', amt: -6247, date: '2026-09-01' });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r).toMatchObject({ category: 'Software', method: 'INVOICE_MATCH', store_id: 'store-areya', needs_review: false });
+  });
+
+  it('negative with NO invoice → Software, store deliberately unassigned', async () => {
+    const t = txn(db, { id: 't1', acct: 'card', desc: 'SHOPIFY* 511839402', amt: -14995, date: '2026-04-05' });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.category).toBe('Software');
+    expect(r.store_id).toBeFalsy();
+    expect(r.needs_review).toBe(false);
+  });
+
+  it('positive on a card is a refunded fee, NOT a Shopify Payout', async () => {
+    const t = txn(db, { id: 't1', acct: 'card', desc: 'SHOPIFY* 537715019', amt: 5999, date: '2026-06-13' });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.category).toBe('Software');
+    expect(r.category).not.toBe('Shopify Payout');
+  });
+
+  it('a positive Shopify line on CHECKING is still a payout', async () => {
+    acct(db, 'chk2', 'depository', 'Bank of America');
+    const t = txn(db, { id: 't1', acct: 'chk2', desc: 'Shopify Payments payout', amt: 84431, date: '2026-09-11' });
+    const r = await categorizeTransaction(db, t, { allowLlm: false });
+    expect(r.category).toBe('Shopify Payout');
+  });
+});
