@@ -28,6 +28,12 @@ export interface LoggedPayment {
   date: string;          // YYYY-MM-DD
   amount_cents: number;  // positive = amount paid
   card_last4: string;    // free text from the UI: "1654", "Amex - 1009", "paypal"
+  /** Institution of the card the mask resolves to (from bank_accounts). A
+   *  checking debit naming a different bank can then never clear this log. */
+  institution?: string | null;
+  /** Every mask the resolved card answers to (its own + merged twins), so a
+   *  "payment to CRD 9215" debit clears a payment logged against ··1654. */
+  masks?: string[];
 }
 
 export interface BankRow {
@@ -61,6 +67,22 @@ export function maskOf(cardLabel: string | null | undefined): string | null {
   return m ? m[1] : null;
 }
 
+/** A checking debit is amount-only evidence, so it must not contradict the
+ *  card: an "AMERICAN EXPRESS … ACH PMT" can't clear a BofA card, and a
+ *  "payment to CRD 0512" can't clear a payment headed to ··9215. */
+export function debitFitsCard(description: string, log: Pick<LoggedPayment, 'institution' | 'masks' | 'card_last4'>): boolean {
+  const inst = (log.institution || '').toLowerCase();
+  const mentionsAmex = /AMERICAN EXPRESS|AMEX/i.test(description);
+  const crd = description.match(/\bCRD\s*(\d{4})\b/i);
+  if (mentionsAmex && inst && !inst.includes('american express')) return false;
+  if (crd) {
+    if (inst.includes('american express')) return false;
+    const masks = new Set([...(log.masks || []), maskOf(log.card_last4) || '']);
+    if (!masks.has(crd[1])) return false;
+  }
+  return true;
+}
+
 const dayNum = (d: string) => Math.round(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) / 86400000);
 
 export function reconcileLoggedPayments(
@@ -90,7 +112,7 @@ export function reconcileLoggedPayments(
         if (r.amount_cents > 0 && cardIds.has(r.bank_account_id) && CARD_PAYMENT_CREDIT.test(desc)) {
           cands.push({ logId: lg.id, row: r, via: 'card_credit', gap: Math.abs(lag) });
         }
-      } else if (r.amount_cents < 0 && CARD_PAYMENT_DEBIT.test(desc)) {
+      } else if (r.amount_cents < 0 && CARD_PAYMENT_DEBIT.test(desc) && debitFitsCard(desc, lg)) {
         cands.push({ logId: lg.id, row: r, via: 'checking_debit', gap: Math.abs(lag) });
       }
     }
@@ -139,6 +161,36 @@ export interface InFlightRow {
 
 type LogWithNotes = LoggedPayment & { notes: string | null; store_name: string | null };
 
+/** BofA child cards ("YM CREDIT ··0775") bill to a parent line ("CORP Account
+ *  - YM CREDIT LINE ··0512"): the payment credit lands on the LINE, never the
+ *  child. Same family rule as the Credit Cards page. Returns the alias map
+ *  with each child's mask also resolving to its line. */
+export function withParentLines(db: DatabaseType.Database, aliases: Map<string, string[]>): Map<string, string[]> {
+  const accts: any[] = db.prepare(`
+    SELECT id, account_name FROM bank_accounts WHERE account_type = 'credit' AND status = 'active'
+  `).all();
+  const isLine = (n: string) => /^CORP Account/i.test(n || '');
+  const fam = (n: string) => String(n || '').replace(/^CORP Account - /i, '').replace(/ LINE$/i, '').slice(0, 14).toLowerCase();
+  const lineByFam = new Map<string, string>();
+  for (const a of accts) if (isLine(a.account_name)) lineByFam.set(fam(a.account_name), a.id);
+  const parentOf = new Map<string, string>();
+  for (const a of accts) {
+    if (isLine(a.account_name)) continue;
+    const line = lineByFam.get(fam(a.account_name));
+    if (line) parentOf.set(a.id, line);
+  }
+  const out = new Map<string, string[]>();
+  for (const [mask, ids] of aliases) {
+    const all = [...ids];
+    for (const id of ids) {
+      const p = parentOf.get(id);
+      if (p && !all.includes(p)) all.push(p);
+    }
+    out.set(mask, all);
+  }
+  return out;
+}
+
 /** Every active logged payment in the window (all stores) with its verdict. */
 function reconcileWindow(db: DatabaseType.Database, days: number): { logs: LogWithNotes[]; recon: Map<string, Reconciled>; aliases: Map<string, string[]> } {
   const logs: LogWithNotes[] = db.prepare(`
@@ -148,8 +200,35 @@ function reconcileWindow(db: DatabaseType.Database, days: number): { logs: LogWi
       AND COALESCE(cp.status, 'active') = 'active'
     ORDER BY cp.date DESC
   `).all(`-${days} days`) as any[];
-  const aliases = getCardAliasMap(db);
+  const aliases = withParentLines(db, getCardAliasMap(db));
   if (!logs.length) return { logs, recon: new Map(), aliases };
+
+  // Institution + every mask of the card each log resolves to (own mask plus
+  // merged twins), so the checking-debit guard can reject contradictions.
+  const acctInfo = new Map<string, { institution: string | null; masks: Set<string> }>();
+  for (const a of db.prepare(`
+    SELECT id, institution_name, last_four, merged_into FROM bank_accounts
+    WHERE account_type = 'credit' AND last_four IS NOT NULL AND last_four != ''
+  `).all() as any[]) {
+    const key = a.merged_into || a.id;
+    const cur = acctInfo.get(key) || { institution: null, masks: new Set<string>() };
+    cur.masks.add(a.last_four);
+    if (!a.merged_into) cur.institution = a.institution_name || null;
+    acctInfo.set(key, cur);
+  }
+  for (const lg of logs) {
+    const ids = aliases.get(maskOf(lg.card_last4) || '') || [];
+    const insts = new Set<string>();
+    const masks = new Set<string>();
+    for (const id of ids) {
+      const info = acctInfo.get(id);
+      if (!info) continue;
+      if (info.institution) insts.add(info.institution);
+      for (const m of info.masks) masks.add(m);
+    }
+    lg.institution = insts.size === 1 ? [...insts][0] : null;
+    lg.masks = [...masks];
+  }
 
   const bank: BankRow[] = db.prepare(`
     SELECT t.id, t.bank_account_id, a.account_type, t.date, t.amount_cents, t.status, t.description
