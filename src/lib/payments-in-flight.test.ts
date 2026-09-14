@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
-import { reconcileLoggedPayments, maskOf, getPaymentsInFlight, type BankRow, type LoggedPayment } from './payments-in-flight';
+import { reconcileLoggedPayments, maskOf, getPaymentsInFlight, getInFlightByAccount, type BankRow, type LoggedPayment } from './payments-in-flight';
 
 // Shapes copied from prod on 2026-09-14: Amex payments show as a checking
 // debit "AMERICAN EXPRESS DES:ACH PMT" + a card credit "ONLINE PAYMENT - THANK
@@ -119,10 +119,12 @@ describe('getPaymentsInFlight (db)', () => {
   it('returns only this store\'s uncleared active logs in the window, with the total', () => {
     const db = new Database(':memory:');
     db.exec(`
+      CREATE TABLE stores (id TEXT PRIMARY KEY, name TEXT);
       CREATE TABLE bank_accounts (id TEXT PRIMARY KEY, account_type TEXT, last_four TEXT, status TEXT DEFAULT 'active', merged_into TEXT);
       CREATE TABLE bank_transactions (id TEXT PRIMARY KEY, bank_account_id TEXT, date TEXT, description TEXT, amount_cents INTEGER, status TEXT);
       CREATE TABLE fb_funding_cards (last4 TEXT PRIMARY KEY, bank_account_id TEXT, learned_from TEXT);
       CREATE TABLE card_payments_log (id TEXT PRIMARY KEY, store_id TEXT, card_last4 TEXT, date TEXT, amount_cents INTEGER, notes TEXT, status TEXT DEFAULT 'active');
+      INSERT INTO stores VALUES ('elvris','Elvris'), ('areya','Areya');
       INSERT INTO bank_accounts VALUES ('boa-9215','credit','9215','active',NULL), ('boa-1654','credit','1654','merged','boa-9215'), ('chk','depository','7904','active',NULL);
     `);
     const d = (n: number) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
@@ -144,5 +146,39 @@ describe('getPaymentsInFlight (db)', () => {
     expect(r.totalCents).toBe(450000 + 47522);
     expect(r.rows.find(x => x.id === 'fresh2')!.notes).toBe('sent to shipsource');
     expect(getPaymentsInFlight(db, 'areya', 21).totalCents).toBe(573566);
+  });
+
+  it('groups in-flight payments by the card account they are headed to, across stores, via aliases', () => {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE stores (id TEXT PRIMARY KEY, name TEXT);
+      CREATE TABLE bank_accounts (id TEXT PRIMARY KEY, account_type TEXT, last_four TEXT, status TEXT DEFAULT 'active', merged_into TEXT);
+      CREATE TABLE bank_transactions (id TEXT PRIMARY KEY, bank_account_id TEXT, date TEXT, description TEXT, amount_cents INTEGER, status TEXT);
+      CREATE TABLE fb_funding_cards (last4 TEXT PRIMARY KEY, bank_account_id TEXT, learned_from TEXT);
+      CREATE TABLE card_payments_log (id TEXT PRIMARY KEY, store_id TEXT, card_last4 TEXT, date TEXT, amount_cents INTEGER, notes TEXT, status TEXT DEFAULT 'active');
+      INSERT INTO stores VALUES ('elvris','Elvris'), ('areya','Areya');
+      INSERT INTO bank_accounts VALUES ('boa-9215','credit','9215','active',NULL), ('boa-1654','credit','1654','merged','boa-9215'),
+        ('amex-gold','credit','1009','active',NULL), ('amex-plat','credit','1009','active',NULL), ('chk','depository','7904','active',NULL);
+    `);
+    const d = (n: number) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+    const ins = db.prepare('INSERT INTO card_payments_log (id, store_id, card_last4, date, amount_cents) VALUES (?,?,?,?,?)');
+    ins.run('a', 'elvris', '1654', d(1), 450000);
+    ins.run('b', 'elvris', '1654', d(1), 47522);
+    ins.run('c', 'areya', '9215', d(2), 100000);
+    ins.run('d', 'elvris', 'Amex - 1009', d(1), 55966);
+    ins.run('e', 'elvris', 'paypal', d(1), 38195);     // no card → not attributed anywhere
+
+    const by = getInFlightByAccount(db, 21);
+    const boa = by.get('boa-9215')!;
+    expect(boa.cents).toBe(450000 + 47522 + 100000);
+    expect(boa.ambiguous_cents).toBe(0);
+    expect(boa.rows.map(r => r.store_name).sort()).toEqual(['Areya', 'Elvris', 'Elvris']);
+    // both ··1009 accounts see the Amex payment, flagged ambiguous, never in `cents`
+    for (const id of ['amex-gold', 'amex-plat']) {
+      expect(by.get(id)!.cents).toBe(0);
+      expect(by.get(id)!.ambiguous_cents).toBe(55966);
+      expect(by.get(id)!.rows[0].ambiguous).toBe(true);
+    }
+    expect(by.size).toBe(3);
   });
 });

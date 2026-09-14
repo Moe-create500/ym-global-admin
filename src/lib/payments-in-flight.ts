@@ -137,16 +137,19 @@ export interface InFlightRow {
   notes: string | null;
 }
 
-/** One store's in-flight payments over the last `days` days, plus their total. */
-export function getPaymentsInFlight(db: DatabaseType.Database, storeId: string, days = 21): { rows: InFlightRow[]; totalCents: number } {
-  const logs: (LoggedPayment & { notes: string | null })[] = db.prepare(`
-    SELECT id, store_id, date, amount_cents, card_last4, notes
-    FROM card_payments_log
-    WHERE date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' AND date >= date('now', ?)
-      AND COALESCE(status, 'active') = 'active'
-    ORDER BY date DESC
+type LogWithNotes = LoggedPayment & { notes: string | null; store_name: string | null };
+
+/** Every active logged payment in the window (all stores) with its verdict. */
+function reconcileWindow(db: DatabaseType.Database, days: number): { logs: LogWithNotes[]; recon: Map<string, Reconciled>; aliases: Map<string, string[]> } {
+  const logs: LogWithNotes[] = db.prepare(`
+    SELECT cp.id, cp.store_id, cp.date, cp.amount_cents, cp.card_last4, cp.notes, s.name AS store_name
+    FROM card_payments_log cp LEFT JOIN stores s ON s.id = cp.store_id
+    WHERE cp.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' AND cp.date >= date('now', ?)
+      AND COALESCE(cp.status, 'active') = 'active'
+    ORDER BY cp.date DESC
   `).all(`-${days} days`) as any[];
-  if (!logs.length) return { rows: [], totalCents: 0 };
+  const aliases = getCardAliasMap(db);
+  if (!logs.length) return { logs, recon: new Map(), aliases };
 
   const bank: BankRow[] = db.prepare(`
     SELECT t.id, t.bank_account_id, a.account_type, t.date, t.amount_cents, t.status, t.description
@@ -155,13 +158,55 @@ export function getPaymentsInFlight(db: DatabaseType.Database, storeId: string, 
     WHERE t.date >= date('now', ?) AND a.status != 'merged'
   `).all(`-${days + LAG_BEFORE + 1} days`) as any[];
 
-  const recon = reconcileLoggedPayments(logs, bank, getCardAliasMap(db));
+  return { logs, recon: reconcileLoggedPayments(logs, bank, aliases), aliases };
+}
+
+const isInFlight = (r: Reconciled | undefined) => !!r && (r.status === 'too_recent' || r.status === 'not_taken');
+
+/** One store's in-flight payments over the last `days` days, plus their total. */
+export function getPaymentsInFlight(db: DatabaseType.Database, storeId: string, days = 21): { rows: InFlightRow[]; totalCents: number } {
+  const { logs, recon } = reconcileWindow(db, days);
   const rows: InFlightRow[] = [];
   for (const lg of logs) {
     if (lg.store_id !== storeId) continue;
-    const r = recon.get(lg.id)!;
-    if (r.status !== 'too_recent' && r.status !== 'not_taken') continue;
-    rows.push({ id: lg.id, date: lg.date, amount_cents: Math.abs(lg.amount_cents), card_last4: lg.card_last4, status: r.status, notes: lg.notes });
+    const r = recon.get(lg.id);
+    if (!isInFlight(r)) continue;
+    rows.push({ id: lg.id, date: lg.date, amount_cents: Math.abs(lg.amount_cents), card_last4: lg.card_last4, status: r!.status, notes: lg.notes });
   }
   return { rows, totalCents: rows.reduce((s, r) => s + r.amount_cents, 0) };
+}
+
+export interface CardInFlightRow extends InFlightRow {
+  store_name: string | null;
+  /** The logged mask resolves to more than one live account (both Amex end
+   *  ··1009) — shown on each candidate, never added into a projection. */
+  ambiguous: boolean;
+}
+
+export interface CardInFlight {
+  cents: number;            // unambiguous in-flight payments headed to this card
+  ambiguous_cents: number;  // payments that could be this card or a twin
+  rows: CardInFlightRow[];
+}
+
+/** In-flight payments grouped by the credit account they are headed to (all
+ *  stores — a card is paid from many stores). Keyed by bank_accounts.id. */
+export function getInFlightByAccount(db: DatabaseType.Database, days = 21): Map<string, CardInFlight> {
+  const { logs, recon, aliases } = reconcileWindow(db, days);
+  const out = new Map<string, CardInFlight>();
+  for (const lg of logs) {
+    const r = recon.get(lg.id);
+    if (!isInFlight(r)) continue;
+    const ids = aliases.get(maskOf(lg.card_last4) || '') || [];
+    if (!ids.length) continue;
+    const ambiguous = ids.length > 1;
+    const amount = Math.abs(lg.amount_cents);
+    for (const id of ids) {
+      const cur = out.get(id) || { cents: 0, ambiguous_cents: 0, rows: [] };
+      if (ambiguous) cur.ambiguous_cents += amount; else cur.cents += amount;
+      cur.rows.push({ id: lg.id, date: lg.date, amount_cents: amount, card_last4: lg.card_last4, status: r!.status, notes: lg.notes, store_name: lg.store_name, ambiguous });
+      out.set(id, cur);
+    }
+  }
+  return out;
 }

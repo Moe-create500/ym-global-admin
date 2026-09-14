@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import crypto from 'crypto';
 import { deriveConnectionState, evidenceFromPlaidItem, ensureConnectionSchema } from '@/lib/connection-state';
 import { findCanonicalMatch, ensureIdentitySchema } from '@/lib/account-identity';
+import { getInFlightByAccount, type CardInFlight } from '@/lib/payments-in-flight';
 
 export const dynamic = 'force-dynamic';
 
@@ -58,6 +59,12 @@ export async function GET(req: NextRequest) {
   );
   const today = new Date().toISOString().slice(0, 10);
 
+  // Payments already sent to a card that its feed hasn't shown yet — the
+  // balance the bank reports is about to drop by this much.
+  let inFlightByAccount = new Map<string, CardInFlight>();
+  try { inFlightByAccount = getInFlightByAccount(db, 21); }
+  catch (e) { console.error('[credit-cards] in-flight lookup failed:', (e as any)?.message); }
+
   // Same evidence-derived connection model as Banking: status from provider
   // signals only, freshness descriptive, last-known balances preserved.
   const cards = rawCards.map((a: any) => {
@@ -110,11 +117,22 @@ export async function GET(req: NextRequest) {
         updated_at: st.updated_at,
       };
     }
+    const inflight = inFlightByAccount.get(a.id) || null;
+    const owedCents = Math.abs(a.balance_ledger_cents || 0);
+    const in_flight = inflight ? {
+      cents: inflight.cents,
+      ambiguous_cents: inflight.ambiguous_cents,
+      rows: inflight.rows,
+      // What the card will read once the sent payments land (unambiguous only)
+      projected_owed_cents: a.balance_ledger_cents == null ? null : Math.max(owedCents - inflight.cents, 0),
+      projected_statement_remaining_cents: statement && !statement.paid ? Math.max(statement.remaining_cents - inflight.cents, 0) : null,
+    } : null;
     return {
       ...safe,
       item_id: item?.item_id || null,
       connection,
       balance_verified: verified,
+      in_flight,
       freshness: {
         balance_verified_at: a.balance_updated_at || null,
         transactions_through: a.bank_data_as_of || null,
@@ -141,6 +159,7 @@ export async function GET(req: NextRequest) {
     if (c.balance_verified) { verifiedOwed += c.balance_ledger_cents || 0; verifiedCount++; }
     else lastKnownOwed += c.balance_ledger_cents || 0;
   }
+  const inFlightTotal = cards.reduce((s: number, c: any) => s + (c.in_flight?.cents || 0), 0);
   const attention = cards.filter((c: any) => c.connection.requiresUserAction);
   const groups: any[] = [];
   const seen = new Set<string>();
@@ -166,6 +185,7 @@ export async function GET(req: NextRequest) {
       verified_cards: verifiedCount,
       card_count: cards.length,
       attention_count: attention.length,
+      in_flight_cents: inFlightTotal,
     },
   });
 }

@@ -32,6 +32,13 @@ interface CreditCard {
     min_satisfied: boolean;
     source: string;
   } | null;
+  in_flight?: {
+    cents: number;
+    ambiguous_cents: number;
+    projected_owed_cents: number | null;
+    projected_statement_remaining_cents: number | null;
+    rows: { id: string; date: string; amount_cents: number; card_last4: string; status: string; notes: string | null; store_name: string | null; ambiguous: boolean }[];
+  } | null;
 }
 
 interface RepairGroup {
@@ -88,7 +95,7 @@ function timeAgo(dateStr: string | null): string {
 
 export default function CreditCardsPage() {
   const [cards, setCards] = useState<CreditCard[]>([]);
-  const [summary, setSummary] = useState({ total_available_cents: 0, verified_owed_cents: 0, last_known_owed_cents: 0, verified_cards: 0, card_count: 0, attention_count: 0 });
+  const [summary, setSummary] = useState({ total_available_cents: 0, verified_owed_cents: 0, last_known_owed_cents: 0, verified_cards: 0, card_count: 0, attention_count: 0, in_flight_cents: 0 });
   const [repairGroups, setRepairGroups] = useState<RepairGroup[]>([]);
   const [drawerId, setDrawerId] = useState<string | null>(null);
   const [drawer, setDrawer] = useState<any>(null);
@@ -163,7 +170,7 @@ export default function CreditCardsPage() {
     const data = await res.json();
     setCards(data.cards || []);
     setRepairGroups(data.repair_groups || []);
-    setSummary(data.summary || { total_available_cents: 0, verified_owed_cents: 0, last_known_owed_cents: 0, verified_cards: 0, card_count: 0, attention_count: 0 });
+    setSummary(data.summary || { total_available_cents: 0, verified_owed_cents: 0, last_known_owed_cents: 0, verified_cards: 0, card_count: 0, attention_count: 0, in_flight_cents: 0 });
     setLoading(false);
   }
 
@@ -294,6 +301,9 @@ export default function CreditCardsPage() {
               <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">Owed (bank-verified)</p>
               <p className="text-3xl font-semibold text-white tabular-nums">{cents(summary.verified_owed_cents)}</p>
               <p className="text-[11px] text-slate-500 mt-1.5">{summary.verified_cards} of {summary.card_count} cards verified within 36h</p>
+              {summary.in_flight_cents > 0 && (
+                <p className="text-[11px] text-teal-300 mt-1">≈ {cents(summary.verified_owed_cents + summary.last_known_owed_cents - summary.in_flight_cents)} once {cents(summary.in_flight_cents)} in flight lands</p>
+              )}
             </div>
             {summary.last_known_owed_cents !== 0 && (
               <div>
@@ -377,11 +387,25 @@ export default function CreditCardsPage() {
                       <td className={`px-4 py-2.5 text-right tabular-nums font-medium ${card.balance_verified ? 'text-slate-100' : 'text-slate-400'}`}>
                         {cents(Math.abs(card.balance_ledger_cents || 0))}
                         {!card.balance_verified && <span className="block text-[10px] font-normal text-slate-500">last-known {timeAgo(card.freshness?.balance_verified_at || card.balance_updated_at)}</span>}
+                        {/* Payments sent to this card that its feed hasn't shown yet */}
+                        {card.in_flight && card.in_flight.cents > 0 && card.in_flight.projected_owed_cents != null && (
+                          <span className="block text-[10px] font-normal text-teal-300" title={card.in_flight.rows.filter(r => !r.ambiguous).map(r => `${r.date} ${cents(r.amount_cents)} from ${r.store_name || '?'}`).join('\n')}>
+                            ≈ {cents(card.in_flight.projected_owed_cents)} after {cents(card.in_flight.cents)} in flight
+                          </span>
+                        )}
+                        {card.in_flight && card.in_flight.ambiguous_cents > 0 && (
+                          <span className="block text-[10px] font-normal text-amber-300/80" title="Logged to a mask two live cards share — say which card and it will be projected">
+                            {cents(card.in_flight.ambiguous_cents)} in flight to ··{card.last_four} — this card or its twin?
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         {!card.statement || card.statement.balance_cents == null ? <span className="text-slate-600">—</span>
                           : card.statement.paid ? <span className="text-emerald-400 font-medium">PAID ✓</span>
                           : <span className="text-slate-100 font-medium">{cents(card.statement.remaining_cents)}</span>}
+                        {card.statement && !card.statement.paid && card.in_flight && card.in_flight.cents > 0 && card.in_flight.projected_statement_remaining_cents != null && (
+                          <span className="block text-[10px] text-teal-300">→ {card.in_flight.projected_statement_remaining_cents === 0 ? 'PAID once in-flight lands' : `${cents(card.in_flight.projected_statement_remaining_cents)} after in-flight`}</span>
+                        )}
                         {card.statement && !card.statement.paid && card.statement.payments_since_close_cents > 0 && (
                           <span className="block text-[10px] text-slate-500">of {cents(card.statement.balance_cents || 0)} · {cents(card.statement.payments_since_close_cents)} paid</span>
                         )}
@@ -604,6 +628,21 @@ export default function CreditCardsPage() {
                           </div>
                           <div className="flex justify-between"><span className="text-slate-400">Statement balance at close</span><span className="text-slate-200 tabular-nums">{st.balance_cents != null ? cents(st.balance_cents) : '—'}</span></div>
                           <div className="flex justify-between"><span className="text-slate-400">Payments since close</span><span className="text-slate-200 tabular-nums">{cents(st.payments_since_close_cents)}</span></div>
+                          {(() => {
+                            const inf = cards.find(c => c.id === drawerId)?.in_flight;
+                            if (!inf || !inf.rows.length) return null;
+                            return (
+                              <div className="pt-2 mt-2 border-t border-slate-700/50">
+                                <p className="text-[11px] uppercase tracking-wider text-teal-300/80 mb-1">Sent, not yet on the card</p>
+                                {inf.rows.map(r => (
+                                  <div key={r.id} className="flex justify-between">
+                                    <span className="text-slate-400">{r.date} · {r.store_name || '—'}{r.ambiguous ? ' · this card or its twin?' : ''}{r.status === 'not_taken' ? ' · 4+ days, check the bank' : ''}</span>
+                                    <span className="text-teal-300 tabular-nums">{cents(r.amount_cents)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          })()}
                           <div className="flex justify-between"><span className="text-slate-400">Minimum payment</span><span className="text-slate-100 tabular-nums">{st.paid || st.min_satisfied ? '✓ satisfied' : st.min_payment_cents != null ? cents(st.min_payment_cents) : '—'}</span></div>
                           <div className="flex justify-between"><span className="text-slate-400">Statement closed</span><span className="text-slate-200">{st.statement_date || '—'}</span></div>
                           <div className="flex justify-between"><span className="text-slate-400">Payment due</span>
