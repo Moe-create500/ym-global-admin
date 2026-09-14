@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { reconcileSnapshot } from '@/lib/cfo-reconcile';
+import { getPaymentsInFlight } from '@/lib/payments-in-flight';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -307,12 +308,17 @@ export async function GET(req: NextRequest) {
   // committed even though the balance still shows it. Counting it as free
   // cash overstates the position (the exact mis-accounting that kept showing
   // up as reconciliation residuals). Source: this store's logged card
-  // payments (last 21 days) with no matching bank debit yet.
-  // Brain engine removed 2026-09-09 — in-flight detection (logged payment
-  // with no matching bank debit) returns empty until the canonical-ledger
-  // rebuild restores reconciliation. The sheet renders without the offset.
-  const paymentsInFlightCents = 0;
-  const paymentsInFlightRows: any[] = [];
+  // payments (last 21 days) that neither the checking debit nor the card's
+  // payment credit has shown yet (src/lib/payments-in-flight.ts).
+  let paymentsInFlightCents = 0;
+  let paymentsInFlightRows: any[] = [];
+  try {
+    const inFlight = getPaymentsInFlight(db, storeId, 21);
+    paymentsInFlightCents = inFlight.totalCents;
+    paymentsInFlightRows = inFlight.rows;
+  } catch (e) {
+    console.error('[cfo] payments-in-flight failed:', (e as any)?.message);
+  }
 
   // ── 3PL mode (ShipSourced store): banks & cards stay identical, but the
   // business lines come from ShipSourced's own books — A/R from client

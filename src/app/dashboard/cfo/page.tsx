@@ -1509,7 +1509,9 @@ function CFOContent() {
                     <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
                       <td className="px-4 py-2 text-white font-medium">Payments in Flight</td>
                       <td className="px-4 py-2 text-slate-400 text-xs">
-                        Sent but not yet taken from the bank — {((data.details as any).paymentsInFlight || []).map((p: any) => `${p.date} $${(p.amount_cents / 100).toFixed(2)} → ··${p.card_last4}`).join(' · ')}
+                        Sent but not yet taken from the bank — {((data.details as any).paymentsInFlight || []).map((p: any) =>
+                          `${p.date} $${(p.amount_cents / 100).toFixed(2)} → ${/^\d{4}$/.test(p.card_last4) ? '··' : ''}${p.card_last4}${p.status === 'not_taken' ? ' (4+ days, check the bank)' : ''}`
+                        ).join(' · ')}
                       </td>
                       <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents((data.liabilities as any).payments_in_flight_cents)}</td>
                     </tr>
