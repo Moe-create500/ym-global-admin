@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getAccounts, getAccountBalance, getAccountTransactions } from '@/lib/teller';
 import crypto from 'crypto';
 import { deriveConnectionState, evidenceFromPlaidItem, ensureConnectionSchema } from '@/lib/connection-state';
 import { findCanonicalMatch, ensureIdentitySchema } from '@/lib/account-identity';
@@ -127,69 +126,6 @@ export async function GET(req: NextRequest) {
       unassigned_count: (unassigned as any[]).length,
     },
   });
-}
-
-// POST: Enroll a bank account (called after Teller Connect)
-export async function POST(req: NextRequest) {
-  const { storeId, accessToken, enrollmentId } = await req.json();
-
-  if (!storeId || !accessToken) {
-    return NextResponse.json({ error: 'storeId and accessToken required' }, { status: 400 });
-  }
-
-  const db = getDb();
-  let imported = 0;
-
-  try {
-    console.log('[banking] Fetching accounts with token:', accessToken.substring(0, 10) + '...');
-    const accounts = await getAccounts(accessToken);
-    console.log('[banking] Got accounts:', accounts.length);
-
-    for (const account of accounts) {
-      // Canonical identity guard — name-aware layered matching so re-enrolling
-      // under a new provider app lands on the existing canonical row (history!)
-      // and twin masks are never guessed.
-      const { match: existing } = findCanonicalMatch(db, {
-        institution: account.institution?.name || 'Unknown', mask: account.last_four,
-        type: account.type, name: account.name, providerAccountId: account.id,
-      });
-      if (existing) {
-        // Reconnect: refresh token + enrollment + account id on the existing row
-        db.prepare(`
-          UPDATE bank_accounts SET access_token = ?, teller_enrollment_id = ?, teller_account_id = ?, status = 'active', updated_at = datetime('now')
-          WHERE id = ?
-        `).run(accessToken, enrollmentId || account.enrollment_id, account.id, existing.id);
-        imported++;
-        continue;
-      }
-
-      // Get balance
-      let balanceAvailable = 0;
-      let balanceLedger = 0;
-      try {
-        const balance = await getAccountBalance(accessToken, account.id);
-        balanceAvailable = Math.round(parseFloat(balance.available || '0') * 100);
-        balanceLedger = Math.round(parseFloat(balance.ledger || '0') * 100);
-      } catch {}
-
-      db.prepare(`
-        INSERT INTO bank_accounts (id, store_id, teller_enrollment_id, teller_account_id, access_token,
-          institution_name, account_name, account_type, account_subtype, last_four, currency,
-          balance_available_cents, balance_ledger_cents, balance_updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-      `).run(
-        crypto.randomUUID(), storeId, enrollmentId || account.enrollment_id, account.id, accessToken,
-        account.institution?.name || 'Unknown', account.name, account.type, account.subtype,
-        account.last_four, account.currency || 'USD', balanceAvailable, balanceLedger
-      );
-      imported++;
-    }
-
-    return NextResponse.json({ success: true, imported });
-  } catch (err: any) {
-    console.error('[banking] Error:', err.message);
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
 }
 
 // DELETE: Disconnect a bank account

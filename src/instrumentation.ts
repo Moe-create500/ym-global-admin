@@ -21,12 +21,13 @@ export async function register() {
           const pr = await syncAllProducts();
           productSynced = pr.synced;
         }
-        // Bank balances + transactions (Teller) — without this the Banking page
-        // only updates when someone clicks Sync
+        // Bank balances + transactions (Plaid) — without this the Banking page
+        // only updates when someone clicks Sync. Teller retired 2026-09-14.
         let bankNote = 'banks skipped';
         try {
-          const { syncBankAccounts } = await import('@/lib/bank-sync');
-          const bankResult = await syncBankAccounts();
+          const { getDb } = await import('@/lib/db');
+          const { syncPlaidItems } = await import('@/lib/plaid');
+          const bankResult = await syncPlaidItems(getDb());
           bankNote = `${bankResult.accounts_synced} banks, ${bankResult.transactions_imported} bank txns`;
           if (bankResult.errors.length > 0) {
             console.error(`[auto-sync] ${label}: ${bankResult.errors.length} bank errors; first: ${bankResult.errors.slice(0, 3).join(' | ').slice(0, 400)}`);

@@ -167,6 +167,19 @@ async function classifyTransaction(db: Database.Database, txn: any, opts: { allo
   // amount — a $16 make.com charge must never match a coincidental $16
   // Shopify invoice (real false positive found 2026-09-09). Amount + date
   // window + the descriptor actually naming the platform.
+  // A Shopify line on a CREDIT CARD is an app/subscription fee — payouts land
+  // in checking, never on a card. A positive one is a refunded fee. Before the
+  // 2026-09-14 sign normalisation these were stored positive, read as income,
+  // and filed as "Shopify Payout" against a store they had nothing to do with.
+  const onCard = account?.account_type === 'credit';
+  const shopifyDesc = /shopify|shoppay/i.test(txn.description || '');
+  if (onCard && shopifyDesc && txn.amount_cents > 0) {
+    return { ...base, category: 'Software', subcategory: 'Shopify Apps',
+      method: 'MERCHANT_KNOWLEDGE', confidence: 0.95,
+      reason: 'Shopify credit on a card — a refunded app fee, not a payout (payouts land in checking)',
+      evidence: [{ type: 'account_type', reference: 'credit' }], needs_review: false };
+  }
+
   if (txn.amount_cents < 0) {
     const descL = (txn.description || '').toLowerCase();
     // Take EVERY invoice in the window, not `LIMIT 1`. The store the charge
@@ -220,6 +233,14 @@ async function classifyTransaction(db: Database.Database, txn: any, opts: { allo
           method: 'INVOICE_MATCH', confidence: 0.96,
           reason: `Shopify descriptor + amount matches app invoice dated ${appInv.date}`,
           evidence: [{ type: 'shopify_invoice', reference: appInv.id }], needs_review: false };
+      }
+      // No invoice to pin a store on, but on a card the category is not in
+      // doubt. Assert Software, assert no store — never guess one.
+      if (onCard) {
+        return { ...base, category: 'Software', subcategory: 'Shopify Apps',
+          method: 'MERCHANT_KNOWLEDGE', confidence: 0.95,
+          reason: 'Shopify app fee on a card; no app invoice matched, so the store is left unassigned',
+          evidence: [{ type: 'account_type', reference: 'credit' }], needs_review: false };
       }
     }
   } else if (merchant?.name === 'Shopify' || /shopify|shoppay/i.test(txn.description || '')) {
