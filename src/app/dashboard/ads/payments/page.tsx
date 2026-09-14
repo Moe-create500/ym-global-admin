@@ -72,7 +72,9 @@ function InvoiceDashboardContent() {
   const [cardPaidTotals, setCardPaidTotals] = useState<CardPaidTotal[]>([]);
   const [bankRecon, setBankRecon] = useState<any>({});
   const [chargeRecon, setChargeRecon] = useState<any>({});
-  const [cardAccounts, setCardAccounts] = useState<Record<string, { last4: string; name: string }[]>>({});
+  const [cardAccounts, setCardAccounts] = useState<Record<string, {
+    id: string; last4: string; name: string; institution: string; isOwnMask: boolean;
+  }[]>>({});
   const [cardPayments, setCardPayments] = useState<CardPaymentLog[]>([]);
   const [pendingCents, setPendingCents] = useState<Record<string, number>>({});
   const [totalPendingCents, setTotalPendingCents] = useState(0);
@@ -525,81 +527,141 @@ function InvoiceDashboardContent() {
                 </button>
               )}
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {cardSummary.filter(c => !hiddenCards.includes(c.card_last4)).map(card => {
-                const paid = paidMap[card.card_last4] || 0;
-                const balance = (card.total_cents || 0) - paid;
-                // Meta didn't name a funding source for these, so we never
-                // learned the card. It is not a card with a balance owing —
-                // say so plainly instead of dressing it up as one.
-                const unidentified = !card.card_last4;
-                const billsTo = card.card_last4 ? cardAccounts[card.card_last4] : undefined;
-                return (
-                  <div
-                    key={card.card_last4}
-                    className={`p-4 rounded-lg text-left transition-colors relative group ${
-                      cardFilter === card.card_last4 ? 'bg-blue-500/10 ring-1 ring-blue-500/40' : 'bg-slate-800/40 hover:bg-slate-800/60'
-                    }`}
-                  >
-                    <button
-                      onClick={() => setCardFilter(cardFilter === card.card_last4 ? '' : card.card_last4)}
-                      className="w-full text-left"
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <div>
-                          <p className="text-xs text-slate-400">
-                            {unidentified ? 'Unidentified' : (card.payment_method?.split('····')[0]?.trim() || 'Card')}
-                          </p>
-                          <p className={`text-sm font-semibold ${unidentified ? 'text-slate-400' : 'text-white'}`}>
-                            {unidentified ? 'card not reported by Meta' : `····${card.card_last4}`}
-                          </p>
-                          {billsTo && (
-                            <p className="text-[10px] text-slate-500 mt-0.5" title={billsTo.map(a => a.name).join(' / ')}>
-                              bills to {billsTo.map(a => `····${a.last4}`).join(' / ')}
+            {(() => {
+              // The debt belongs to the ACCOUNT, not the plastic. Amex
+              // supplementary cards and a BoA card's account-number twin all
+              // roll up to one balance, so group by account id and show each
+              // mask underneath as spend attribution only. Masks we cannot
+              // resolve stay separate and honest rather than being folded in.
+              type Grp = {
+                key: string; name: string; institution: string; last4: string;
+                resolved: boolean; note: string; charged: number; paid: number;
+                cards: { mask: string; charged: number; paid: number; method: string }[];
+              };
+              const groups = new Map<string, Grp>();
+              let unidentified = { charged: 0, paid: 0 };
+
+              for (const c of cardSummary) {
+                if (hiddenCards.includes(c.card_last4)) continue;
+                const charged = c.total_cents || 0;
+                const paid = paidMap[c.card_last4] || 0;
+                if (!c.card_last4) { unidentified = { charged: unidentified.charged + charged, paid: unidentified.paid + paid }; continue; }
+
+                const accts = cardAccounts[c.card_last4];
+                // A mask matching several live accounts cannot be attributed to
+                // one of them — the Amex Platinum and Gold cards both end ··1009.
+                // That is a different situation from a card with no banking
+                // connection at all, and must not be labelled as one.
+                const ambiguous = !!accts && accts.length > 1;
+                const acct = accts && accts.length === 1 ? accts[0] : undefined;
+                const key = acct ? acct.id
+                  : ambiguous ? `ambiguous:${c.card_last4}`
+                  : `unlinked:${c.card_last4}`;
+                if (!groups.has(key)) {
+                  groups.set(key, {
+                    key,
+                    name: acct ? acct.name : (c.payment_method?.split('····')[0]?.trim() || 'Card'),
+                    institution: acct?.institution || '',
+                    last4: acct ? acct.last4 : c.card_last4,
+                    resolved: !!acct,
+                    note: ambiguous
+                      ? `····${c.card_last4} · ${accts!.length} accounts share this number (${accts!.map(a => a.name).join(', ')}) — cannot attribute`
+                      : acct ? '' : `····${c.card_last4} · not connected in Banking — cannot be reconciled`,
+                    charged: 0, paid: 0, cards: [],
+                  });
+                }
+                const g = groups.get(key)!;
+                g.charged += charged; g.paid += paid;
+                g.cards.push({ mask: c.card_last4, charged, paid, method: c.payment_method || '' });
+              }
+
+              const list = [...groups.values()].sort((a, b) => (b.charged - b.paid) - (a.charged - a.paid));
+
+              return (
+                <div className="space-y-3">
+                  {list.map(g => {
+                    const balance = g.charged - g.paid;
+                    // Several plastics on one account, or a mask that is not the
+                    // account's own number — worth showing the breakdown.
+                    const showChildren = g.resolved && (g.cards.length > 1 || g.cards[0]?.mask !== g.last4);
+                    return (
+                      <div key={g.key} className="rounded-lg bg-slate-800/40 p-4">
+                        <div className="flex items-start justify-between gap-3 flex-wrap">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-white truncate">
+                              {g.name}{g.resolved ? <span className="text-slate-400 font-normal"> ····{g.last4}</span> : null}
                             </p>
-                          )}
+                            <p className="text-[10px] text-slate-500 mt-0.5">
+                              {g.resolved
+                                ? `${g.institution}${g.cards.length > 1 ? ` · ${g.cards.length} cards on this account` : ''}`
+                                : g.note}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-4 shrink-0">
+                            <div className="text-right">
+                              <p className="text-[10px] text-slate-500">Charged</p>
+                              <p className="text-xs font-semibold text-white tabular-nums">{cents(g.charged)}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-[10px] text-slate-500">Paid</p>
+                              <p className="text-xs font-semibold text-emerald-300 tabular-nums">{cents(g.paid)}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-[10px] text-slate-500">Balance</p>
+                              <p className={`text-sm font-semibold tabular-nums ${balance > 0 ? 'text-amber-300' : 'text-emerald-300'}`}>{cents(balance)}</p>
+                            </div>
+                            <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
+                              balance <= 0 ? 'bg-emerald-500/10 text-emerald-300' : 'bg-amber-500/10 text-amber-300'
+                            }`}>
+                              {balance <= 0 ? 'Paid' : 'Due'}
+                            </span>
+                          </div>
                         </div>
-                        {unidentified ? (
-                          <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-500/10 text-slate-400"
-                            title="Meta charged these without naming a funding source, so the card was never learned — this is not a card balance">
-                            unknown card
-                          </span>
-                        ) : (
-                          <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
-                            balance <= 0 ? 'bg-emerald-500/10 text-emerald-300' : 'bg-amber-500/10 text-amber-300'
-                          }`}>
-                            {balance <= 0 ? 'Paid' : 'Due'}
-                          </span>
+
+                        {showChildren && (
+                          <div className="mt-3 pt-3 border-t border-slate-700/50 space-y-1">
+                            {g.cards.sort((a, b) => b.charged - a.charged).map(card => (
+                              <button
+                                key={card.mask}
+                                onClick={() => setCardFilter(cardFilter === card.mask ? '' : card.mask)}
+                                className={`w-full flex items-center justify-between px-2 py-1 rounded text-left transition-colors ${
+                                  cardFilter === card.mask ? 'bg-blue-500/10 ring-1 ring-blue-500/40' : 'hover:bg-slate-700/30'
+                                }`}
+                                title="Spend on this card — the balance is the account's, not this card's"
+                              >
+                                <span className="text-[11px] text-slate-300">
+                                  ····{card.mask}
+                                  {card.mask !== g.last4 && <span className="text-slate-500"> · card on this account</span>}
+                                </span>
+                                <span className="text-[11px] text-slate-400 tabular-nums">{cents(card.charged)} spent</span>
+                              </button>
+                            ))}
+                          </div>
                         )}
                       </div>
-                      <div className="grid grid-cols-3 gap-2 text-center">
-                        <div>
-                          <p className="text-[10px] text-slate-500">Charged</p>
-                          <p className="text-xs font-semibold text-white tabular-nums">{cents(card.total_cents)}</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] text-slate-500">Paid</p>
-                          <p className="text-xs font-semibold text-emerald-300 tabular-nums">{cents(paid)}</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] text-slate-500">Balance</p>
-                          <p className={`text-xs font-semibold tabular-nums ${unidentified ? 'text-slate-400' : (balance > 0 ? 'text-amber-300' : 'text-emerald-300')}`}>{cents(balance)}</p>
-                        </div>
+                    );
+                  })}
+
+                  {(unidentified.charged > 0 || unidentified.paid > 0) && (
+                    <div className="rounded-lg bg-slate-800/40 p-4 flex items-start justify-between gap-3 flex-wrap">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-400">Card not reported by Meta</p>
+                        <p className="text-[10px] text-slate-500 mt-0.5">
+                          Meta billed without naming a funding source — this is not a card balance
+                        </p>
                       </div>
-                    </button>
-                    {storeFilter && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); toggleCardVisibility(card.card_last4, 'hide'); }}
-                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] text-slate-500 hover:text-red-400 px-1.5 py-0.5 rounded bg-slate-900/80"
-                        title="Hide this card"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                      <div className="flex items-center gap-4 shrink-0">
+                        <div className="text-right">
+                          <p className="text-[10px] text-slate-500">Charged</p>
+                          <p className="text-xs font-semibold text-slate-300 tabular-nums">{cents(unidentified.charged)}</p>
+                        </div>
+                        <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-500/10 text-slate-400">unknown card</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             {/* Hidden cards */}
             {showHidden && hiddenCards.length > 0 && (
               <div className="mt-4 pt-4 border-t border-slate-800/60">

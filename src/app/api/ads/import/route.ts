@@ -584,22 +584,34 @@ export async function GET(req: NextRequest) {
     }
   } catch { /* verification is best-effort — the invoice list must render */ }
 
-  // Which real account each mask bills to. A supplementary card (··2976) is a
-  // different plastic on someone else's account (Platinum ··1009) — showing it
-  // as a standalone card with its own balance invites the reader to treat one
-  // account's debt as several.
-  const cardAccounts: Record<string, { last4: string; name: string }[]> = {};
+  // Which real ACCOUNT each card mask belongs to.
+  //
+  // The debt is the account's, not the card's. An Amex supplementary card
+  // (··2976, ··9275, ··3304, ··1108) is a separate plastic billing to one
+  // account, and a Bank of America card shows up under both its card number and
+  // its account number. Presenting each mask as a standalone balance turns one
+  // debt into several: for Elvris the ··1009 family reads −$1,902.06 "Paid",
+  // $1,466.74 "Due" and $1,431.23 "Due" when the account actually owes $995.91.
+  //
+  // Identify by account id and always carry the account NAME — a mask alone is
+  // not an identity, and the Amex Platinum and Gold cards BOTH end ··1009.
+  const cardAccounts: Record<string, {
+    id: string; last4: string; name: string; institution: string; isOwnMask: boolean;
+  }[]> = {};
   try {
     const aliases = getCardAliasMap(db);
     const acctById = new Map((db.prepare(
-      `SELECT id, last_four, COALESCE(account_name, institution_name, '') AS name FROM bank_accounts`
+      `SELECT id, last_four, COALESCE(account_name, institution_name, '') AS name,
+              COALESCE(institution_name, '') AS institution
+       FROM bank_accounts`
     ).all() as any[]).map(a => [a.id, a]));
     for (const [l4, ids] of aliases) {
       const accts = ids.map(id => acctById.get(id)).filter(Boolean) as any[];
-      // only interesting when the mask isn't simply the account's own number
-      if (accts.length && !accts.some(a => a.last_four === l4)) {
-        cardAccounts[l4] = accts.map(a => ({ last4: a.last_four, name: a.name }));
-      }
+      if (!accts.length) continue;
+      cardAccounts[l4] = accts.map(a => ({
+        id: a.id, last4: a.last_four, name: a.name, institution: a.institution,
+        isOwnMask: a.last_four === l4,
+      }));
     }
   } catch { /* decoration only — the card list must still render */ }
 
