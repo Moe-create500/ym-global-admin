@@ -39,6 +39,15 @@ interface CreditCard {
     projected_statement_remaining_cents: number | null;
     rows: { id: string; date: string; amount_cents: number; card_last4: string; status: string; notes: string | null; store_name: string | null; ambiguous: boolean }[];
   } | null;
+  owed_by?: {
+    since: string;
+    rows: { store_id: string; store_name: string; charged_cents: number; paid_cents: number; net_cents: number }[];
+    unpaired_cents: number;
+    unpaired_count: number;
+    unknown_payer_cents: number;
+    charged_cents: number;
+    paid_cents: number;
+  } | null;
 }
 
 interface RepairGroup {
@@ -360,6 +369,7 @@ export default function CreditCardsPage() {
                   <th className="px-4 py-2.5 font-semibold text-right">Min due</th>
                   <th className="px-4 py-2.5 font-semibold text-right">Due</th>
                   <th className="px-4 py-2.5 font-semibold text-right">Available</th>
+                  <th className="px-4 py-2.5 font-semibold" title="Stores whose charges on this card exceed what they paid to it, last 90 days — payments traced from each store's checking account">Owed by (90d)</th>
                   <th className="px-4 py-2.5 font-semibold">Status</th>
                 </tr>
               </thead>
@@ -431,6 +441,31 @@ export default function CreditCardsPage() {
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         <span className={card.balance_available_cents >= 0 ? 'text-emerald-300' : 'text-red-300'}>{cents(card.balance_available_cents || 0)}</span>
                         {overstated && <span className="block text-[10px] text-amber-400" title={`Capped by the ${parent!.account_name.replace(/^CORP Account - /i, '')} line`}>real ≈ {cents(lineAvail!)}</span>}
+                      </td>
+                      <td className="px-4 py-2.5 max-w-[260px] text-[11px] leading-5">
+                        {(() => {
+                          const ob = card.owed_by;
+                          if (!ob) return <span className="text-slate-600">—</span>;
+                          const owing = ob.rows.filter(r => r.net_cents > 0);
+                          const shown = owing.slice(0, 3);
+                          const covered = ob.charged_cents === 0 && ob.unpaired_cents === 0;
+                          return (
+                            <>
+                              {covered && <span className="text-slate-500">no charges in 90d — carried balance</span>}
+                              {shown.map(r => (
+                                <span key={r.store_id} className="block truncate text-slate-200" title={`${r.store_name}: charged ${cents(r.charged_cents)}, paid ${cents(r.paid_cents)}`}>
+                                  {r.store_name} <span className="text-red-300 tabular-nums">{cents(r.net_cents)}</span>
+                                </span>
+                              ))}
+                              {owing.length > 3 && <span className="block text-slate-500">+{owing.length - 3} more in the drawer</span>}
+                              {ob.unpaired_cents > 0 && (
+                                <span className="block text-amber-300/90" title={`${ob.unpaired_count} charges paired to no store — nobody pays these`}>
+                                  no store <span className="tabular-nums">{cents(ob.unpaired_cents)}</span>
+                                </span>
+                              )}
+                            </>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-2.5 max-w-[300px]">
                         <StatusPill c={card.connection} />
@@ -615,6 +650,52 @@ export default function CreditCardsPage() {
                       <p className="text-[11px] text-amber-300/80 mt-2">Not freshly verified — last balance the bank confirmed, preserved until the connection verifies again.</p>
                     )}
                   </div>
+
+                  {(() => {
+                    const ob = cards.find(c => c.id === drawerId)?.owed_by;
+                    if (!ob) return null;
+                    return (
+                      <div className="rounded-lg bg-slate-800/40 p-4 mb-5">
+                        <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Who is behind this balance <span className="normal-case">(since {ob.since})</span></p>
+                        <table className="w-full text-[12px]">
+                          <thead><tr className="text-slate-500 text-[10px] uppercase"><th className="text-left py-1">Store</th><th className="text-right py-1">Charged</th><th className="text-right py-1">Paid</th><th className="text-right py-1">Net</th></tr></thead>
+                          <tbody>
+                            {ob.rows.map(r => (
+                              <tr key={r.store_id} className="border-t border-slate-700/40">
+                                <td className="py-1 text-slate-200">{r.store_name}</td>
+                                <td className="py-1 text-right tabular-nums text-slate-300">{cents(r.charged_cents)}</td>
+                                <td className="py-1 text-right tabular-nums text-slate-300">{cents(r.paid_cents)}</td>
+                                <td className={`py-1 text-right tabular-nums font-medium ${r.net_cents > 0 ? 'text-red-300' : 'text-emerald-300'}`}>{r.net_cents > 0 ? cents(r.net_cents) : `${cents(-r.net_cents)} overpaid`}</td>
+                              </tr>
+                            ))}
+                            {ob.unpaired_cents > 0 && (
+                              <tr className="border-t border-slate-700/40">
+                                <td className="py-1 text-amber-300">No store ({ob.unpaired_count} charges)</td>
+                                <td className="py-1 text-right tabular-nums text-slate-300">{cents(ob.unpaired_cents)}</td>
+                                <td className="py-1 text-right tabular-nums text-slate-500">—</td>
+                                <td className="py-1 text-right tabular-nums font-medium text-amber-300">{cents(ob.unpaired_cents)}</td>
+                              </tr>
+                            )}
+                            {ob.unknown_payer_cents > 0 && (
+                              <tr className="border-t border-slate-700/40">
+                                <td className="py-1 text-slate-400" title="Payments the card received that no linked checking account made">Paid from an unlinked bank</td>
+                                <td className="py-1 text-right tabular-nums text-slate-500">—</td>
+                                <td className="py-1 text-right tabular-nums text-slate-300">{cents(ob.unknown_payer_cents)}</td>
+                                <td className="py-1 text-right tabular-nums text-slate-500">—</td>
+                              </tr>
+                            )}
+                            <tr className="border-t border-slate-600/60 text-slate-300">
+                              <td className="py-1 font-medium">Total</td>
+                              <td className="py-1 text-right tabular-nums">{cents(ob.charged_cents)}</td>
+                              <td className="py-1 text-right tabular-nums">{cents(ob.paid_cents)}</td>
+                              <td className="py-1 text-right tabular-nums font-medium">{cents(ob.charged_cents - ob.paid_cents)}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                        <p className="text-[10px] text-slate-500 mt-2">Charges come from the store pairing; payments are traced to the checking account that funded them. The card's total balance also carries anything older than 90 days.</p>
+                      </div>
+                    );
+                  })()}
 
                   {(() => {
                     const st = cards.find(c => c.id === drawerId)?.statement;

@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { deriveConnectionState, evidenceFromPlaidItem, ensureConnectionSchema } from '@/lib/connection-state';
 import { findCanonicalMatch, ensureIdentitySchema } from '@/lib/account-identity';
 import { getInFlightByAccount, type CardInFlight } from '@/lib/payments-in-flight';
+import { getOwedByForCards, type CardOwedBy } from '@/lib/card-owed-by';
 
 export const dynamic = 'force-dynamic';
 
@@ -64,6 +65,12 @@ export async function GET(req: NextRequest) {
   let inFlightByAccount = new Map<string, CardInFlight>();
   try { inFlightByAccount = getInFlightByAccount(db, 21); }
   catch (e) { console.error('[credit-cards] in-flight lookup failed:', (e as any)?.message); }
+
+  // Who is behind each balance — stores' charges vs the payments they made
+  // (traced from the checking side), last 90 days.
+  let owedBy = new Map<string, CardOwedBy>();
+  try { owedBy = getOwedByForCards(db, rawCards.map((a: any) => a.id), 90); }
+  catch (e) { console.error('[credit-cards] owed-by lookup failed:', (e as any)?.message); }
 
   // Same evidence-derived connection model as Banking: status from provider
   // signals only, freshness descriptive, last-known balances preserved.
@@ -133,6 +140,7 @@ export async function GET(req: NextRequest) {
       connection,
       balance_verified: verified,
       in_flight,
+      owed_by: owedBy.get(a.id) || null,
       freshness: {
         balance_verified_at: a.balance_updated_at || null,
         transactions_through: a.bank_data_as_of || null,
