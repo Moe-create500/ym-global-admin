@@ -209,7 +209,20 @@ export default function TransactionsPage() {
           <div className="rounded-xl bg-slate-900/60 px-5 py-4 mb-5">
             <div className="flex flex-wrap items-end justify-between gap-4 mb-3">
               <div>
-                <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">Paired to a store</p>
+                <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">
+                  Paired to a store
+                  {(accountId || kind !== 'all' || q) && (
+                    <span className="ml-1.5 normal-case tracking-normal text-slate-400">
+                      · {accountId
+                          ? (accounts.find((a: any) => a.id === accountId)?.account_name
+                             || accounts.find((a: any) => a.id === accountId)?.institution_name
+                             || 'this account')
+                          : kind === 'card' ? 'cards only'
+                          : kind === 'bank' ? 'banks only'
+                          : 'this search'}
+                    </span>
+                  )}
+                </p>
                 <p className="text-3xl font-semibold text-emerald-300 tabular-nums">{pct}%</p>
                 <p className="text-[11px] text-slate-500 mt-1 tabular-nums">{coverage.attributed.toLocaleString()} transactions · {fmtCents(coverage.attributed_cents)}</p>
               </div>

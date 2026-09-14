@@ -105,7 +105,34 @@ export async function GET(req: NextRequest) {
   `).all();
   const stores = db.prepare('SELECT id, name FROM stores WHERE is_active = 1 OR is_active IS NULL ORDER BY name').all();
 
-  // Global reconciliation coverage (not filter-scoped) — the progress numbers
+  // Reconciliation coverage, scoped to what the user is actually looking at.
+  //
+  // This used to be global, so picking a single card still showed the company
+  // number and there was no way to tell whether THAT card was clean. It now
+  // follows the account / kind / search / date filters.
+  //
+  // Deliberately NOT scoped by the paired-status or confidence filters: those
+  // select rows BY their pairing verdict, so folding them in would force the
+  // answer to 0% or 100% and tell you nothing.
+  const covWhere: string[] = ["a.status != 'merged'"];
+  const covParams: any[] = [];
+  if (accountId) { covWhere.push('bt.bank_account_id = ?'); covParams.push(accountId); }
+  if (kind === 'card') covWhere.push("a.account_type = 'credit'");
+  if (kind === 'bank') covWhere.push("a.account_type != 'credit'");
+  if (q) {
+    const asCents = Math.round(Math.abs(parseFloat(q)) * 100);
+    if (!Number.isNaN(asCents) && /^[\d.,$-]+$/.test(q)) {
+      covWhere.push('ABS(bt.amount_cents) = ?'); covParams.push(asCents);
+    } else {
+      covWhere.push("(LOWER(bt.description) LIKE ? OR LOWER(COALESCE(bt.counterparty,'')) LIKE ? OR LOWER(COALESCE(bt.custom_category, bt.category, '')) LIKE ?)");
+      covParams.push(`%${q}%`, `%${q}%`, `%${q}%`);
+    }
+  }
+  const covStore = sp.get('store') || '';
+  if (covStore && covStore !== 'unattributed' && covStore !== 'paired') {
+    covWhere.push('r.store_id = ?'); covParams.push(covStore);
+  }
+
   const coverage: any = db.prepare(`
     SELECT COUNT(*) total,
       SUM(CASE WHEN r.store_id IS NOT NULL THEN 1 ELSE 0 END) attributed,
@@ -113,7 +140,8 @@ export async function GET(req: NextRequest) {
       SUM(CASE WHEN r.store_id IS NULL THEN ABS(bt.amount_cents) ELSE 0 END) unattributed_cents
     FROM bank_transactions bt
     JOIN bank_accounts a ON a.id = bt.bank_account_id AND a.status != 'merged'
-    LEFT JOIN classification_results r ON r.txn_id = bt.id`).get();
+    LEFT JOIN classification_results r ON r.txn_id = bt.id
+    WHERE ${covWhere.join(' AND ')}`).get(...covParams);
 
   return NextResponse.json({
     transactions: page,
