@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { getCardAliasMap } from '@/lib/funding-cards';
 import crypto from 'crypto';
 import { computePnl } from '@/lib/finance-core';
 
@@ -362,9 +363,50 @@ export async function GET(req: NextRequest) {
   `).all(storeId);
 
   const itemStmt = db.prepare('SELECT * FROM shopify_invoice_items WHERE invoice_id = ? ORDER BY amount_cents DESC');
+
+  // Bank truth per invoice — did the money actually leave an account we can
+  // see? Same shape as the ad-charge verifier: the reconciler links a bank
+  // transaction to the invoice in txn_links; expose that per invoice and
+  // classify the rest honestly instead of showing "Paid" on our own say-so.
+  //   verified        — a bank transaction is linked (account, date, confidence)
+  //   in_shopify_bill — Chargeflow rolled into the Shopify bill; verified via
+  //                     that bill, not a card charge of its own
+  //   missing         — the card IS connected but no charge matched
+  //   not_linked      — the funding card isn't connected in Banking
+  //   unpaid          — nothing to verify yet
+  const recon: Record<string, any> = {};
+  try {
+    const linked: any[] = db.prepare(`
+      SELECT l.entity_id, l.match_score, t.date AS txn_date, a.last_four,
+             COALESCE(a.account_name, a.institution_name, '') AS account_name
+      FROM txn_links l
+      JOIN bank_transactions t ON t.id = l.txn_id
+      JOIN bank_accounts a ON a.id = t.bank_account_id
+      WHERE l.entity_type = 'shopify_invoice' AND l.entity_id IS NOT NULL
+    `).all();
+    const byInv = new Map(linked.map(r => [r.entity_id, r]));
+    const linkedCards = new Set(getCardAliasMap(db).keys());
+    for (const inv of invoices) {
+      const m = byInv.get(inv.id);
+      if (m) {
+        recon[inv.id] = { status: 'verified', bankLast4: m.last_four, account: m.account_name, txnDate: m.txn_date,
+          score: m.match_score != null ? Math.round(m.match_score * 100) : null };
+      } else if (inv.source === 'chargeflow' && String(inv.payment_method || '').toLowerCase().includes('shopify')) {
+        recon[inv.id] = { status: 'in_shopify_bill' };
+      } else if (!inv.paid) {
+        recon[inv.id] = { status: 'unpaid' };
+      } else if (inv.card_last4 && linkedCards.has(inv.card_last4)) {
+        recon[inv.id] = { status: 'missing', cardLast4: inv.card_last4 };
+      } else {
+        recon[inv.id] = { status: 'not_linked', cardLast4: inv.card_last4 || null };
+      }
+    }
+  } catch { /* verification is decoration — the list must still render */ }
+
   const result = invoices.map(inv => ({
     ...inv,
     items: itemStmt.all(inv.id),
+    recon: recon[inv.id] || null,
   }));
 
   // Summary by app — exclude Chargeflow invoices paid via Shopify (already in Shopify bills)

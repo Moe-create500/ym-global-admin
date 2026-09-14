@@ -28,6 +28,7 @@ interface Invoice {
   card_last4: string | null;
   paid: number;
   paid_date: string | null;
+  recon?: { status: string; bankLast4?: string; account?: string; txnDate?: string; score?: number | null; cardLast4?: string | null } | null;
   notes: string | null;
   items: InvoiceItem[];
 }
@@ -751,6 +752,28 @@ function AppInvoicesContent() {
                             <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
                               inv.paid ? 'bg-emerald-500/10 text-emerald-300' : 'bg-amber-500/10 text-amber-300'
                             }`}>{inv.paid ? 'Paid' : 'Unpaid'}</span>
+                          )}
+                          {/* Bank truth: "Paid" above is what we recorded; this is whether the money
+                              actually left an account we can see. Mirrors the ad-charge verifier. */}
+                          {inv.recon && inv.recon.status !== 'in_shopify_bill' && inv.recon.status !== 'unpaid' && (
+                            <div className="mt-1">
+                              {inv.recon.status === 'verified' ? (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 whitespace-nowrap"
+                                  title={`${inv.recon.account} · matched at ${inv.recon.score ?? '—'}% confidence`}>
+                                  ✓ bank ··{inv.recon.bankLast4} · {inv.recon.txnDate}
+                                </span>
+                              ) : inv.recon.status === 'missing' ? (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-300 whitespace-nowrap"
+                                  title="This card IS connected in Banking but no matching charge was found — the invoice may be paid another way, posted at a different amount, or not actually charged">
+                                  ⚠ no bank charge — ··{inv.recon.cardLast4} is linked
+                                </span>
+                              ) : (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-500/10 text-slate-400 whitespace-nowrap"
+                                  title="The card this was paid with isn't connected in Banking — link it to verify">
+                                  ○ card {inv.recon.cardLast4 ? `··${inv.recon.cardLast4}` : '?'} not linked
+                                </span>
+                              )}
+                            </div>
                           )}
                         </td>
                         <td className="px-4 py-2 text-right">
