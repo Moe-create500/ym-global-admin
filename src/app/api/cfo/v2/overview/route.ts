@@ -7,6 +7,7 @@ import { getOverview, defaultPeriod } from '@/lib/cfo/report';
 import { collectIssues, countByUnit, issuesForScope } from '@/lib/cfo/issues';
 import { isCfoV2Enabled } from '@/lib/cfo/flags';
 import { getBillingFlags } from '@/lib/shipsourced';
+import { getShipSourcedPnl } from '@/lib/cfo/ss-pnl';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,7 +41,8 @@ export async function GET(req: NextRequest) {
   };
   const allIssues = await collectIssues(db, period, ssFlags);
   const scopes = listScopes(db);
-  const overview = getOverview(db, scope, period, countByUnit(allIssues, scopes));
+  const ssPnl = await getShipSourcedPnl(db, period.from, period.to).catch(() => null);
+  const overview = getOverview(db, scope, period, countByUnit(allIssues, scopes), Date.now(), { ssPnl });
   const issues = issuesForScope(allIssues, scope, scopes);
   return NextResponse.json({ enabled: true, ...overview, issues, scopes: scopes.map(s => ({ id: s.id, label: s.label, kind: s.kind, parentId: s.parentId, mapping: s.mapping.status })) });
 }

@@ -570,6 +570,13 @@ function StoreCardCharges({ storeId }: { storeId: string }) {
     setBusy(null);
     load();
   }
+  // ShipSourced only: which part of fulfilment, and which centre, a charge pays for.
+  async function classify(c: any, line: string, center: string, remember: boolean) {
+    setBusy(c.id);
+    await fetch('/api/store-charges', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ txnId: c.id, line, center, remember }) }).catch(() => {});
+    setBusy(null);
+    load();
+  }
 
   if (!data) return null;
   const visible = (data.charges || []).filter((c: any) => showSettled || !c.settled_at);
@@ -583,6 +590,12 @@ function StoreCardCharges({ storeId }: { storeId: string }) {
             {data.summary.settled_cents > 0 && <span> · {cents(data.summary.settled_cents)} paid</span>}
             <span> · {data.summary.count} charges (proven attribution)</span>
           </p>
+          {data.summary.by_line && (
+            <p className="text-[11px] text-slate-400 mt-1 tabular-nums">
+              Unpaid by fulfilment line: {Object.entries(data.summary.by_line as Record<string, number>).sort((a, b) => b[1] - a[1]).map(([l, v]) => `${data.fulfilment.lines[l]} ${cents(v)}`).join(' · ')}
+              <span className="text-slate-500"> — feeds the ShipSourced P&amp;L by centre (P&amp;L tab)</span>
+            </p>
+          )}
         </div>
         <label className="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer select-none">
           <input type="checkbox" checked={showSettled} onChange={e => setShowSettled(e.target.checked)} className="accent-blue-500" />
@@ -601,6 +614,21 @@ function StoreCardCharges({ storeId }: { storeId: string }) {
                 <td className="px-5 py-2 text-slate-500 whitespace-nowrap w-24">{c.date}</td>
                 <td className="px-3 py-2 max-w-[340px]"><span className="text-slate-100 truncate block">{c.description}</span></td>
                 <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{c.card}</td>
+                {c.fulfilment && (
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1">
+                      <select value={c.fulfilment.line} disabled={busy === c.id} onChange={e => classify(c, e.target.value, c.fulfilment.center, true)} title={`${c.fulfilment.source === 'manual' ? 'set by a worker' : c.fulfilment.source === 'rule' ? 'remembered rule for this merchant' : 'default from merchant name'}${c.fulfilment.needsReview ? ' — needs a look' : ''}`}
+                        className={`text-[11px] rounded px-1.5 py-1 border ${c.fulfilment.needsReview ? 'border-amber-500/60 bg-amber-500/10 text-amber-300' : 'border-slate-700 bg-slate-950 text-slate-200'}`}>
+                        {Object.entries(data.fulfilment.lines as Record<string, string>).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      </select>
+                      <select value={c.fulfilment.center} disabled={busy === c.id} onChange={e => classify(c, c.fulfilment.line, e.target.value, true)}
+                        className="text-[11px] rounded px-1.5 py-1 border border-slate-700 bg-slate-950 text-slate-200">
+                        {Object.entries(data.fulfilment.centers as Record<string, string>).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      </select>
+                      {c.fulfilment.source !== 'manual' && <span className="text-[10px] text-slate-500">{c.fulfilment.source === 'rule' ? 'rule' : 'default'}</span>}
+                    </span>
+                  </td>
+                )}
                 <td className="px-3 py-2 text-right tabular-nums font-medium text-slate-100 whitespace-nowrap">{cents(Math.abs(c.amount_cents))}</td>
                 <td className="px-5 py-2 text-right w-28">
                   {c.settled_at ? (
@@ -1680,7 +1708,7 @@ function CFOContent() {
 
           </>)}
 
-          {v2 && section === 'pnl' && <PnlTab storeId={storeId} />}
+          {v2 && section === 'pnl' && <PnlTab storeId={storeId} isShipSourced={selectedStore?.name === 'ShipSourced'} />}
 
           {/* RECONCILIATION — does the balance sheet tie out to the P&L? */}
           {show('recon') && (

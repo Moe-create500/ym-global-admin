@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { classifyRow, setRowClass, SS_LINE_LABEL, SS_CENTER_LABEL } from '@/lib/cfo/ss-costs';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,18 +39,39 @@ export async function GET(req: NextRequest) {
     ORDER BY bt.date DESC, bt.id DESC LIMIT 500`).all(storeId);
   const openCents = charges.filter(c => !c.settled_at).reduce((s, c) => s + Math.abs(c.amount_cents), 0);
   const settledCents = charges.filter(c => c.settled_at).reduce((s, c) => s + Math.abs(c.amount_cents), 0);
+  // ShipSourced's own charges also carry a fulfilment line × centre so the
+  // 3PL P&L can be built from them (defaults from merchant rules, worker
+  // overrides remembered per merchant).
+  const store: any = db.prepare('SELECT name FROM stores WHERE id = ?').get(storeId);
+  const isSs = store?.name === 'ShipSourced';
+  const byLine: Record<string, number> = {};
+  for (const c of charges) {
+    if (!isSs) continue;
+    const k = classifyRow(db, c.id, c.description);
+    c.fulfilment = { ...k, lineLabel: SS_LINE_LABEL[k.line], centerLabel: SS_CENTER_LABEL[k.center] };
+    if (!c.settled_at && k.line !== 'movement') byLine[k.line] = (byLine[k.line] || 0) + Math.abs(c.amount_cents);
+  }
   return NextResponse.json({
     charges,
-    summary: { count: charges.length, open_cents: openCents, settled_cents: settledCents },
+    summary: { count: charges.length, open_cents: openCents, settled_cents: settledCents, by_line: isSs ? byLine : null },
+    fulfilment: isSs ? { lines: SS_LINE_LABEL, centers: SS_CENTER_LABEL } : null,
   });
 }
 
 // PATCH { txnId, settled } — mark one charge individually paid/unpaid.
 export async function PATCH(req: NextRequest) {
-  const { txnId, settled } = await req.json().catch(() => ({}));
+  const body = await req.json().catch(() => ({}));
+  const { txnId, settled } = body;
   if (!txnId) return NextResponse.json({ error: 'txnId required' }, { status: 400 });
   const db = getDb();
   ensureSettlementSchema(db);
+  // { txnId, line, center, remember } — classify a ShipSourced charge for the 3PL P&L
+  if (body.line || body.center) {
+    if (!(body.line in SS_LINE_LABEL) || !(body.center in SS_CENTER_LABEL)) return NextResponse.json({ error: 'bad line/center' }, { status: 400 });
+    const row: any = db.prepare('SELECT description FROM bank_transactions WHERE id = ?').get(txnId);
+    if (!row) return NextResponse.json({ error: 'transaction not found' }, { status: 404 });
+    return NextResponse.json(setRowClass(db, txnId, body.line, body.center, body.actor || 'admin', !!body.remember, row.description));
+  }
   const r = db.prepare("UPDATE bank_transactions SET settled_at = ? WHERE id = ?")
     .run(settled ? new Date().toISOString() : null, txnId);
   if (r.changes === 0) return NextResponse.json({ error: 'transaction not found' }, { status: 404 });

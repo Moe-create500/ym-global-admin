@@ -53,6 +53,20 @@ export interface SSOpenOrdersResponse {
     productCostCents: number; productCostComplete: boolean }[];
   recent: { days: number; charges: number; avgTotalCents: number; avgLabelCents: number; avgProductCents: number; avgPickPackCents: number; avgChinaFeeCents: number; avgManagerCents: number };
 }
+/** ShipSourced P&L inputs by fulfilment centre for a period — see ShipSourced /api/integration/pnl. */
+export interface SSPnlRegion {
+  region: string; charges: number; noWarehouse: number; productCostMissing: number;
+  revenue: { shipping: number; product: number; chinaFee: number; managerFee: number; pickPack: number; service: Record<string, number>; packaging: number; total: number };
+  direct: { labelCost: number; productCost: number; serviceCost: number; packagingCost: number; total: number };
+}
+export interface SSPnlResponse {
+  asOf: string; period: { from: string; to: string }; note: string; regions: SSPnlRegion[];
+  carrierInvoices: { carrierType: string; lane: string; invoices: number; usdCents: number; managerFeeCents: number; creditsCents: number }[];
+}
+export async function getSsPnl(from: string, to: string): Promise<SSPnlResponse> {
+  return apiFetch<SSPnlResponse>(`/api/integration/pnl?from=${from}&to=${to}`);
+}
+
 export async function getOpenOrders(clientId: string): Promise<SSOpenOrdersResponse> {
   return apiFetch<SSOpenOrdersResponse>(`/api/integration/open-orders?clientId=${encodeURIComponent(clientId)}`);
 }

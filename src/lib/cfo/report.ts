@@ -73,11 +73,21 @@ function pnlFor(db: DatabaseType.Database, storeIds: string[], p: Period): PnlAg
   return r;
 }
 
-function pnlFigures(db: DatabaseType.Database, unit: Scope, p: Period, c: Period, now: number) {
+function pnlFigures(db: DatabaseType.Database, unit: Scope, p: Period, c: Period, now: number, extras?: OverviewExtras) {
   const src = 'daily_pnl (order, ShipSourced, ads and invoice syncs)';
-  if (unit.kind === 'warehouse') {
-    const note = 'Warehouse-level P&L needs the ShipSourced location mapping (Phase 2) — not derived from bank accounts or client names';
-    return { revenue: missing('revenue', src, note), netProfit: missing('net_profit', src, note), grossProfit: missing('gross_profit', src, note), overhead: missing('overhead', src, note), agg: null as PnlAgg | null };
+  if (unit.kind === 'warehouse' || unit.id === 'ss') {
+    // ShipSourced is a 3PL: its P&L is billed revenue and direct costs per
+    // warehouse from ShipSourced itself + YM's classified ledger costs.
+    const pnl = extras?.ssPnl;
+    const ssSrc = 'ShipSourced billing (per warehouse) + YM ledger rows classified by fulfilment line × centre';
+    if (!pnl) return { revenue: missing('revenue', ssSrc, 'ShipSourced P&L not loaded'), netProfit: missing('net_profit', ssSrc, 'ShipSourced P&L not loaded'), grossProfit: missing('gross_profit', ssSrc, 'ShipSourced P&L not loaded'), overhead: missing('overhead', ssSrc, 'ShipSourced P&L not loaded'), agg: null as PnlAgg | null };
+    const cen = unit.id === 'ss' ? null : pnl.centers.find(x => x.center === (unit.warehouse === 'US' ? 'CA' : 'CN'))!;
+    const opex = cen ? cen.opexCents : pnl.combined.opexCents;
+    const unavailable = pnl.source.shipsourced !== 'live' ? `ShipSourced feed unavailable${pnl.source.reason ? `: ${pnl.source.reason}` : ''} — revenue and direct costs unknown` : undefined;
+    const asOf = pnl.source.asOf || null;
+    const fig = (key: string, cents: number | null, note?: string) => cents == null ? missing(key, ssSrc, unavailable || 'unknown') : figure({ cents, asOf, source: ssSrc, trace: key, note }, now);
+    const gross = cen ? cen.grossCents : (pnl.combined.revenueCents == null || pnl.combined.directCents == null ? null : pnl.combined.revenueCents - pnl.combined.directCents);
+    return { revenue: fig('revenue', cen ? cen.revenueCents : pnl.combined.revenueCents), netProfit: fig('net_profit', cen ? cen.netCents : pnl.combined.netCents), grossProfit: fig('gross_profit', gross), overhead: fig('overhead', opex, `ledger costs classified to this centre incl. shared allocation ${pnl.shared.basis}`), agg: null as PnlAgg | null };
   }
   const a = pnlFor(db, unit.storeIds, p), b = pnlFor(db, unit.storeIds, c);
   if (!a.rows) {
@@ -200,8 +210,10 @@ function obligationsDueSoon(db: DatabaseType.Database, unit: Scope, now: number)
   return sumFigures(parts, 'obligations', 'card minimums due ≤14d + ShipSourced balances owed', { partial: true });
 }
 
-export function buildRow(db: DatabaseType.Database, unit: Scope, p: Period, c: Period, issueCount: number, now: number): BusinessRow {
-  const pnl = pnlFigures(db, unit, p, c, now);
+export interface OverviewExtras { ssPnl?: import('./ss-pnl').SsPnl | null }
+
+export function buildRow(db: DatabaseType.Database, unit: Scope, p: Period, c: Period, issueCount: number, now: number, extras?: OverviewExtras): BusinessRow {
+  const pnl = pnlFigures(db, unit, p, c, now, extras);
   const { cash, cardDebt } = cashFigures(db, unit, now);
   const netAssets = netAssetsFigure(db, unit, now);
   let status: BusinessRow['status'] = 'ok'; let statusReason = 'sources fresh';
@@ -212,11 +224,11 @@ export function buildRow(db: DatabaseType.Database, unit: Scope, p: Period, c: P
   return { unit, revenue: pnl.revenue, netProfit: pnl.netProfit, grossProfit: pnl.grossProfit, overhead: pnl.overhead, cash, cardDebt, netAssets, status, statusReason, issueCount };
 }
 
-export function getOverview(db: DatabaseType.Database, scope: Scope, period: Period, issueCountByUnit: Map<string, number>, now = Date.now()): Overview {
+export function getOverview(db: DatabaseType.Database, scope: Scope, period: Period, issueCountByUnit: Map<string, number>, now = Date.now(), extras?: OverviewExtras): Overview {
   const compare = priorPeriod(period);
   const units = childUnits(db, scope);
-  const rows = units.map(u => buildRow(db, u, period, compare, issueCountByUnit.get(u.id) || 0, now));
-  const self = buildRow(db, scope, period, compare, issueCountByUnit.get(scope.id) || 0, now);
+  const rows = units.map(u => buildRow(db, u, period, compare, issueCountByUnit.get(u.id) || 0, now, extras));
+  const self = buildRow(db, scope, period, compare, issueCountByUnit.get(scope.id) || 0, now, extras);
   const { cash } = cashFigures(db, scope, now);
   const unalloc = unallocatedFor(db, scope, period);
 

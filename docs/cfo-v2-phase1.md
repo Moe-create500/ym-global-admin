@@ -68,6 +68,12 @@ Local smoke against a fresh production snapshot: 19 rows, ~8 ms per scope; API 4
 - Client-owned inventory: only `usProductCostExempt` / `productCostExempt` exist today (client-level); per-product `ProductOwnership` is designed but its table is not migrated.
 - FX: China costs are converted at a hard-coded 0.137 per document; no dated rate table anywhere.
 
-## Phase 2 / 3 (not started)
+## Phase 2 — started 2026-09-15: ShipSourced P&L by fulfilment centre
+
+- **Cost classification** (`src/lib/cfo/ss-costs.ts`): every ledger row paired to ShipSourced gets a fulfilment line (product/COGS, carrier & labels, China agent payments, packaging & supplies, warehouse lease, labor, software, equipment, card fees, marketplace purchase, other) and a centre (California / China / shared). Defaults by merchant rule; workers change either on the Position tab ("Card charges linked to this store") and the choice is remembered per merchant (`ss_cost_rules`). Money movement is never a cost.
+- **ShipSourced feeds** (PR branch `feat/integration-billing-flags`): `/api/integration/pnl` — billed revenue + ShipSourced-recorded direct costs per warehouse (US/CN via `Shipment.warehouseId`, carrier-name inference, else "unknown") and settled carrier invoices by lane; `/api/integration/open-orders` — open orders priced per line.
+- **P&L composition** (`src/lib/cfo/ss-pnl.ts`): revenue − direct = gross per centre; ledger opex by centre; shared opex allocated by billed-revenue share (50/50 and labelled when revenue is unknown); totals preserved (CA + CN = ledger). Shown on the ShipSourced store's P&L tab and in the Overview's ShipSourced California / China rows. Unknown stays null, never $0.
+
+## Phase 3 (not started)
 
 Phase 2: warehouse P&L from `BillingCharge ⟕ Shipment.warehouseId ⟕ Warehouse.country` + carrier invoices by `carrierType`, exposed through a new `x-internal-key` endpoint on ShipSourced; posting layer (integer cents, balanced entries, source ids, period lock); allocation rules; eliminations; monthly close states. Phase 3: evidence-based AI briefings over the validated reporting tools.
