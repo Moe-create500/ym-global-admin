@@ -1435,7 +1435,17 @@ function CFOContent() {
                         </div>
                       ) : (
                         <span className="cursor-pointer hover:text-blue-400" onClick={() => { setEditingOverride('unfulfilled_details'); setOverrideInput(cfoOverrides['unfulfilled_details'] || ''); }}>
-                          {cfoOverrides['unfulfilled_details'] || (<>
+                          {cfoOverrides['unfulfilled_details'] || ((data.details.fulfillment as any).source === 'shipsourced' ? (() => {
+                            const ss = (data.details.fulfillment as any).ss;
+                            const st = Object.entries(ss.byStatus as Record<string, number>).map(([k, v]) => `${v} ${k.toLowerCase().replace('_', ' ')}`).join(', ');
+                            return (<>
+                              <span className="text-emerald-300">● live from ShipSourced</span> — {ss.openCount} open orders{st ? ` (${st})` : ''}
+                              <span className="block text-slate-500 mt-0.5">
+                                product cost {cents(ss.productCostCents)} exact from its catalogue{ss.clientOwned ? ' (client-owned goods → $0)' : ''}{ss.productCostIncomplete > 0 ? ` · ${ss.productCostIncomplete} orders have a SKU with no cost on file` : ''} · label/pick-pack {cents(ss.perOrderOtherCents)}/order from its last {ss.recentCharges} billed charges
+                                {ss.clients.length > 1 && <> · {ss.clients.map((c: any) => `${c.name} ${c.openCount}`).join(', ')}</>}
+                              </span>
+                            </>);
+                          })() : (<>
                             {data.details.fulfillment.total_unfulfilled} unfulfilled orders
                             {data.details.fulfillment.total_unfulfilled > 0 && (
                               <span className="ml-2 text-slate-500">
@@ -1445,7 +1455,8 @@ function CFOContent() {
                                 )})
                               </span>
                             )}
-                          </>)}
+                            <span className="block text-amber-300/90 mt-0.5">projection — ShipSourced feed unavailable{(data.details.fulfillment as any).source_note ? `: ${(data.details.fulfillment as any).source_note}` : ''}</span>
+                          </>))}
                         </span>
                       )}
                     </td>
