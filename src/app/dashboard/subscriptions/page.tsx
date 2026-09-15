@@ -221,11 +221,11 @@ function Drawer({ id, stores, onClose, onChanged }: { id: string; stores: { id: 
               <div className="flex items-baseline justify-between mb-1.5"><p className="text-[11px] uppercase tracking-wider text-slate-500">Source transactions ({d!.transactions.length})</p><p className="text-slate-200 tabular-nums">total {money(s.totalCents)}</p></div>
               <p className="text-[11px] text-slate-500 mb-2">Descriptions seen: {s.descriptions.join(' · ')}</p>
               <div className="overflow-x-auto rounded border border-slate-800">
-                <table className="min-w-full text-[12px]">
+                <table className="w-full text-[12px]">
                   <thead className="bg-slate-900/60 text-slate-500 uppercase text-[10px] tracking-wider"><tr><th className="px-2.5 py-1.5 text-left">Date</th><th className="px-2.5 py-1.5 text-left">Description</th><th className="px-2.5 py-1.5 text-left">Account</th><th className="px-2.5 py-1.5 text-left">Store</th><th className="px-2.5 py-1.5 text-right">Amount</th><th className="px-2.5 py-1.5"></th></tr></thead>
                   <tbody>{d!.transactions.map(t => (
                     <tr key={t.id} className="border-t border-slate-800/60">
-                      <td className="px-2.5 py-1.5 whitespace-nowrap text-slate-300">{t.date}</td><td className="px-2.5 py-1.5 text-slate-200 max-w-[300px] truncate" title={t.description}>{t.description}</td><td className="px-2.5 py-1.5 whitespace-nowrap text-slate-400">{t.account}</td><td className="px-2.5 py-1.5 text-slate-400">{t.store_name || '—'}</td><td className="px-2.5 py-1.5 text-right tabular-nums text-slate-100">{money(Math.abs(t.amount_cents))}</td>
+                      <td className="px-2.5 py-1.5 whitespace-nowrap text-slate-300">{t.date}</td><td className="px-2.5 py-1.5 text-slate-200 max-w-[200px] truncate" title={t.description}>{t.description}</td><td className="px-2.5 py-1.5 whitespace-nowrap text-slate-400 text-[11px]">{t.account.replace("American Express", "Amex").replace("Bank of America", "BoA")}</td><td className="px-2.5 py-1.5 text-slate-400">{t.store_name || '—'}</td><td className="px-2.5 py-1.5 text-right tabular-nums text-slate-100">{money(Math.abs(t.amount_cents))}</td>
                       <td className="px-2.5 py-1.5"><Link href={`/dashboard/transactions?q=${encodeURIComponent((t.description || '').slice(0, 20))}`} className="text-[11px] text-slate-500 hover:text-white">ledger →</Link></td>
                     </tr>
                   ))}</tbody>
