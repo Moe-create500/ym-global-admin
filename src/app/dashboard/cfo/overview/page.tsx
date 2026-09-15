@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { CfoTabs } from '@/components/cfo/CfoTabs';
 import { FigureCell, type FigureDto, money, ageLabel } from '@/components/cfo/FigureCell';
 import { TraceDrawer } from '@/components/cfo/TraceDrawer';
+import { readGlobalStore, writeGlobalStore, onGlobalStoreChange } from '@/components/GlobalStore';
 
 /** CFO Overview (v2). One screen: position now, performance for a period,
  *  each business side by side, what is reliable and what needs fixing.
@@ -43,7 +44,8 @@ function presetPeriod(p: string): { from: string; to: string } {
 
 function OverviewContent() {
   const sp = useSearchParams(); const router = useRouter();
-  const scope = sp.get('scope') || 'all';
+  // Scope from the URL; else the globally pinned store; else everything.
+  const scope = sp.get('scope') || (sp.get('storeId') ? `store:${sp.get('storeId')}` : '') || (typeof window !== 'undefined' && readGlobalStore() ? `store:${readGlobalStore()}` : 'all');
   const preset = sp.get('period') || 'mtd';
   const custom = sp.get('from') && sp.get('to') ? { from: sp.get('from')!, to: sp.get('to')! } : null;
   const period = useMemo(() => custom || presetPeriod(preset), [preset, custom?.from, custom?.to]);
@@ -54,6 +56,10 @@ function OverviewContent() {
   const [issueFilter, setIssueFilter] = useState<'all' | 'high' | 'medium' | 'low'>('all');
 
   const setParam = (k: string, v: string | null) => { const n = new URLSearchParams(sp.toString()); if (v == null) n.delete(k); else n.set(k, v); router.replace(`/dashboard/cfo/overview?${n.toString()}`); };
+  // Picking a store scope pins it globally (same as the store selector); a
+  // global pick elsewhere moves this page too. One selection, every surface.
+  const setScope = (id: string) => { if (id.startsWith('store:')) writeGlobalStore(id.slice(6)); setParam('scope', id); };
+  useEffect(() => onGlobalStoreChange(id => { if (id) setParam('scope', `store:${id}`); }), [sp]);
 
   useEffect(() => {
     setErr(''); setData(null);
@@ -80,7 +86,7 @@ function OverviewContent() {
       {/* Header controls: scope, period, comparison, currency, freshness */}
       <div className="rounded-xl bg-slate-900/60 px-4 py-3 mb-5 flex flex-wrap items-end gap-x-6 gap-y-3 text-[12px]">
         <label className="flex flex-col gap-1"><span className="text-[10px] uppercase tracking-wider text-slate-500">Business scope</span>
-          <select value={scope} onChange={e => setParam('scope', e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-slate-100 min-w-[220px]">
+          <select value={scope} onChange={e => setScope(e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-slate-100 min-w-[220px]">
             {(data?.scopes || [{ id: 'all', label: 'Everything', kind: 'group', parentId: null, mapping: 'resolved' }]).map(s => (
               <option key={s.id} value={s.id}>{s.parentId && s.parentId !== 'all' ? '   ' : ''}{s.label}{s.mapping === 'unresolved' ? ' (mapping pending)' : ''}</option>
             ))}

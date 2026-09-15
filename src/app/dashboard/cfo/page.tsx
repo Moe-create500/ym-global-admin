@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState, useCallback, Suspense } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import StoreSelector from '@/components/StoreSelector';
+import { readGlobalStore, onGlobalStoreChange } from '@/components/GlobalStore';
 import { CfoTabs, type CfoTab } from '@/components/cfo/CfoTabs';
 import { PnlTab } from '@/components/cfo/PnlTab';
 
@@ -630,8 +631,23 @@ function CFOContent() {
   const [v2, setV2] = useState(false);
   useEffect(() => { fetch('/api/cfo/v2/flag').then(r => r.json()).then(j => setV2(!!j.enabled)).catch(() => {}); }, []);
   const show = (s: CfoTab) => !v2 || section === s;
+  const router = useRouter();
 
   const [tab, setTab] = useState<'overview' | 'store'>(storeId ? 'store' : 'overview');
+  // With v2 on there is ONE navigation: the section tabs. The old
+  // "overview / store detail" pills go away; a store is always in view —
+  // from the URL, else the globally pinned store — and the all-stores
+  // snapshot table shows only when no store is chosen.
+  const effTab: 'overview' | 'store' = v2 ? (storeId ? 'store' : 'overview') : tab;
+  useEffect(() => {
+    if (!v2 || storeId) return;
+    const g = readGlobalStore();
+    if (g) router.replace(`/dashboard/cfo?storeId=${encodeURIComponent(g)}&tab=${section}`);
+  }, [v2, storeId, section]);
+  useEffect(() => {
+    if (!v2) return;
+    return onGlobalStoreChange(id => { if (id && id !== storeId) router.replace(`/dashboard/cfo?storeId=${encodeURIComponent(id)}&tab=${section}`); });
+  }, [v2, storeId, section]);
   const [data, setData] = useState<CFOData | null>(null);
   const [loading, setLoading] = useState(true);
   const [stores, setStores] = useState<{ id: string; name: string }[]>([]);
@@ -687,7 +703,7 @@ function CFOContent() {
   }, [storeId]);
 
   useEffect(() => {
-    if (tab === 'overview') loadOverview();
+    if (effTab === 'overview') loadOverview();
     else if (storeId) loadData();
     else { setData(null); setLoading(false); }
   }, [tab, storeId]);
@@ -892,12 +908,12 @@ function CFOContent() {
           <div>
             <h1 className="text-2xl font-bold text-white">CFO Dashboard</h1>
             <p className="text-sm text-slate-400 mt-1">
-              {tab === 'overview' ? 'All Stores Overview' : selectedStore ? `${selectedStore.name} — Balance Sheet` : 'Select a store'}
+              {effTab === 'overview' ? (v2 ? 'Pick a store — every store has its own CFO' : 'All Stores Overview') : selectedStore ? `${selectedStore.name} — ${v2 ? ({ position: 'Position', pnl: 'P&L', recon: 'Money Flow & Reconciliation', history: 'History', overview: 'Overview' } as Record<string, string>)[section] : 'Balance Sheet'}` : 'Select a store'}
             </p>
           </div>
-          {tab === 'store' && <StoreSelector />}
+          {(effTab === 'store' || v2) && <StoreSelector />}
         </div>
-        {tab === 'store' && data && (
+        {effTab === 'store' && data && (
           <div className="flex items-center gap-3">
             {snapshotSaved && (
               <span className="text-xs text-emerald-300">Saved {snapshotSaved}</span>
@@ -918,12 +934,12 @@ function CFOContent() {
 
       {v2 && <CfoTabs active={section} storeId={storeId || undefined} />}
 
-      {/* Tabs */}
-      <div className="flex gap-1.5 mb-6 w-fit">
+      {/* Tabs (v1 only — v2 uses the section tabs above) */}
+      {!v2 && <div className="flex gap-1.5 mb-6 w-fit">
         <button
           onClick={() => setTab('overview')}
           className={`px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
-            tab === 'overview' ? 'bg-slate-100 text-slate-900' : 'text-slate-400 hover:text-white bg-slate-900/70'
+            effTab === 'overview' ? 'bg-slate-100 text-slate-900' : 'text-slate-400 hover:text-white bg-slate-900/70'
           }`}
         >
           OVERVIEW CFO&apos;S
@@ -931,15 +947,15 @@ function CFOContent() {
         <button
           onClick={() => setTab('store')}
           className={`px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
-            tab === 'store' ? 'bg-slate-100 text-slate-900' : 'text-slate-400 hover:text-white bg-slate-900/70'
+            effTab === 'store' ? 'bg-slate-100 text-slate-900' : 'text-slate-400 hover:text-white bg-slate-900/70'
           }`}
         >
           Store Detail
         </button>
-      </div>
+      </div>}
 
       {/* OVERVIEW TAB */}
-      {tab === 'overview' ? (
+      {effTab === 'overview' ? (
         overviewLoading ? (
           <div className="flex items-center justify-center h-32">
             <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400" />

@@ -3,6 +3,7 @@ import { type Scope, childUnits, listScopes } from './scopes';
 import { type Figure, figure, missing, sumFigures, FRESH_HOURS, hoursSince } from './figures';
 import { getPaymentsInFlight } from '../payments-in-flight';
 import { unpairedOutflows } from './movements';
+import { cardOwedCents } from '../bank-balances';
 
 /** The CFO overview reporting service. Deterministic reads over the existing
  *  tables — nothing here writes, calls a provider, or re-derives a number the
@@ -119,9 +120,8 @@ function cashFigures(db: DatabaseType.Database, unit: Scope, now: number) {
   const cash = dep.length
     ? sumFigures(dep.map(a => figure({ cents: a.balance_available_cents, asOf: a.balance_updated_at, source: `${a.institution_name} ··${a.last_four}`, trace: 'cash', maxAgeHours: FRESH_HOURS.bank }, now)), 'cash', 'bank_accounts (Plaid)', { partial: true })
     : missing('cash', 'bank_accounts', unit.kind === 'store' ? 'no bank account is assigned to this store — cash lives at the company level' : 'no bank accounts in scope');
-  const owed = (a: Acct) => { const limit = a.credit_limit_cents || ((a.balance_available_cents || 0) + (a.balance_ledger_cents || 0)); return limit - (a.balance_available_cents || 0); };
   const cardDebt = cards.length
-    ? sumFigures(cards.map(a => figure({ cents: owed(a), asOf: a.balance_updated_at, source: `${a.institution_name} ··${a.last_four}`, trace: 'card_debt', maxAgeHours: FRESH_HOURS.bank }, now)), 'card_debt', 'bank_accounts (Plaid)', { partial: true })
+    ? sumFigures(cards.map(a => figure({ cents: cardOwedCents(a), asOf: a.balance_updated_at, source: `${a.institution_name} ··${a.last_four}`, trace: 'card_debt', maxAgeHours: FRESH_HOURS.bank }, now)), 'card_debt', 'bank_accounts (Plaid)', { partial: true })
     : missing('card_debt', 'bank_accounts', 'no credit cards assigned in scope');
   return { cash, cardDebt, accounts: accts };
 }

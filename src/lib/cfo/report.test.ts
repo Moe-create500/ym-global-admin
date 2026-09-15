@@ -229,3 +229,20 @@ describe('movements', () => {
     expect(issues.find(i => i.kind === 'unallocated' && i.title.includes('7881'))!.cents).toBe(400000);
   });
 });
+
+describe('bank-level centralisation', () => {
+  it('card debt on the CFO equals what the Credit Cards page shows (|ledger|), never limit − available', async () => {
+    const { cardOwedCents, netContributionCents } = await import('../bank-balances');
+    // ··1022 as seen in prod: limit 58,179.47, available 0, ledger 2,758.73
+    expect(cardOwedCents({ account_type: 'credit', credit_limit_cents: 5817947, balance_available_cents: 0, balance_ledger_cents: 275873 })).toBe(275873);
+    // over-limit card: ledger wins over a negative available
+    expect(cardOwedCents({ account_type: 'credit', credit_limit_cents: 5000000, balance_available_cents: -280000, balance_ledger_cents: 5307012 })).toBe(5307012);
+    // no ledger yet → fallback limit − available, floored at 0
+    expect(cardOwedCents({ account_type: 'credit', credit_limit_cents: 100000, balance_available_cents: 40000, balance_ledger_cents: null })).toBe(60000);
+    expect(cardOwedCents({ account_type: 'credit', credit_limit_cents: 0, balance_available_cents: 2928, balance_ledger_cents: null })).toBe(0);
+    expect(netContributionCents({ account_type: 'depository', credit_limit_cents: null, balance_available_cents: 12345, balance_ledger_cents: 12345 })).toBe(12345);
+    const db = freshDb();
+    const ov = getOverview(db, resolveScope(db, 'store:pb')!, PERIOD, new Map(), NOW);
+    expect(ov.rows[0].cardDebt.cents).toBe(900000);   // |ledger| of card-pb, not limit − available (900000 here too, by construction)
+  });
+});

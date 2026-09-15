@@ -2,6 +2,7 @@ import type DatabaseType from 'better-sqlite3';
 import { type Scope } from './scopes';
 import { type Period, _internals } from './report';
 import { unpairedOutflows } from './movements';
+import { cardOwedCents } from '../bank-balances';
 
 /** Drilldown for a headline / table figure: what it means, how it is
  *  computed, the records that went into it, what was excluded, and when each
@@ -52,10 +53,9 @@ export function traceFigure(db: DatabaseType.Database, key: string, scope: Scope
 
   if (key === 'cash' || key === 'available_cash' || key === 'card_debt') {
     const accts = _internals.accountsFor(db, scope).filter(a => key === 'card_debt' ? a.account_type === 'credit' : a.account_type !== 'credit');
-    const owed = (a: any) => { const limit = a.credit_limit_cents || ((a.balance_available_cents || 0) + (a.balance_ledger_cents || 0)); return limit - (a.balance_available_cents || 0); };
-    const rows = accts.map(a => [a.institution_name, `${a.account_name} ··${a.last_four}`, key === 'card_debt' ? owed(a) : a.balance_available_cents, a.balance_updated_at]);
-    const total = accts.reduce((s, a) => s + (key === 'card_debt' ? owed(a) : (a.balance_available_cents || 0)), 0);
-    return { ...base, period: null, key, title: key === 'card_debt' ? 'Card debt' : 'Available cash', definition: key === 'card_debt' ? 'What the card feeds report as owed: credit limit − available.' : 'Available balance on every checking/savings account in scope, as last reported by the bank feed.', formula: key === 'card_debt' ? 'Σ (credit_limit − balance_available) over credit accounts' : 'Σ bank_accounts.balance_available_cents over depository accounts',
+    const rows = accts.map(a => [a.institution_name, `${a.account_name} ··${a.last_four}`, key === 'card_debt' ? cardOwedCents(a) : a.balance_available_cents, a.balance_updated_at]);
+    const total = accts.reduce((s, a) => s + (key === 'card_debt' ? cardOwedCents(a) : (a.balance_available_cents || 0)), 0);
+    return { ...base, period: null, key, title: key === 'card_debt' ? 'Card debt' : 'Available cash', definition: key === 'card_debt' ? 'What the bank reports as owed on each card (ledger balance) — the same number as the Credit Cards page.' : 'Available balance on every checking/savings account in scope, as last reported by the bank feed.', formula: key === 'card_debt' ? 'Σ |bank_accounts.balance_ledger_cents| over credit accounts (src/lib/bank-balances.ts)' : 'Σ bank_accounts.balance_available_cents over depository accounts',
       sources: accts.map(a => ({ system: 'Plaid', table: `bank_accounts ${a.institution_name} ··${a.last_four}`, lastSync: a.balance_updated_at })),
       included: { columns: ['institution', 'account', 'amount', 'balance as of'], rows, total, truncated: false },
       excluded: ['Accounts marked hidden on the CFO sheet', 'Merged / disconnected accounts', scope.kind === 'store' ? 'Accounts assigned to other stores' : ''].filter(Boolean),
