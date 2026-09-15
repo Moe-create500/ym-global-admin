@@ -16,7 +16,8 @@ export async function GET(req: NextRequest) {
   if (!isApiAuthorized(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const db = getDb();
   const sp = req.nextUrl.searchParams;
-  if (!isCfoV2Enabled(db, sp.get('v2'))) return NextResponse.json({ error: 'CFO v2 is off', enabled: false }, { status: 404 });
+  // Off is a normal state, not an error: the page shows how to switch it on.
+  if (!isCfoV2Enabled(db, sp.get('v2'))) return NextResponse.json({ enabled: false });
 
   const scope = resolveScope(db, sp.get('scope'));
   if (!scope) return NextResponse.json({ error: 'unknown scope' }, { status: 400 });

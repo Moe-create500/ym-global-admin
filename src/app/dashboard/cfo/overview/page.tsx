@@ -60,7 +60,7 @@ function OverviewContent() {
     const v2 = sp.get('v2') ? `&v2=${sp.get('v2')}` : '';
     fetch(`/api/cfo/v2/overview?scope=${encodeURIComponent(scope)}&from=${period.from}&to=${period.to}${v2}`)
       .then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(j.error || `HTTP ${r.status}`)))
-      .then(setData).catch(e => setErr(String(e)));
+      .then(j => { if (j.enabled === false) setErr('CFO v2 is off'); else setData(j); }).catch(e => setErr(String(e)));
   }, [scope, period.from, period.to]);
 
   const issues = useMemo(() => (data?.issues || []).filter(i => issueFilter === 'all' || i.severity === issueFilter).sort((a, b) => ({ high: 0, medium: 1, low: 2 }[a.severity] - { high: 0, medium: 1, low: 2 }[b.severity])), [data, issueFilter]);
