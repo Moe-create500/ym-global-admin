@@ -80,7 +80,7 @@ export default function Sidebar() {
   };
 
   return (
-    <aside className="fixed left-0 top-0 bottom-0 w-56 bg-slate-900 border-r border-slate-800 flex flex-col z-40 hidden lg:flex">
+    <aside className="glass fixed left-0 top-0 bottom-0 w-56 border-r flex flex-col z-40 hidden lg:flex">
       <div className="px-5 py-5 border-b border-slate-800">
         <h1 className="text-lg font-bold text-white flex items-center gap-2">
           <span className="inline-block w-2.5 h-2.5 rounded-full bg-bd-primary" />
@@ -98,7 +98,7 @@ export default function Sidebar() {
                 return (
                   <Link key={item.href} href={item.href}
                     className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      active ? 'bg-bd-primary text-white shadow-lg shadow-pink-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                      active ? 'bg-purple-500/15 text-white ring-1 ring-inset ring-purple-400/30' : 'text-slate-400 hover:text-white hover:bg-slate-800/70'
                     }`}>
                     <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                       <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />

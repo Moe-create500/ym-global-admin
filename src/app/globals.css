@@ -2,18 +2,69 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  @apply bg-slate-950 text-gray-100;
+/* Midnight finance theme — tokens live in tailwind.config.ts (slate = surface
+   scale, purple-500 = the one accent). This file carries what utilities
+   can't: the ambient canvas, the glass edge every panel shares, type
+   features, and the single entrance motion. See DESIGN.md. */
+:root {
+  --edge: rgba(186, 215, 247, 0.12);
+  --edge-strong: rgba(186, 215, 247, 0.2);
+  --glow: rgba(139, 92, 246, 0.16);
 }
 
-::selection { background: rgba(225, 78, 202, 0.35); }
+body {
+  @apply bg-slate-950 text-slate-100;
+  font-feature-settings: 'cv01', 'ss03', 'zero', 'tnum';
+  background-image:
+    radial-gradient(900px 520px at -10% -10%, var(--glow), transparent 60%),
+    radial-gradient(700px 420px at 110% 0%, rgba(77, 163, 255, 0.07), transparent 60%),
+    linear-gradient(var(--edge) 1px, transparent 1px),
+    linear-gradient(90deg, var(--edge) 1px, transparent 1px);
+  background-size: auto, auto, 96px 96px, 96px 96px;
+  background-attachment: fixed;
+  letter-spacing: -0.005em;
+}
 
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #171826; }
-::-webkit-scrollbar-thumb { background: #3b4368; border-radius: 3px; }
+h1, h2, h3 { letter-spacing: -0.02em; text-wrap: balance; }
+h1 { font-weight: 600; }
+strong, b { font-weight: 600; }
+.tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* Every card in the app is `rounded-xl bg-slate-900/60`: give them the
+   shared hairline edge and a faint inner top light instead of shadows. */
+[class~="bg-slate-900/60"].rounded-xl,
+[class~="bg-slate-900/40"].rounded-xl,
+.rounded-xl.bg-slate-900 {
+  border: 1px solid var(--edge);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  background-color: rgba(18, 19, 29, 0.72);
+}
+
+/* Floating panels (sidebar, top bars, drawers) are frosted. */
+.glass {
+  background-color: rgba(18, 19, 29, 0.72);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border-color: var(--edge);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+aside.bg-slate-950 { background-color: rgba(11, 12, 20, 0.92); backdrop-filter: blur(18px) saturate(140%); -webkit-backdrop-filter: blur(18px) saturate(140%); }
+
+/* Controls */
+select, input[type="search"], input[type="date"], input[type="text"], input[type="number"] {
+  border-radius: 8px;
+}
+:focus-visible { outline: 2px solid rgba(139, 92, 246, 0.6); outline-offset: 2px; }
+
+/* One entrance, nothing else moves on its own. */
+@keyframes rise-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.rise-in { animation: rise-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+@media (prefers-reduced-motion: reduce) { .rise-in { animation: none; } * { transition-duration: 0.01ms !important; } }
+
+::selection { background: rgba(139, 92, 246, 0.35); }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0b0c14; }
+::-webkit-scrollbar-thumb { background: #343750; border-radius: 3px; }
 
 input[type="number"]::-webkit-inner-spin-button,
-input[type="number"]::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
+input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
