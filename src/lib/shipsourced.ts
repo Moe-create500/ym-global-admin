@@ -28,6 +28,35 @@ export interface SSClient {
   isActive: boolean;
 }
 
+/** Billing Duty flags (BillingFlag rows) summarised by rule × client. Served
+ *  by ShipSourced's /api/integration/billing-flags once that PR is live; until
+ *  then the call fails and the CFO shows the feed as unavailable — never as
+ *  zero tickets. */
+export interface SSBillingFlagsResponse {
+  asOf: string;
+  flags: { ruleKey: string; severity: string; status: string; count: number; amountCents: number | null; clientId: string | null; company: string | null; suppressed?: boolean }[];
+}
+export async function getBillingFlags(): Promise<SSBillingFlagsResponse> {
+  return apiFetch<SSBillingFlagsResponse>('/api/integration/billing-flags');
+}
+
+/** A client's OPEN orders with ShipSourced's own cost knowledge — see
+ *  ShipSourced /api/integration/open-orders. Product cost is exact per line;
+ *  `recent` is the client's last-60-day billed economics per order. */
+export interface SSOpenOrdersResponse {
+  asOf: string;
+  client: { id: string; name: string; productCostExempt: boolean; usProductCostExempt: boolean };
+  openCount: number;
+  byStatus: Record<string, number>;
+  openOrders: { id: string; status: string; createdAt: string | null; orderDate: string | null; totalPrice: number | null; warehouse: string | null;
+    lineItems: { sku: string | null; name: string | null; quantity: number; unitCostCents: number; homeWarehouse: string | null; costCents: number; costKnown: boolean; clientOwned: boolean }[];
+    productCostCents: number; productCostComplete: boolean }[];
+  recent: { days: number; charges: number; avgTotalCents: number; avgLabelCents: number; avgProductCents: number; avgPickPackCents: number; avgChinaFeeCents: number; avgManagerCents: number };
+}
+export async function getOpenOrders(clientId: string): Promise<SSOpenOrdersResponse> {
+  return apiFetch<SSOpenOrdersResponse>(`/api/integration/open-orders?clientId=${encodeURIComponent(clientId)}`);
+}
+
 export interface SSBillingDay {
   date: string;
   totalShipping: number;

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { reconcileSnapshot } from '@/lib/cfo-reconcile';
 import { getPaymentsInFlight } from '@/lib/payments-in-flight';
+import { fetchOpenOrdersEstimate } from '@/lib/ss-open-orders';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -64,11 +65,16 @@ export async function GET(req: NextRequest) {
   }
   const projectedCents = estimatedCents + (withoutEstimate * avgPerOrder);
 
+  // Prefer ShipSourced's own view of the open orders: it knows exactly which
+  // orders are open and prices the product cost per line; the label/pick-pack
+  // part comes from this client's last-60-day billed average. YM's local
+  // projection is only the fallback, and the response says which one it is.
+  const ssOpen = store.name === 'ShipSourced' ? { ok: false as const, reason: '3PL itself' } : await fetchOpenOrdersEstimate(db, storeId);
   const fulfillment = {
     billed_cents: store.ss_charges_pending_cents || 0,
-    estimated_cents: projectedCents,
+    estimated_cents: ssOpen.ok ? ssOpen.estimate.estimatedCents : projectedCents,
     estimated_order_count: ssCharges?.estimated_order_count || 0,
-    total_unfulfilled: totalUnfulfilled,
+    total_unfulfilled: ssOpen.ok ? ssOpen.estimate.openCount : totalUnfulfilled,
     unfulfilled_with_estimate: withEstimate,
     without_estimate: withoutEstimate,
     avg_per_order_cents: avgPerOrder,
@@ -76,6 +82,11 @@ export async function GET(req: NextRequest) {
     paid_cents: ssPaid?.total || 0,
     total_owed_cents: (store.ss_net_owed_cents || 0),
     balance_cents: store.ss_net_owed_cents || 0,
+    source: ssOpen.ok ? 'shipsourced' : 'projection',
+    source_note: ssOpen.ok ? null : ssOpen.reason,
+    local_unfulfilled: totalUnfulfilled,
+    local_projected_cents: projectedCents,
+    ss: ssOpen.ok ? ssOpen.estimate : null,
   };
 
   // 2. Ad Spend Debt — from card payments (charged - paid per card)
