@@ -22,3 +22,6 @@ tsconfig.tsbuildinfo
 .next.bak*/
 .next.broken*/
 lib.pre-scp*/
+
+# also matches a symlink named node_modules (a trailing slash only matches directories)
+node_modules
