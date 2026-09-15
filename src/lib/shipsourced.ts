@@ -28,6 +28,18 @@ export interface SSClient {
   isActive: boolean;
 }
 
+/** Billing Duty flags (BillingFlag rows) summarised by rule × client. Served
+ *  by ShipSourced's /api/integration/billing-flags once that PR is live; until
+ *  then the call fails and the CFO shows the feed as unavailable — never as
+ *  zero tickets. */
+export interface SSBillingFlagsResponse {
+  asOf: string;
+  flags: { ruleKey: string; severity: string; status: string; count: number; amountCents: number | null; clientId: string | null; company: string | null; suppressed?: boolean }[];
+}
+export async function getBillingFlags(): Promise<SSBillingFlagsResponse> {
+  return apiFetch<SSBillingFlagsResponse>('/api/integration/billing-flags');
+}
+
 export interface SSBillingDay {
   date: string;
   totalShipping: number;

@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import StoreSelector from '@/components/StoreSelector';
+import { CfoTabs, type CfoTab } from '@/components/cfo/CfoTabs';
+import { PnlTab } from '@/components/cfo/PnlTab';
 
 function cents(amount: number): string {
   return (amount / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -622,6 +624,12 @@ function StoreCardCharges({ storeId }: { storeId: string }) {
 function CFOContent() {
   const searchParams = useSearchParams();
   const storeId = searchParams.get('storeId') || '';
+  // CFO v2 sections (feature-flagged): the same page, split into Position /
+  // P&L / Money Flow & Reconciliation / History. Flag off = untouched page.
+  const section = ((searchParams.get('tab') as CfoTab) || 'position');
+  const [v2, setV2] = useState(false);
+  useEffect(() => { fetch('/api/cfo/v2/flag').then(r => r.json()).then(j => setV2(!!j.enabled)).catch(() => {}); }, []);
+  const show = (s: CfoTab) => !v2 || section === s;
 
   const [tab, setTab] = useState<'overview' | 'store'>(storeId ? 'store' : 'overview');
   const [data, setData] = useState<CFOData | null>(null);
@@ -908,6 +916,8 @@ function CFOContent() {
         )}
       </div>
 
+      {v2 && <CfoTabs active={section} storeId={storeId || undefined} />}
+
       {/* Tabs */}
       <div className="flex gap-1.5 mb-6 w-fit">
         <button
@@ -1056,6 +1066,7 @@ function CFOContent() {
         </div>
       ) : data ? (
         <>
+          {show('position') && (<>
           {/* Top-Level Summary */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
             <div className="rounded-xl bg-slate-900/60 p-5">
@@ -1640,15 +1651,21 @@ function CFOContent() {
             </div>
           </div>
 
+          </>)}
+
+          {v2 && section === 'pnl' && <PnlTab storeId={storeId} />}
+
           {/* RECONCILIATION — does the balance sheet tie out to the P&L? */}
+          {show('recon') && (
           <ReconciliationPanel recon={recon} onRecompute={async () => {
             const r = await fetch(`/api/cfo/reconcile?storeId=${storeId}&recompute=1`);
             const rd = await r.json();
             setRecon(rd.latest || null);
           }} />
+          )}
 
           {/* SNAPSHOT HISTORY */}
-          {snapshots.length > 0 && (
+          {show('history') && snapshots.length > 0 && (
             <div className="mt-6 rounded-xl bg-slate-900/60 overflow-hidden">
               <div className="px-5 py-3 border-b border-slate-800/60">
                 <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Saved Snapshots</h2>
