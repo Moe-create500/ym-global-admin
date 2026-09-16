@@ -47,7 +47,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   const allowed = ['name', 'shopify_domain', 'shopify_access_token', 'shipsourced_client_id', 'shipsourced_client_name',
     'shopify_monthly_plan_cents', 'notes', 'is_active', 'auto_sync', 'sync_start_date', 'chargeflow_api_key',
-    'platform', 'platform_fee_pct', 'amazon_category'];
+    'platform', 'platform_fee_pct', 'amazon_category', 'dashboard_hidden'];
   const mapping: Record<string, string> = {
     shopifyDomain: 'shopify_domain',
     shopifyAccessToken: 'shopify_access_token',
