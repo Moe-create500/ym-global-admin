@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { classifyRow, setRowClass, SS_LINE_LABEL, SS_CENTER_LABEL } from '@/lib/cfo/ss-costs';
+import { merchantKey } from '@/lib/subscriptions/normalize';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,9 +19,9 @@ export async function GET(req: NextRequest) {
   const db = getDb();
   ensureSettlementSchema(db);
   const charges: any[] = db.prepare(`
-    SELECT bt.id, bt.date, bt.description, bt.amount_cents, bt.settled_at,
-      COALESCE(a.nickname, a.account_name) || ' ····' || a.last_four AS card,
-      r.method, r.evidence_json
+    SELECT bt.id, bt.date, bt.description, bt.amount_cents, bt.settled_at, bt.custom_category,
+      COALESCE(a.nickname, a.account_name) || ' ····' || a.last_four AS card, a.id AS card_id,
+      r.method, r.category, r.confidence, r.evidence_json
     FROM bank_transactions bt
     JOIN bank_accounts a ON a.id = bt.bank_account_id AND a.account_type = 'credit' AND a.status = 'active'
     JOIN classification_results r ON r.txn_id = bt.id AND r.store_id = ?
@@ -36,7 +37,8 @@ export async function GET(req: NextRequest) {
       AND LOWER(bt.description) NOT LIKE '%facebk%'
       AND LOWER(bt.description) NOT LIKE '%facebook%'
       AND LOWER(bt.description) NOT LIKE '%google%'
-    ORDER BY bt.date DESC, bt.id DESC LIMIT 500`).all(storeId);
+    ORDER BY bt.date DESC, bt.id DESC LIMIT 5000`).all(storeId);
+  for (const c of charges) c.merchant = merchantKey(c.description)?.key || null;
   const openCents = charges.filter(c => !c.settled_at).reduce((s, c) => s + Math.abs(c.amount_cents), 0);
   const settledCents = charges.filter(c => c.settled_at).reduce((s, c) => s + Math.abs(c.amount_cents), 0);
   // ShipSourced's own charges also carry a fulfilment line × centre so the
@@ -59,21 +61,36 @@ export async function GET(req: NextRequest) {
 }
 
 // PATCH { txnId, settled } — mark one charge individually paid/unpaid.
+// PATCH — one charge (`txnId`) or many (`txnIds`):
+//   { settled }                      mark paid / unpaid
+//   { line, center, remember }       classify for the ShipSourced P&L (remember = rule for the merchant)
+// Moving a charge to another store stays on /api/transactions (same pairing rules as the Transactions page).
 export async function PATCH(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
-  const { txnId, settled } = body;
-  if (!txnId) return NextResponse.json({ error: 'txnId required' }, { status: 400 });
+  const ids: string[] = Array.isArray(body.txnIds) ? body.txnIds.map(String) : body.txnId ? [String(body.txnId)] : [];
+  if (!ids.length || ids.length > 2000) return NextResponse.json({ error: 'txnId or txnIds (≤2000) required' }, { status: 400 });
   const db = getDb();
   ensureSettlementSchema(db);
-  // { txnId, line, center, remember } — classify a ShipSourced charge for the 3PL P&L
   if (body.line || body.center) {
     if (!(body.line in SS_LINE_LABEL) || !(body.center in SS_CENTER_LABEL)) return NextResponse.json({ error: 'bad line/center' }, { status: 400 });
-    const row: any = db.prepare('SELECT description FROM bank_transactions WHERE id = ?').get(txnId);
-    if (!row) return NextResponse.json({ error: 'transaction not found' }, { status: 404 });
-    return NextResponse.json(setRowClass(db, txnId, body.line, body.center, body.actor || 'admin', !!body.remember, row.description));
+    const get = db.prepare('SELECT description FROM bank_transactions WHERE id = ?');
+    let changed = 0; const rules = new Set<string>();
+    const run = db.transaction(() => {
+      for (const id of ids) {
+        const row: any = get.get(id); if (!row) continue;
+        const r = setRowClass(db, id, body.line, body.center, body.actor || 'admin', !!body.remember, row.description);
+        changed++; if (r.ruleKey) rules.add(r.ruleKey);
+      }
+    });
+    run();
+    if (!changed) return NextResponse.json({ error: 'transaction not found' }, { status: 404 });
+    return NextResponse.json({ ok: true, changed, rules: [...rules] });
   }
-  const r = db.prepare("UPDATE bank_transactions SET settled_at = ? WHERE id = ?")
-    .run(settled ? new Date().toISOString() : null, txnId);
-  if (r.changes === 0) return NextResponse.json({ error: 'transaction not found' }, { status: 404 });
-  return NextResponse.json({ success: true });
+  if (typeof body.settled !== 'boolean') return NextResponse.json({ error: 'settled or line/center required' }, { status: 400 });
+  const upd = db.prepare('UPDATE bank_transactions SET settled_at = ? WHERE id = ?');
+  const at = body.settled ? new Date().toISOString() : null;
+  let changed = 0;
+  db.transaction(() => { for (const id of ids) changed += upd.run(at, id).changes; })();
+  if (!changed) return NextResponse.json({ error: 'transaction not found' }, { status: 404 });
+  return NextResponse.json({ success: true, changed });
 }

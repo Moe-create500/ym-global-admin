@@ -6,6 +6,7 @@ import StoreSelector from '@/components/StoreSelector';
 import { readGlobalStore, onGlobalStoreChange } from '@/components/GlobalStore';
 import { CfoTabs, type CfoTab } from '@/components/cfo/CfoTabs';
 import { PnlTab } from '@/components/cfo/PnlTab';
+import { StoreCharges } from '@/components/cfo/StoreCharges';
 
 function cents(amount: number): string {
   return (amount / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -552,118 +553,6 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
 // Card charges linked to THIS store — each individually markable as paid.
 // Data = proven attribution (classification_results); settlement state lives
 // on the transaction row itself and survives categorizer re-runs.
-function StoreCardCharges({ storeId }: { storeId: string }) {
-  const [data, setData] = useState<any>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [showSettled, setShowSettled] = useState(false);
-  const [limit, setLimit] = useState(60);
-  const load = useCallback(() => {
-    fetch(`/api/store-charges?storeId=${storeId}`).then(r => r.json()).then(setData).catch(() => {});
-  }, [storeId]);
-  useEffect(() => { load(); }, [load]);
-
-  async function toggle(txnId: string, settled: boolean) {
-    setBusy(txnId);
-    await fetch('/api/store-charges', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ txnId, settled }),
-    }).catch(() => {});
-    setBusy(null);
-    load();
-  }
-  // ShipSourced only: which part of fulfilment, and which centre, a charge pays for.
-  async function classify(c: any, line: string, center: string, remember: boolean) {
-    setBusy(c.id);
-    await fetch('/api/store-charges', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ txnId: c.id, line, center, remember }) }).catch(() => {});
-    setBusy(null);
-    load();
-  }
-
-  if (!data) return null;
-  const allVisible = (data.charges || []).filter((c: any) => showSettled || !c.settled_at);
-  const visible = allVisible.slice(0, limit);
-  return (
-    <div className="rounded-xl bg-slate-900/60 overflow-hidden">
-      <div className="px-5 py-3 border-b border-slate-800/60 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Card charges linked to this store</p>
-          <p className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
-            <span className="text-amber-300">{cents(data.summary.open_cents)} unpaid</span>
-            {data.summary.settled_cents > 0 && <span> · {cents(data.summary.settled_cents)} paid</span>}
-            <span> · {data.summary.count} charges (proven attribution)</span>
-          </p>
-          {data.summary.by_line && (
-            <p className="text-[11px] text-slate-400 mt-1 tabular-nums">
-              Unpaid by fulfilment line: {Object.entries(data.summary.by_line as Record<string, number>).sort((a, b) => b[1] - a[1]).map(([l, v]) => `${data.fulfilment.lines[l]} ${cents(v)}`).join(' · ')}
-              <span className="text-slate-500"> — feeds the ShipSourced P&amp;L by centre (P&amp;L tab)</span>
-            </p>
-          )}
-        </div>
-        <label className="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer select-none">
-          <input type="checkbox" checked={showSettled} onChange={e => setShowSettled(e.target.checked)} className="accent-blue-500" />
-          Show paid
-        </label>
-      </div>
-      {visible.length === 0 ? (
-        <p className="px-5 py-6 text-center text-[13px] text-slate-500">
-          {data.summary.count === 0 ? 'No card charges are linked to this store yet — pair them on the Transactions page.' : 'All linked card charges are marked paid ✓'}
-        </p>
-      ) : (
-        <div className="overflow-x-auto">
-        <table className="w-full table-fixed text-[13px]">
-          <colgroup>
-            <col className="w-[96px]" /><col />{visible[0]?.fulfilment && <col className="w-[284px]" />}<col className="w-[104px]" /><col className="w-[108px]" />
-          </colgroup>
-          <tbody>
-            {visible.map((c: any) => (
-              <tr key={c.id} className={`border-b border-slate-800/30 last:border-b-0 ${c.settled_at ? 'opacity-50' : ''}`}>
-                <td className="pl-5 pr-2 py-2 text-slate-500 whitespace-nowrap tabular-nums">{c.date}</td>
-                <td className="px-3 py-1.5 min-w-0">
-                  <span className="text-slate-100 truncate block leading-tight" title={c.description}>{c.description}</span>
-                  <span className="text-slate-500 text-[11px] truncate block leading-tight" title={c.card}>{c.card}</span>
-                </td>
-                {c.fulfilment && (
-                  <td className="px-3 py-2 whitespace-nowrap">
-                    <span className="inline-flex items-center gap-1.5">
-                      <select value={c.fulfilment.line} disabled={busy === c.id} onChange={e => classify(c, e.target.value, c.fulfilment.center, true)} title={`Fulfilment part — ${c.fulfilment.source === 'manual' ? 'set by a worker' : c.fulfilment.source === 'rule' ? 'remembered rule for this merchant' : 'default from merchant name'}${c.fulfilment.needsReview ? ' — needs a look' : ''}`}
-                        className={`w-[168px] text-[11px] rounded px-1.5 py-1 border ${c.fulfilment.needsReview ? 'border-amber-500/60 bg-amber-500/10 text-amber-300' : 'border-slate-700 bg-slate-950 text-slate-200'}`}>
-                        {Object.entries(data.fulfilment.lines as Record<string, string>).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                      </select>
-                      <select value={c.fulfilment.center} disabled={busy === c.id} onChange={e => classify(c, c.fulfilment.line, e.target.value, true)} title={`Fulfilment centre — ${c.fulfilment.source === 'manual' ? 'set by a worker' : c.fulfilment.source === 'rule' ? 'remembered rule' : 'default'}`}
-                        className="w-[92px] text-[11px] rounded px-1.5 py-1 border border-slate-700 bg-slate-950 text-slate-200">
-                        {Object.entries(data.fulfilment.centers as Record<string, string>).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                      </select>
-                      {c.fulfilment.source === 'manual' && <span className="w-1.5 h-1.5 rounded-full bg-blue-400" title="set by a worker" />}
-                    </span>
-                  </td>
-                )}
-                <td className="px-3 py-2 text-right tabular-nums font-medium text-slate-100 whitespace-nowrap">{cents(Math.abs(c.amount_cents))}</td>
-                <td className="pl-2 pr-5 py-2 text-right whitespace-nowrap">
-                  {c.settled_at ? (
-                    <button onClick={() => toggle(c.id, false)} disabled={busy === c.id}
-                      className="text-[11px] text-emerald-400 hover:text-emerald-300 disabled:opacity-50">✓ paid · undo</button>
-                  ) : (
-                    <button onClick={() => toggle(c.id, true)} disabled={busy === c.id}
-                      className="text-[11px] px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 font-medium">
-                      {busy === c.id ? '…' : 'Mark paid'}
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {allVisible.length > visible.length && (
-          <div className="px-5 py-3 border-t border-slate-800/40 flex items-center justify-between text-[11px] text-slate-500">
-            <span>Showing {visible.length} of {allVisible.length} charges</span>
-            <button onClick={() => setLimit(l => l + 100)} className="px-2.5 py-1 rounded-lg bg-slate-800/60 text-slate-200 hover:bg-slate-700/60 font-medium">Show 100 more</button>
-          </div>
-        )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function CFOContent() {
   const searchParams = useSearchParams();
@@ -1704,7 +1593,7 @@ function CFOContent() {
           </div>
 
           {/* CARD CHARGES LINKED TO THIS STORE (individually payable) */}
-          {storeId && <StoreCardCharges storeId={storeId} />}
+          {storeId && <StoreCharges storeId={storeId} />}
 
           {/* EQUITY */}
           <div className="mt-6 rounded-xl bg-slate-900/60 p-5">
