@@ -25,3 +25,8 @@ lib.pre-scp*/
 
 # also matches a symlink named node_modules (a trailing slash only matches directories)
 node_modules
+
+# local DB snapshots / backups of any spelling
+*.db.local-backup-*
+*.db.*backup*
+*.db-backup*
