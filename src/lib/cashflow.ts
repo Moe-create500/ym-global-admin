@@ -71,6 +71,7 @@ export interface CashflowProjection {
     after_obligations_7d_cents: number;// net_7d − cards − fb (the real verdict)
     safe_to_pay_today_cents: number;   // cash − 7-day ad-burn buffer
     clear_date: string | null;         // first day position covers cards+fb, null = not in horizon
+    cash_unknown?: boolean;            // scope has no bank account — position/safe-to-pay are null, not $0
   };
   totals: {
     landed_today_cents: number;
@@ -141,7 +142,14 @@ function evidenceRows(db: DB, storeId: string, kinds: string[]): any[] {
   return rows;
 }
 
-export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonDays = 14): CashflowProjection {
+export interface ProjectionOpts {
+  /** Scope-correct cash (a store's own accounts, or company cash for "all") — see cash-position.ts. */
+  cashAvailableCents?: number | null;
+  /** Everything owed over the horizon besides ad burn (card debt, FB unbilled, recurring, manual). */
+  obligationsCents?: number;
+}
+
+export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonDays = 14, opts: ProjectionOpts = {}): CashflowProjection {
   const today = todayPacific();
   const horizonEnd = addDays(today, horizonDays);
   const dataGaps: string[] = [];
@@ -485,10 +493,13 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     FROM bank_accounts WHERE account_type != 'credit' AND status = 'active' AND COALESCE(cfo_hidden, 0) = 0
   `).get();
   const fbRow: any = db.prepare(`SELECT SUM(balance_cents) cents FROM fb_profiles WHERE is_active = 1 AND balance_cents > 0`).get();
-  const cashAvailable = cashRow?.cents || 0;
-  const fbUnbilled = fbRow?.cents || 0;
+  // Legacy fallback only: company-wide cash / FB / manual cards. The Cashflow
+  // page passes scope-correct figures from cash-position.ts instead.
+  const cashUnknown = opts.cashAvailableCents === null;
+  const cashAvailable = opts.cashAvailableCents !== undefined ? (opts.cashAvailableCents ?? 0) : (cashRow?.cents || 0);
+  const fbUnbilled = opts.obligationsCents !== undefined ? 0 : (fbRow?.cents || 0);
   const adBurnDaily = storeResults.reduce((s, x) => s + x.avg_daily_ad_burn_cents, 0);
-  const cardsOwed = storeResults.reduce((s, x) => s + x.cards.reduce((c, y) => c + y.owed_cents, 0), 0);
+  const cardsOwed = opts.obligationsCents !== undefined ? opts.obligationsCents : storeResults.reduce((s, x) => s + x.cards.reduce((c, y) => c + y.owed_cents, 0), 0);
 
   // ── Merge into a per-date calendar (every dollar traces to an export row) ──
   const allEvents = storeResults.flatMap(s => s.events);
@@ -502,9 +513,10 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
     cumulative += confirmed;
     // Projected bank position: cash now + everything landed by this day − ad
     // spend accruing at the measured daily rate. The number Moe actually needs.
-    const position = cashAvailable + cumulative - adBurnDaily * i;
-    if (clearDate === null && position >= cardsOwed + fbUnbilled) clearDate = date;
-    calendar.push({ date, confirmed_cents: confirmed, cumulative_cents: cumulative, position_cents: position, events: dayEvents });
+    // Position is unknown (null) when the scope has no bank account — never $0.
+    const position = cashUnknown ? null : cashAvailable + cumulative - adBurnDaily * i;
+    if (position != null && clearDate === null && position >= cardsOwed + fbUnbilled) clearDate = date;
+    calendar.push({ date, confirmed_cents: confirmed, cumulative_cents: cumulative, position_cents: position as any, events: dayEvents });
   }
   const incoming7d = calendar.filter((_, i) => i <= 7).reduce((s, d) => s + d.confirmed_cents, 0);
   const net7d = cashAvailable + incoming7d - adBurnDaily * 7;
@@ -525,7 +537,8 @@ export function buildCashflowProjection(db: DB, storeIdFilter?: string, horizonD
       incoming_7d_cents: incoming7d,
       net_7d_cents: net7d,
       after_obligations_7d_cents: net7d - cardsOwed - fbUnbilled,
-      safe_to_pay_today_cents: Math.max(0, cashAvailable - adBurnDaily * 7),
+      safe_to_pay_today_cents: cashUnknown ? (null as any) : Math.max(0, cashAvailable - adBurnDaily * 7),
+      cash_unknown: cashUnknown,
       clear_date: clearDate,
     },
     totals: {

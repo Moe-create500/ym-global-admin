@@ -75,6 +75,14 @@ Local smoke against a fresh production snapshot: 19 rows, ~8 ms per scope; API 4
 - **Charges workbench** (`src/components/cfo/StoreCharges.tsx`, API `/api/store-charges` GET + bulk PATCH): the Transactions-page filters on the CFO side (search incl. exact amount, date range + presets, card, paid state, amount range, sort) plus fulfilment filters (part incl. "needs review", centre, classified-by), a **by-merchant view** where one change classifies every charge from that merchant and saves the rule, checkbox selection with bulk apply / apply & remember / not-a-cost / mark paid–unpaid / move to store (via `/api/transactions`, same pairing rules), filtered totals, CSV export. 5,000-row window (was 500).
 - **P&L composition** (`src/lib/cfo/ss-pnl.ts`): revenue − direct = gross per centre; ledger opex by centre; shared opex allocated by billed-revenue share (50/50 and labelled when revenue is unknown); totals preserved (CA + CN = ledger). Shown on the ShipSourced store's P&L tab and in the Overview's ShipSourced California / China rows. Unknown stays null, never $0.
 
+## Cashflow page rebuilt (2026-09-16)
+
+- **Shopify stores only.** `src/lib/cash-position.ts` builds the position for one Shopify store or all of them from the same sources as the pages that own each number: cash = accounts assigned to the store(s) (Bank Accounts), card charges = unpaid charges paired to the store(s) (CFO "Card charges linked"), payments in flight (`payments-in-flight.ts`), Meta unbilled (`fb_profiles`), subscriptions due in 14 days (subscriptions engine, memoised 5 min), ad burn (daily_pnl). ShipSourced, unassigned and hidden accounts never enter; a non-Shopify store selected in the global bar falls back to all Shopify stores with a note.
+- **Unknown ≠ $0.** A store with no assigned bank account shows cash "—", a null calendar position and null safe-to-pay, with the fix stated (assign an account).
+- **Never blocks on Shopify.** `/api/cashflow` answers from local data (~50–250 ms) and kicks a background payments sync when a store is >10 min stale; per-source freshness chips (Bank / Shopify / Meta) on the page.
+- **Removed:** the AI "payment plan" (`/api/cashflow/ai`, table `cashflow_ai_plans` left in place, unused) and the in-page store selector (the global store bar drives every page).
+- Manual liabilities (investor loans typed into `manual_credit_cards`) are shown but excluded from the 7-day total — they have no due date.
+
 ## Phase 3 (not started)
 
 Phase 2: warehouse P&L from `BillingCharge ⟕ Shipment.warehouseId ⟕ Warehouse.country` + carrier invoices by `carrierType`, exposed through a new `x-internal-key` endpoint on ShipSourced; posting layer (integer cents, balanced entries, source ids, period lock); allocation rules; eliminations; monthly close states. Phase 3: evidence-based AI briefings over the validated reporting tools.
