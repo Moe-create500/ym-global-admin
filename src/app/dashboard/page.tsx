@@ -200,7 +200,7 @@ function CompareBadge({ current, previous, invert = false }: { current: number; 
   );
 }
 
-type SortKey = 'name' | 'revenue' | 'profit' | 'margin' | 'orders' | 'roas';
+type SortKey = 'name' | 'revenue' | 'profit' | 'margin' | 'orders' | 'roas' | 'fulfillment';
 
 function DashboardContent() {
   const searchParams = useSearchParams();
@@ -423,6 +423,7 @@ function DashboardContent() {
         case 'name': return sortDir === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name);
         case 'revenue': av = a.mtd_revenue || 0; bv = b.mtd_revenue || 0; break;
         case 'profit': av = a.mtd_profit || 0; bv = b.mtd_profit || 0; break;
+        case 'fulfillment': av = (a as any).mtd_fulfillment || 0; bv = (b as any).mtd_fulfillment || 0; break;
         case 'orders': av = a.mtd_orders || 0; bv = b.mtd_orders || 0; break;
         case 'roas':
           av = (a.mtd_ad_spend || 0) > 0 ? (a.mtd_revenue || 0) / (a.mtd_ad_spend || 1) : 0;
@@ -685,7 +686,7 @@ function DashboardContent() {
               </div>
               {/* Sort buttons */}
               <div className="flex bg-slate-800 rounded-lg p-0.5 gap-0.5">
-                {([['revenue', 'Rev'], ['profit', 'Profit'], ['roas', 'ROAS'], ['margin', '%'], ['orders', '#']] as [SortKey, string][]).map(([key, label]) => (
+                {([['revenue', 'Rev'], ['fulfillment', 'Fulfil.'], ['profit', 'Profit'], ['roas', 'ROAS'], ['margin', '%'], ['orders', '#']] as [SortKey, string][]).map(([key, label]) => (
                   <button
                     key={key}
                     onClick={() => toggleSort(key)}
@@ -715,6 +716,7 @@ function DashboardContent() {
                       <th className="text-left px-4 py-2.5 font-semibold">Store</th>
                       <th className="text-right px-3 py-2.5 font-semibold">Revenue</th>
                       <th className="text-right px-3 py-2.5 font-semibold">Ad Spend</th>
+                      <th className="text-right px-3 py-2.5 font-semibold" title="ShipSourced fulfillment charges (product + pick/pack + label). ~ = includes an estimate for orders not shipped yet">Fulfillment</th>
                       <th className="text-right px-3 py-2.5 font-semibold">Profit</th>
                       <th className="text-right px-3 py-2.5 font-semibold">Margin</th>
                       <th className="text-right px-3 py-2.5 font-semibold">ROAS</th>
@@ -748,6 +750,10 @@ function DashboardContent() {
                           <td className="px-4 py-2.5 text-slate-100 font-medium whitespace-nowrap">{store.name}</td>
                           <td className="px-3 py-2.5 text-right tabular-nums text-slate-100">{centsCompact(rev)}</td>
                           <td className="px-3 py-2.5 text-right tabular-nums text-slate-400">{adSpend > 0 ? centsCompact(adSpend) : '—'}</td>
+                          {(() => { const f = (store as any).mtd_fulfillment || 0, e = (store as any).mtd_fulfillment_est || 0; return (
+                            <td className="px-3 py-2.5 text-right tabular-nums text-slate-400" title={e > 0 ? `includes ${centsCompact(e)} estimated for orders not shipped yet` : f > 0 ? 'billed by ShipSourced' : (store.mtd_orders || 0) > 0 ? 'no fulfillment cost known yet for these orders' : ''}>
+                              {f > 0 ? <>{e > 0 && <span className="text-amber-300">~</span>}{centsCompact(f)}</> : (store.mtd_orders || 0) > 0 ? <span className="text-amber-300" title="orders exist but no fulfillment cost yet — profit is overstated">?</span> : '—'}
+                            </td>); })()}
                           <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${profit >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{centsCompact(profit)}</td>
                           <td className={`px-3 py-2.5 text-right tabular-nums ${margin == null ? 'text-slate-600' : margin >= 10 ? 'text-slate-300' : margin >= 0 ? 'text-amber-300' : 'text-red-300'}`}>{margin == null ? '—' : pct(margin)}</td>
                           <td className={`px-3 py-2.5 text-right tabular-nums ${storeRoas == null ? 'text-slate-600' : storeRoas >= 2 ? 'text-emerald-300' : storeRoas >= 1.3 ? 'text-slate-300' : 'text-amber-300'}`}>{storeRoas == null ? '—' : `${storeRoas.toFixed(1)}x`}</td>
@@ -772,7 +778,8 @@ function DashboardContent() {
                       const t = filteredStores.reduce((acc, st) => ({
                         rev: acc.rev + (st.mtd_revenue || 0), profit: acc.profit + (st.mtd_profit || 0),
                         ads: acc.ads + (st.mtd_ad_spend || 0), orders: acc.orders + (st.mtd_orders || 0),
-                      }), { rev: 0, profit: 0, ads: 0, orders: 0 });
+                        ful: acc.ful + ((st as any).mtd_fulfillment || 0), est: acc.est + ((st as any).mtd_fulfillment_est || 0),
+                      }), { rev: 0, profit: 0, ads: 0, orders: 0, ful: 0, est: 0 });
                       const tMargin = t.rev > 0 ? (t.profit / t.rev) * 100 : null;
                       const tRoas = t.ads > 0 ? t.rev / t.ads : null;
                       return (
@@ -780,6 +787,7 @@ function DashboardContent() {
                           <td className="px-4 py-2.5 text-slate-200">All stores</td>
                           <td className="px-3 py-2.5 text-right tabular-nums text-white">{centsCompact(t.rev)}</td>
                           <td className="px-3 py-2.5 text-right tabular-nums text-slate-300">{centsCompact(t.ads)}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-300">{t.est > 0 && <span className="text-amber-300">~</span>}{centsCompact(t.ful)}</td>
                           <td className={`px-3 py-2.5 text-right tabular-nums ${t.profit >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{centsCompact(t.profit)}</td>
                           <td className="px-3 py-2.5 text-right tabular-nums text-slate-300">{tMargin == null ? '—' : pct(tMargin)}</td>
                           <td className="px-3 py-2.5 text-right tabular-nums text-slate-300">{tRoas == null ? '—' : `${tRoas.toFixed(1)}x`}</td>

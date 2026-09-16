@@ -1,6 +1,6 @@
 import { getDb } from '@/lib/db';
 import { getClientBilling, getClientOrders, getAllClientProducts } from '@/lib/shipsourced';
-import { computeFulfillmentEstimates } from '@/lib/fulfillment-estimate';
+import { computeFulfillmentEstimates, fallbackEstimatesFromHistory } from '@/lib/fulfillment-estimate';
 import { calculateShopifyFees } from '@/lib/recalc-pnl';
 import { getAdInsights, getAdCreatives, getBillingCharges, getAccountPaymentMethods, getVideoSourceUrls, getPages } from '@/lib/facebook';
 import { reportSource } from '@/lib/source-registry';
@@ -145,11 +145,22 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
     // recent invoiced prices for the same exact products. Recomputed every sync,
     // so actual charges replace estimates as soon as ShipSourced prices the order.
     let estByDay: Record<string, number> = {};
+    let estSource = 'shipsourced';
     try {
       estByDay = (await computeFulfillmentEstimates(db, store, { full: true })).estByDay;
     } catch (err: any) {
       console.error(`[sync] ${store.name}: fulfillment estimate failed: ${err.message}`);
     }
+    // ShipSourced's order list has been locked to browser sessions since 2026-08-31, so the
+    // per-order estimate above fails. Until that is restored, estimate unshipped orders from
+    // the store's own recent billing so today never reads as free fulfilment.
+    if (Object.keys(estByDay).length === 0 && !noSeparateCogs === false) {
+      const hist: Record<string, { orders: number; charges: number }> = {};
+      for (const [day, rev] of Object.entries(dailyRevMap)) hist[day] = { orders: rev.orders, charges: rev.charges };
+      const fb = fallbackEstimatesFromHistory(hist, pacificDate());
+      if (Object.keys(fb.estByDay).length) { estByDay = fb.estByDay; estSource = `history avg $${((fb.avgPerOrderCents || 0) / 100).toFixed(2)}/order over ${fb.basisDays} days`; }
+    }
+    if (Object.keys(estByDay).length) console.log(`[sync] ${store.name}: fulfillment estimate (${estSource}) for ${Object.keys(estByDay).length} day(s)`);
 
     // Primary sync from orders endpoint dailyRevenue
     // shipping_cost_cents = ShipSourced fulfillment charges (per-order Charge)

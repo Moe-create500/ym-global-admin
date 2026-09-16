@@ -1,4 +1,4 @@
-import { getClientOrdersList, SSOrder } from '@/lib/shipsourced';
+import { getClientOrdersList, SSOrder } from './shipsourced';
 
 /**
  * Fulfillment cost estimation for orders ShipSourced hasn't billed yet.
@@ -175,4 +175,37 @@ export async function computeFulfillmentEstimates(
   }
 
   return result;
+}
+
+/** Fallback when ShipSourced's order list is unavailable: estimate the cost of
+ *  orders it has not billed yet from the store's OWN recent billing. Per-order
+ *  cost = billed charges ÷ orders over the trailing window (days 4–17 back, so
+ *  the window itself is fully billed). For the last `recentDays` days, whatever
+ *  the actual charges fall short of avg × orders is the estimate for the
+ *  unshipped remainder. Recomputed every sync — actuals replace it as orders
+ *  ship. Never invents cost for a day that is already billed at the average. */
+export function fallbackEstimatesFromHistory(
+  daily: Record<string, { orders: number; charges: number }>,
+  today: string,
+  opts: { recentDays?: number; windowDays?: number; minOrders?: number; minDays?: number } = {},
+): { estByDay: Record<string, number>; avgPerOrderCents: number | null; basisDays: number } {
+  const recentDays = opts.recentDays ?? 3, windowDays = opts.windowDays ?? 14, minOrders = opts.minOrders ?? 30, minDays = opts.minDays ?? 5;
+  const dayMs = 86400000; const t = new Date(today + 'T00:00:00Z').getTime();
+  const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const winFrom = iso(t - (recentDays + windowDays) * dayMs), winTo = iso(t - (recentDays + 1) * dayMs);
+  let orders = 0, charges = 0, days = 0;
+  for (const [d, v] of Object.entries(daily)) {
+    if (d < winFrom || d > winTo || !v.orders || !v.charges) continue;
+    orders += v.orders; charges += v.charges; days++;
+  }
+  if (orders < minOrders || days < minDays) return { estByDay: {}, avgPerOrderCents: null, basisDays: days };
+  const avg = charges / orders;
+  const estByDay: Record<string, number> = {};
+  for (let i = 0; i <= recentDays; i++) {
+    const d = iso(t - i * dayMs); const v = daily[d]; if (!v || !v.orders) continue;
+    const expected = Math.round(avg * v.orders); const gap = expected - (v.charges || 0);
+    // only when the day is clearly under-billed (an order or more missing), never to top up rounding noise
+    if (gap >= avg * 0.75) estByDay[d] = gap;
+  }
+  return { estByDay, avgPerOrderCents: Math.round(avg), basisDays: days };
 }

@@ -58,6 +58,8 @@ export async function GET(req: NextRequest) {
       (SELECT SUM(dp.net_profit_cents) FROM daily_pnl dp WHERE dp.store_id = s.id AND ${dateFilter}) as mtd_profit,
       (SELECT SUM(dp.order_count) FROM daily_pnl dp WHERE dp.store_id = s.id AND ${dateFilter}) as mtd_orders,
       (SELECT SUM(dp.ad_spend_cents) FROM daily_pnl dp WHERE dp.store_id = s.id AND ${dateFilter}) as mtd_ad_spend,
+      (SELECT SUM(COALESCE(dp.shipping_cost_cents, 0) + COALESCE(dp.cogs_cents, 0)) FROM daily_pnl dp WHERE dp.store_id = s.id AND ${dateFilter}) as mtd_fulfillment,
+      (SELECT SUM(COALESCE(dp.fulfillment_est_cents, 0)) FROM daily_pnl dp WHERE dp.store_id = s.id AND ${dateFilter}) as mtd_fulfillment_est,
       (SELECT COUNT(*) FROM fb_profiles fp WHERE fp.store_id = s.id AND fp.is_active = 1 AND fp.ad_account_id IS NOT NULL) as fb_connected,
       CASE WHEN s.chargeflow_api_key IS NOT NULL AND s.chargeflow_api_key != '' THEN 1 ELSE 0 END as chargeflow_connected,
       COALESCE(s.invoices_verified, 0) as invoices_verified
