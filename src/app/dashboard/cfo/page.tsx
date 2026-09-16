@@ -556,6 +556,7 @@ function StoreCardCharges({ storeId }: { storeId: string }) {
   const [data, setData] = useState<any>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [showSettled, setShowSettled] = useState(false);
+  const [limit, setLimit] = useState(60);
   const load = useCallback(() => {
     fetch(`/api/store-charges?storeId=${storeId}`).then(r => r.json()).then(setData).catch(() => {});
   }, [storeId]);
@@ -579,7 +580,8 @@ function StoreCardCharges({ storeId }: { storeId: string }) {
   }
 
   if (!data) return null;
-  const visible = (data.charges || []).filter((c: any) => showSettled || !c.settled_at);
+  const allVisible = (data.charges || []).filter((c: any) => showSettled || !c.settled_at);
+  const visible = allVisible.slice(0, limit);
   return (
     <div className="rounded-xl bg-slate-900/60 overflow-hidden">
       <div className="px-5 py-3 border-b border-slate-800/60 flex flex-wrap items-center justify-between gap-2">
@@ -607,30 +609,36 @@ function StoreCardCharges({ storeId }: { storeId: string }) {
           {data.summary.count === 0 ? 'No card charges are linked to this store yet — pair them on the Transactions page.' : 'All linked card charges are marked paid ✓'}
         </p>
       ) : (
-        <table className="w-full text-[13px]">
+        <div className="overflow-x-auto">
+        <table className="w-full table-fixed text-[13px]">
+          <colgroup>
+            <col className="w-[96px]" /><col />{visible[0]?.fulfilment && <col className="w-[284px]" />}<col className="w-[104px]" /><col className="w-[108px]" />
+          </colgroup>
           <tbody>
             {visible.map((c: any) => (
               <tr key={c.id} className={`border-b border-slate-800/30 last:border-b-0 ${c.settled_at ? 'opacity-50' : ''}`}>
-                <td className="px-5 py-2 text-slate-500 whitespace-nowrap w-24">{c.date}</td>
-                <td className="px-3 py-2 max-w-[340px]"><span className="text-slate-100 truncate block">{c.description}</span></td>
-                <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{c.card}</td>
+                <td className="pl-5 pr-2 py-2 text-slate-500 whitespace-nowrap tabular-nums">{c.date}</td>
+                <td className="px-3 py-1.5 min-w-0">
+                  <span className="text-slate-100 truncate block leading-tight" title={c.description}>{c.description}</span>
+                  <span className="text-slate-500 text-[11px] truncate block leading-tight" title={c.card}>{c.card}</span>
+                </td>
                 {c.fulfilment && (
                   <td className="px-3 py-2 whitespace-nowrap">
-                    <span className="inline-flex items-center gap-1">
-                      <select value={c.fulfilment.line} disabled={busy === c.id} onChange={e => classify(c, e.target.value, c.fulfilment.center, true)} title={`${c.fulfilment.source === 'manual' ? 'set by a worker' : c.fulfilment.source === 'rule' ? 'remembered rule for this merchant' : 'default from merchant name'}${c.fulfilment.needsReview ? ' — needs a look' : ''}`}
-                        className={`text-[11px] rounded px-1.5 py-1 border ${c.fulfilment.needsReview ? 'border-amber-500/60 bg-amber-500/10 text-amber-300' : 'border-slate-700 bg-slate-950 text-slate-200'}`}>
+                    <span className="inline-flex items-center gap-1.5">
+                      <select value={c.fulfilment.line} disabled={busy === c.id} onChange={e => classify(c, e.target.value, c.fulfilment.center, true)} title={`Fulfilment part — ${c.fulfilment.source === 'manual' ? 'set by a worker' : c.fulfilment.source === 'rule' ? 'remembered rule for this merchant' : 'default from merchant name'}${c.fulfilment.needsReview ? ' — needs a look' : ''}`}
+                        className={`w-[168px] text-[11px] rounded px-1.5 py-1 border ${c.fulfilment.needsReview ? 'border-amber-500/60 bg-amber-500/10 text-amber-300' : 'border-slate-700 bg-slate-950 text-slate-200'}`}>
                         {Object.entries(data.fulfilment.lines as Record<string, string>).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                       </select>
-                      <select value={c.fulfilment.center} disabled={busy === c.id} onChange={e => classify(c, c.fulfilment.line, e.target.value, true)}
-                        className="text-[11px] rounded px-1.5 py-1 border border-slate-700 bg-slate-950 text-slate-200">
+                      <select value={c.fulfilment.center} disabled={busy === c.id} onChange={e => classify(c, c.fulfilment.line, e.target.value, true)} title={`Fulfilment centre — ${c.fulfilment.source === 'manual' ? 'set by a worker' : c.fulfilment.source === 'rule' ? 'remembered rule' : 'default'}`}
+                        className="w-[92px] text-[11px] rounded px-1.5 py-1 border border-slate-700 bg-slate-950 text-slate-200">
                         {Object.entries(data.fulfilment.centers as Record<string, string>).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                       </select>
-                      {c.fulfilment.source !== 'manual' && <span className="text-[10px] text-slate-500">{c.fulfilment.source === 'rule' ? 'rule' : 'default'}</span>}
+                      {c.fulfilment.source === 'manual' && <span className="w-1.5 h-1.5 rounded-full bg-blue-400" title="set by a worker" />}
                     </span>
                   </td>
                 )}
                 <td className="px-3 py-2 text-right tabular-nums font-medium text-slate-100 whitespace-nowrap">{cents(Math.abs(c.amount_cents))}</td>
-                <td className="px-5 py-2 text-right w-28">
+                <td className="pl-2 pr-5 py-2 text-right whitespace-nowrap">
                   {c.settled_at ? (
                     <button onClick={() => toggle(c.id, false)} disabled={busy === c.id}
                       className="text-[11px] text-emerald-400 hover:text-emerald-300 disabled:opacity-50">✓ paid · undo</button>
@@ -645,6 +653,13 @@ function StoreCardCharges({ storeId }: { storeId: string }) {
             ))}
           </tbody>
         </table>
+        {allVisible.length > visible.length && (
+          <div className="px-5 py-3 border-t border-slate-800/40 flex items-center justify-between text-[11px] text-slate-500">
+            <span>Showing {visible.length} of {allVisible.length} charges</span>
+            <button onClick={() => setLimit(l => l + 100)} className="px-2.5 py-1 rounded-lg bg-slate-800/60 text-slate-200 hover:bg-slate-700/60 font-medium">Show 100 more</button>
+          </div>
+        )}
+        </div>
       )}
     </div>
   );
