@@ -59,7 +59,8 @@ const LAG_AFTER = 10;
 /** Younger than this and a missing debit is normal ACH latency, not a problem. */
 const TOO_RECENT_DAYS = 4;
 
-const CARD_PAYMENT_DEBIT = /AMERICAN EXPRESS|AMEX|PAYMENT TO CRD|CRD \d|CREDIT CARD|CARD PMT|CARD PAYMENT|EPAYMENT|ACH PMT|AUTOPAY|CAPITAL ONE|CHASE CARD|DISCOVER/i;
+// "Shopify Credit payment" = paying the Shopify Credit card (··3704) from the Shopify Balance — a card payment with no card account in YM.
+const CARD_PAYMENT_DEBIT = /AMERICAN EXPRESS|AMEX|PAYMENT TO CRD|CRD \d|CREDIT CARD|CARD PMT|CARD PAYMENT|EPAYMENT|ACH PMT|AUTOPAY|CAPITAL ONE|CHASE CARD|DISCOVER|SHOPIFY CREDIT/i;
 const CARD_PAYMENT_CREDIT = /PAYMENT|PMT|AUTOPAY/i;
 
 export function maskOf(cardLabel: string | null | undefined): string | null {

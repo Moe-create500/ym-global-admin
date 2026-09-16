@@ -70,6 +70,15 @@ describe('reconcileLoggedPayments', () => {
     expect(r.get('b')!.status).toBe('not_taken');
   });
 
+  it('a "Shopify Credit payment" debit from the Shopify Balance clears a payment logged to the Shopify Credit card (··3704, no card account in YM)', () => {
+    const r = reconcileLoggedPayments([
+      log('sc', '2026-09-14', 200000, '3704'),
+    ], [
+      row('d1', 'shopify-6457', 'depository', '2026-09-15', -200000, 'Shopify Credit payment'),
+    ], ALIASES, TODAY);
+    expect(r.get('sc')).toMatchObject({ status: 'confirmed', via: 'checking_debit' });
+  });
+
   it('a charge on the card never clears a payment (sign matters)', () => {
     const r = reconcileLoggedPayments([log('a', '2026-09-12', 55966, 'Amex - 1009')], [
       row('x', 'amex-plat', 'credit', '2026-09-12', -55966, 'FACEBK PAYMENT 7XKQ2'),
