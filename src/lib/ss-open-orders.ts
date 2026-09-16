@@ -67,6 +67,6 @@ export async function fetchOpenOrdersEstimate(db: DatabaseType.Database, storeId
     return { ok: true, estimate: estimateFromFeed(feeds) };
   } catch (e: any) {
     const msg = String(e?.message || e);
-    return { ok: false, reason: /404/.test(msg) ? 'ShipSourced has no open-orders feed yet (PR pending)' : msg.slice(0, 140) };
+    return { ok: false, reason: / 40[134]:|error 40[134]/.test(msg) ? 'ShipSourced does not serve this feed yet — the open-orders feed is on the PR branch, not deployed' : msg.slice(0, 140) };
   }
 }

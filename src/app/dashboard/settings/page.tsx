@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
+import { CfoV2Toggle } from '@/components/cfo/CfoV2Toggle';
 
 interface SSClient {
   id: string;
@@ -230,6 +231,8 @@ export default function SettingsPage() {
     <div>
       <h1 className="text-2xl font-bold text-white mb-2">Settings</h1>
       <p className="text-sm text-slate-400 mb-6">Connect stores, configure sync, and import historical data</p>
+
+      <CfoV2Toggle />
 
       {/* ShipSourced Connection Status */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 mb-6">

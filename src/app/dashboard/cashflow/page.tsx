@@ -1,487 +1,328 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { readGlobalStore, writeGlobalStore, onGlobalStoreChange } from '@/components/GlobalStore';
 
-function cents(n: number): string {
-  return (n / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-}
+/** Cashflow — one screen that answers, per Shopify store or for all of them:
+ *  what is in the bank, what lands when, what is owed, and what is safe to
+ *  pay today. Every number comes from the same source as the page that owns
+ *  it (Bank Accounts, Credit Cards, CFO, Subscriptions, Ad accounts) and
+ *  links back to it. Unknown is shown as unknown, never $0. */
 
-function dayLabel(dateStr: string): string {
-  const d = new Date(dateStr + 'T00:00:00Z');
-  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+const money = (n: number | null | undefined, opts: { sign?: boolean } = {}) =>
+  n == null ? '—' : `${opts.sign && n < 0 ? '−' : ''}${(Math.abs(n) / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' })}`;
+const dayLabel = (d: string) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+function ago(ts?: string | null) {
+  if (!ts) return 'never';
+  const mins = Math.round((Date.now() - new Date(ts.replace(' ', 'T') + (ts.endsWith('Z') ? '' : 'Z')).getTime()) / 60000);
+  if (mins < 1) return 'just now'; if (mins < 60) return `${mins}m ago`; if (mins < 1440) return `${Math.round(mins / 60)}h ago`; return `${Math.round(mins / 1440)}d ago`;
 }
+const stale = (ts?: string | null, hours = 24) => !ts || Date.now() - new Date(ts.replace(' ', 'T') + (ts.endsWith('Z') ? '' : 'Z')).getTime() > hours * 3600e3;
 
-const KIND_STYLE: Record<string, { chip: string; label: string }> = {
-  landed: { chip: 'bg-green-800/60 text-green-200', label: '✓ landed' },
-  in_transit: { chip: 'bg-blue-900/50 text-blue-300', label: 'in transit' },
-  scheduled: { chip: 'bg-emerald-900/50 text-emerald-300', label: 'scheduled' },
-  projected: { chip: 'bg-violet-900/50 text-violet-300', label: 'projected' },
+const KIND: Record<string, { chip: string; label: string }> = {
+  landed: { chip: 'bg-emerald-500/15 text-emerald-300', label: 'landed ✓' },
+  in_transit: { chip: 'bg-blue-500/15 text-blue-300', label: 'arriving' },
+  scheduled: { chip: 'bg-teal-500/15 text-teal-300', label: 'scheduled' },
+  projected: { chip: 'bg-violet-500/15 text-violet-300', label: 'projected' },
 };
 
-export default function CashflowPage() {
-  const [projection, setProjection] = useState<any>(null);
-  const [storeId, setStoreId] = useState<string>('');
+type Figure = { cents: number | null; asOf?: string | null; note?: string; href?: string; rows?: { label: string; cents: number; note?: string }[] };
 
-  // Follow the centralized store pin (and contribute to it)
-  useEffect(() => {
-    setStoreId(readGlobalStore());
-    return onGlobalStoreChange(setStoreId);
-  }, []);
-  const [gapsOpen, setGapsOpen] = useState(false);
+function Tile({ label, value, tone = 'text-slate-100', sub, href }: { label: string; value: string; tone?: string; sub?: string; href?: string }) {
+  const body = (
+    <div className="min-w-0">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+      <p className={`text-xl font-bold tabular-nums leading-tight mt-0.5 ${tone}`}>{value}</p>
+      {sub && <p className="text-[11px] text-slate-500 mt-0.5 truncate" title={sub}>{sub}</p>}
+    </div>
+  );
+  return href ? <Link href={href} className="block rounded-lg -m-2 p-2 hover:bg-slate-800/40">{body}</Link> : body;
+}
+
+function ObligationRow({ name, f, included, open, onToggle }: { name: string; f: Figure; included: boolean; open: boolean; onToggle: () => void }) {
+  const hasRows = !!f.rows?.length;
+  return (
+    <>
+      <tr className={`border-t border-slate-800/50 ${hasRows ? 'cursor-pointer hover:bg-slate-800/30' : ''}`} onClick={hasRows ? onToggle : undefined}>
+        <td className="px-4 py-2.5">
+          <span className="text-[13px] text-slate-100 font-medium">{name}</span>
+          {hasRows && <span className="ml-1.5 text-slate-600 text-xs">{open ? '▾' : '▸'}</span>}
+          {f.note && <span className="block text-[11px] text-slate-500">{f.note}</span>}
+        </td>
+        <td className="px-3 py-2.5 text-[11px] text-slate-500 whitespace-nowrap">{f.asOf ? <span className={stale(f.asOf) ? 'text-amber-400' : ''}>{ago(f.asOf)}</span> : ''}</td>
+        <td className={`px-3 py-2.5 text-right tabular-nums font-semibold ${f.cents == null ? 'text-slate-500' : included ? 'text-slate-100' : 'text-slate-400'}`} title={included ? 'in the 7-day total' : 'shown for context, not in the 7-day total'}>
+          {money(f.cents)}{!included && f.cents != null && <span className="ml-1 text-[10px] font-normal text-slate-500">info</span>}
+        </td>
+        <td className="pr-4 py-2.5 text-right">{f.href && <Link href={f.href} className="text-[11px] text-blue-300 hover:text-blue-200" onClick={e => e.stopPropagation()}>open →</Link>}</td>
+      </tr>
+      {open && f.rows?.map((r, i) => (
+        <tr key={i} className="bg-slate-950/40">
+          <td className="pl-8 pr-4 py-1.5 text-[12px] text-slate-300 truncate max-w-[420px]" title={r.label}>{r.label}</td>
+          <td className="px-3 py-1.5 text-[11px] text-slate-500">{r.note || ''}</td>
+          <td className="px-3 py-1.5 text-right tabular-nums text-[12px] text-slate-300">{money(r.cents)}</td>
+          <td />
+        </tr>
+      ))}
+    </>
+  );
+}
+
+export default function CashflowPage() {
+  const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [storeId, setStoreId] = useState('');
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const [gapsOpen, setGapsOpen] = useState(false);
+  const [feedsOpen, setFeedsOpen] = useState(false);
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set());
-  const [plan, setPlan] = useState<any>(null);
-  const [planMeta, setPlanMeta] = useState<{ created_at?: string } | null>(null);
-  const [planLoading, setPlanLoading] = useState(false);
-  const [planError, setPlanError] = useState('');
   const [connections, setConnections] = useState<any[]>([]);
-  const [connOpen, setConnOpen] = useState(false);
-  const [connForm, setConnForm] = useState<{ storeId: string; domain: string; clientId: string; secret: string }>({ storeId: '', domain: '', clientId: '', secret: '' });
+  const [connForm, setConnForm] = useState({ storeId: '', domain: '', clientId: '', secret: '' });
   const [connBusy, setConnBusy] = useState('');
   const [connMsg, setConnMsg] = useState('');
   const [syncing, setSyncing] = useState('');
 
-  const load = (sid: string) => {
-    setLoading(true);
-    // cache-bust: defeat any edge/proxy cache so a fresh sync shows immediately
-    const bust = Date.now();
-    const url = `/api/cashflow?_=${bust}${sid ? `&storeId=${sid}` : ''}`;
-    fetch(url, { cache: 'no-store' })
-      .then(r => r.json())
-      .then(d => {
-        if (!d.projection) console.warn('[cashflow] no projection in response');
-        setProjection(d.projection || null);
-      })
-      .catch(e => console.error('[cashflow] fetch failed:', e))
-      .finally(() => setLoading(false));
-    fetch(`/api/cashflow/ai?storeId=${sid || 'all'}&_=${bust}`, { cache: 'no-store' })
-      .then(r => r.json())
-      .then(d => { setPlan(d.plan || null); setPlanMeta(d.plan ? { created_at: d.created_at } : null); })
-      .catch(e => console.error('[cashflow/ai] fetch failed:', e));
-    fetch(`/api/shopify/credentials?_=${bust}`, { cache: 'no-store' })
-      .then(r => r.json())
-      .then(d => setConnections(d.credentials || []))
-      .catch(() => {});
-  };
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get('storeId');
+    if (fromUrl) { writeGlobalStore(fromUrl); setStoreId(fromUrl); } else setStoreId(readGlobalStore());
+    return onGlobalStoreChange(setStoreId);
+  }, []);
 
-  useEffect(() => { load(storeId); }, [storeId]);
+  const load = useCallback((sid: string) => {
+    setLoading(true); setError('');
+    fetch(`/api/cashflow?_=${Date.now()}${sid ? `&storeId=${sid}` : ''}`, { cache: 'no-store' })
+      .then(r => r.json()).then(d => { if (d.error) setError(d.error); setData(d.error ? null : d); })
+      .catch(e => setError(e?.message || 'failed')).finally(() => setLoading(false));
+    fetch(`/api/shopify/credentials?_=${Date.now()}`, { cache: 'no-store' }).then(r => r.json()).then(d => setConnections(d.credentials || [])).catch(() => {});
+  }, []);
+  useEffect(() => { load(storeId); }, [storeId, load]);
 
-  const saveConnection = async () => {
-    const isPermanent = connForm.secret.trim().startsWith('shpat_');
-    if (!connForm.storeId || !connForm.domain || !connForm.secret || (!isPermanent && !connForm.clientId)) {
-      setConnMsg(isPermanent ? 'Store, domain and token required' : 'All four fields required (or paste a shpat_ permanent token as the secret)');
-      return;
-    }
-    setConnBusy('saving'); setConnMsg('');
-    try {
-      const r = await fetch('/api/shopify/credentials', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(isPermanent
-          ? { storeId: connForm.storeId, shopDomain: connForm.domain, permanentToken: connForm.secret.trim() }
-          : { storeId: connForm.storeId, shopDomain: connForm.domain, clientId: connForm.clientId, clientSecret: connForm.secret }),
-      });
-      const d = await r.json();
-      if (d.error) setConnMsg(`✗ ${d.error}`);
-      else setConnMsg(`✓ Connected to ${d.probe?.shop} — payouts ${d.probe?.payouts_visible ? 'visible' : 'NOT visible (add the payments read scope)'}${d.warning ? ` · ${d.warning}` : ''}`);
-      if (!d.error) { setConnForm({ storeId: '', domain: '', clientId: '', secret: '' }); load(storeId); }
-    } catch (e: any) { setConnMsg(`✗ ${e?.message || 'failed'}`); }
-    finally { setConnBusy(''); }
-  };
+  const selectStore = (sid: string) => { setStoreId(sid); writeGlobalStore(sid); const u = new URL(window.location.href); sid ? u.searchParams.set('storeId', sid) : u.searchParams.delete('storeId'); window.history.replaceState(null, '', u.toString()); };
+  const toggle = (k: string) => setOpen(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const toggleDate = (d: string) => setExpandedDates(p => { const n = new Set(p); n.has(d) ? n.delete(d) : n.add(d); return n; });
 
   const syncNow = async (sid: string) => {
     setSyncing(sid);
+    try { const d = await fetch('/api/shopify/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ storeId: sid }) }).then(r => r.json()); if (d.error) setConnMsg(`✗ sync: ${d.error}`); load(storeId); }
+    catch (e: any) { setConnMsg(`✗ sync: ${e?.message || 'failed'}`); } finally { setSyncing(''); }
+  };
+  const saveConnection = async () => {
+    const permanent = connForm.secret.trim().startsWith('shpat_');
+    if (!connForm.storeId || !connForm.domain || !connForm.secret || (!permanent && !connForm.clientId)) { setConnMsg(permanent ? 'Store, domain and token required' : 'All four fields required (or paste a shpat_ permanent token as the secret)'); return; }
+    setConnBusy('saving'); setConnMsg('');
     try {
-      const r = await fetch('/api/shopify/sync', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeId: sid }),
-      });
-      const d = await r.json();
-      if (d.error) setConnMsg(`✗ sync: ${d.error}`);
-      load(storeId);
-    } catch (e: any) { setConnMsg(`✗ sync: ${e?.message || 'failed'}`); }
-    finally { setSyncing(''); }
+      const d = await fetch('/api/shopify/credentials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(permanent ? { storeId: connForm.storeId, shopDomain: connForm.domain, permanentToken: connForm.secret.trim() } : { storeId: connForm.storeId, shopDomain: connForm.domain, clientId: connForm.clientId, clientSecret: connForm.secret }) }).then(r => r.json());
+      if (d.error) setConnMsg(`✗ ${d.error}`); else { setConnMsg(`✓ Connected to ${d.probe?.shop} — payouts ${d.probe?.payouts_visible ? 'visible' : 'NOT visible (add the payments read scope)'}`); setConnForm({ storeId: '', domain: '', clientId: '', secret: '' }); load(storeId); }
+    } catch (e: any) { setConnMsg(`✗ ${e?.message || 'failed'}`); } finally { setConnBusy(''); }
   };
 
+  const p = data?.position; const pr = data?.projection; const pos = pr?.position; const t = pr?.totals; const ob = p?.obligations;
+  const allStores: { store_id: string; store_name: string }[] = pr?.all_stores || [];
   const connByStore = new Map(connections.map((c: any) => [c.store_id, c]));
-  const agoLabel = (ts?: string | null) => {
-    if (!ts) return 'never';
-    const mins = Math.round((Date.now() - new Date(ts.replace(' ', 'T') + 'Z').getTime()) / 60000);
-    if (mins < 1) return 'just now';
-    if (mins < 60) return `${mins}m ago`;
-    if (mins < 60 * 24) return `${Math.round(mins / 60)}h ago`;
-    return `${Math.round(mins / 1440)}d ago`;
-  };
-
-  const runPlan = async () => {
-    setPlanLoading(true); setPlanError('');
-    try {
-      const r = await fetch('/api/cashflow/ai', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(storeId ? { storeId } : {}),
-      });
-      const d = await r.json();
-      if (d.error) setPlanError(d.error);
-      else { setPlan(d.plan); setPlanMeta({ created_at: new Date().toISOString() }); }
-    } catch (e: any) { setPlanError(e?.message || 'failed'); }
-    finally { setPlanLoading(false); }
-  };
-
-  const toggleDate = (d: string) => setExpandedDates(prev => {
-    const next = new Set(prev);
-    if (next.has(d)) next.delete(d); else next.add(d);
-    return next;
-  });
-
-  const t = projection?.totals;
-  const stores = projection?.stores || [];
-  // Unfiltered Shopify store list — the connections panel must show stores
-  // with no data yet (that's what connecting is FOR); falls back for old API
-  const allStores: { store_id: string; store_name: string }[] = projection?.all_stores || stores;
+  const incoming14 = t ? (t.landed_today_cents || 0) + t.in_transit_cents + t.scheduled_cents + (t.projected_cents || 0) : 0;
+  const net7 = pos?.after_obligations_7d_cents as number | undefined;
+  const cashUnknown = !!pos?.cash_unknown;
+  const healthy = !cashUnknown && net7 != null && net7 >= 0;
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
+    <div className="space-y-5">
+      {/* header */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">Cashflow</h1>
-          <p className="text-sm text-slate-400 mt-1">When money lands, per date — live from Shopify, auto-synced every 30 min</p>
+          <h1 className="text-2xl font-bold text-white">Cashflow{p ? <span className="text-slate-400 font-medium"> · {p.scope.storeName}</span> : null}</h1>
+          <p className="text-sm text-slate-400 mt-1">Shopify stores only: cash in the bank, what lands when, what is owed, and what is safe to pay today.</p>
+          {p?.scope?.note && <p className="text-[12px] text-amber-300 mt-1">{p.scope.note}</p>}
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setConnOpen(v => !v)}
-            className={`px-3 py-2 text-xs font-medium rounded-lg ${connOpen ? 'bg-slate-700 text-white' : 'bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800'}`}>
-            ⚙ Connections{connections.length ? ` (${connections.length})` : ''}
-          </button>
-          {storeId && connByStore.has(storeId) && (
-            <button onClick={() => syncNow(storeId)} disabled={!!syncing}
-              className="px-3 py-2 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-xs font-medium rounded-lg">
-              {syncing ? 'Syncing…' : `↻ Sync now · last ${agoLabel(connByStore.get(storeId)?.last_synced_at)}`}
-            </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {p && (
+            <div className="flex items-center gap-1.5 text-[11px] mr-1">
+              {[['Bank', p.freshness.bank, 24], ['Shopify', p.freshness.shopify, 2], ['Meta', p.freshness.fb, 12]].map(([n, ts, h]: any) => (
+                <span key={n} className={`px-2 py-1 rounded-md border ${stale(ts, h) ? 'border-amber-500/40 text-amber-300' : 'border-slate-700 text-slate-400'}`} title={ts || 'never synced'}>{n} {ago(ts)}</span>
+              ))}
+              {data?.syncing?.length > 0 && <span className="text-slate-500">syncing…</span>}
+            </div>
           )}
-          <select value={storeId} onChange={e => { setStoreId(e.target.value); writeGlobalStore(e.target.value); }}
-            className="bg-slate-900 border border-slate-700 text-white text-xs rounded-lg px-3 py-2">
-            <option value="">All stores</option>
-            {allStores.map((s: any) => <option key={s.store_id} value={s.store_id}>{s.store_name}</option>)}
-          </select>
+          <button onClick={() => load(storeId)} className="px-3 py-2 text-xs font-medium rounded-lg bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800">↻ Refresh</button>
+          {storeId && connByStore.has(storeId) && (
+            <button onClick={() => syncNow(storeId)} disabled={!!syncing} className="px-3 py-2 text-xs font-medium rounded-lg bg-emerald-600/80 hover:bg-emerald-600 disabled:opacity-50 text-white">{syncing ? 'Syncing…' : 'Sync Shopify now'}</button>
+          )}
+          <button onClick={() => setFeedsOpen(v => !v)} className={`px-3 py-2 text-xs font-medium rounded-lg border ${feedsOpen ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'}`}>Feeds{connections.length ? ` (${connections.length})` : ''}</button>
         </div>
       </div>
 
-      {connOpen && (
-        <div className="mb-5 bg-slate-900 border border-slate-700 rounded-xl p-4">
-          <h2 className="text-sm font-semibold text-white mb-1">Shopify connections</h2>
-          <p className="text-[11px] text-slate-500 mb-3">
-            Paste each store&apos;s custom-app credentials once. The server mints a fresh 24-hour access token automatically whenever the old one expires — payouts, reserves, and chargebacks stay live forever with no re-entry.
-          </p>
+      {feedsOpen && (
+        <div className="rounded-xl bg-slate-900/60 border border-slate-800 p-4">
+          <p className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider mb-1">Shopify feeds</p>
+          <p className="text-[11px] text-slate-500 mb-3">One custom-app credential per store. Payouts, reserves and chargebacks sync every 30 minutes and whenever a page finds them stale. Bank balances come from Bank Accounts; Meta balances from Facebook Accounts.</p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              {allStores.map((s: any) => {
-                const c = connByStore.get(s.store_id);
-                return (
-                  <div key={s.store_id} className="flex items-center justify-between bg-slate-800/50 rounded-lg px-3 py-2 text-xs">
-                    <div className="flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${c ? 'bg-emerald-400' : 'bg-slate-600'}`} />
-                      <span className="text-white font-medium">{s.store_name}</span>
-                      {c && <span className="text-slate-500 font-mono text-[10px]">{c.shop_domain}</span>}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {c ? (
-                        <>
-                          <span className="text-slate-500 text-[10px]">synced {agoLabel(c.last_synced_at)}</span>
-                          <button onClick={() => syncNow(s.store_id)} disabled={!!syncing}
-                            className="px-2 py-1 bg-emerald-800/60 hover:bg-emerald-700 disabled:opacity-50 text-emerald-200 rounded text-[10px]">
-                            {syncing === s.store_id ? 'syncing…' : '↻ sync'}
-                          </button>
-                        </>
-                      ) : (
-                        <button onClick={() => { setConnForm(f => ({ ...f, storeId: s.store_id })); }}
-                          className="px-2 py-1 bg-blue-800/60 hover:bg-blue-700 text-blue-200 rounded text-[10px]">
-                          + connect
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="space-y-1.5">
+              {allStores.map(s => { const c = connByStore.get(s.store_id); return (
+                <div key={s.store_id} className="flex items-center justify-between rounded-lg bg-slate-800/40 px-3 py-2 text-xs">
+                  <span className="flex items-center gap-2"><span className={`w-2 h-2 rounded-full ${c ? (stale(c.last_synced_at, 2) ? 'bg-amber-400' : 'bg-emerald-400') : 'bg-slate-600'}`} /><span className="text-white font-medium">{s.store_name}</span>{c && <span className="text-slate-500 font-mono text-[10px]">{c.shop_domain}</span>}</span>
+                  <span className="flex items-center gap-2">
+                    {c ? <><span className="text-slate-500 text-[10px]">synced {ago(c.last_synced_at)}</span><button onClick={() => syncNow(s.store_id)} disabled={!!syncing} className="px-2 py-1 rounded bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 text-[10px]">{syncing === s.store_id ? 'syncing…' : '↻ sync'}</button></>
+                      : <button onClick={() => setConnForm(f => ({ ...f, storeId: s.store_id }))} className="px-2 py-1 rounded bg-blue-500/15 text-blue-300 hover:bg-blue-500/25 text-[10px]">+ connect</button>}
+                  </span>
+                </div>); })}
             </div>
             <div className="space-y-2">
-              <select value={connForm.storeId} onChange={e => setConnForm(f => ({ ...f, storeId: e.target.value }))}
-                className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2">
-                <option value="">Select store…</option>
-                {allStores.map((s: any) => <option key={s.store_id} value={s.store_id}>{s.store_name}</option>)}
-              </select>
-              <input value={connForm.domain} onChange={e => setConnForm(f => ({ ...f, domain: e.target.value }))}
-                placeholder="Store domain — e.g. pc0bqy-zv.myshopify.com"
-                className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2 font-mono" />
-              <input value={connForm.clientId} onChange={e => setConnForm(f => ({ ...f, clientId: e.target.value }))}
-                placeholder={connForm.secret.trim().startsWith('shpat_') ? 'Client ID — not needed for shpat_ tokens' : 'Client ID'}
-                disabled={connForm.secret.trim().startsWith('shpat_')}
-                className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2 font-mono disabled:opacity-40" />
-              <input value={connForm.secret} onChange={e => setConnForm(f => ({ ...f, secret: e.target.value }))}
-                placeholder="Secret (shpss_…) or permanent token (shpat_…)" type="password"
-                className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2 font-mono" />
-              {connForm.secret.trim().startsWith('shpat_') && (
-                <p className="text-[10px] text-emerald-400">Permanent token detected — saved as-is, never re-minted. Don&apos;t re-save this store with shpss_ creds later unless the app is installed.</p>
-              )}
-              <button onClick={saveConnection} disabled={connBusy === 'saving'}
-                className="w-full px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg">
-                {connBusy === 'saving' ? 'Connecting + verifying…' : 'Save & verify connection'}
-              </button>
+              <select value={connForm.storeId} onChange={e => setConnForm(f => ({ ...f, storeId: e.target.value }))} className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2"><option value="">Select store…</option>{allStores.map(s => <option key={s.store_id} value={s.store_id}>{s.store_name}</option>)}</select>
+              <input value={connForm.domain} onChange={e => setConnForm(f => ({ ...f, domain: e.target.value }))} placeholder="Store domain — e.g. pc0bqy-zv.myshopify.com" className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2 font-mono" />
+              <input value={connForm.clientId} onChange={e => setConnForm(f => ({ ...f, clientId: e.target.value }))} placeholder={connForm.secret.trim().startsWith('shpat_') ? 'Client ID — not needed for shpat_ tokens' : 'Client ID'} disabled={connForm.secret.trim().startsWith('shpat_')} className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2 font-mono disabled:opacity-40" />
+              <input value={connForm.secret} onChange={e => setConnForm(f => ({ ...f, secret: e.target.value }))} placeholder="Secret (shpss_…) or permanent token (shpat_…)" type="password" className="w-full bg-slate-800 border border-slate-700 text-white text-xs rounded-lg px-3 py-2 font-mono" />
+              <button onClick={saveConnection} disabled={connBusy === 'saving'} className="w-full px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg">{connBusy === 'saving' ? 'Connecting + verifying…' : 'Save & verify connection'}</button>
               {connMsg && <p className={`text-[11px] ${connMsg.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>{connMsg}</p>}
-              <p className="text-[10px] text-slate-600">
-                From the store&apos;s Shopify admin: Settings → Apps → Develop apps → your app → API credentials. Saving runs a live test against Shopify before accepting.
-              </p>
             </div>
           </div>
         </div>
       )}
 
-      {loading && <p className="text-sm text-slate-500 animate-pulse">Building projection…</p>}
+      {loading && !data && <p className="text-sm text-slate-500 animate-pulse">Loading position…</p>}
+      {error && <p className="text-sm text-red-400">Could not load: {error}</p>}
 
-      {!loading && !projection && <p className="text-sm text-red-400">No data loaded. Check console for errors.</p>}
-
-      {!loading && projection && (
+      {data && p && pos && (
         <>
-          {/* THE MATH — position, obligations, verdict */}
-          {projection.position && (() => {
-            const p = projection.position;
-            const healthy = p.after_obligations_7d_cents >= 0;
-            return (
-              <div className={`mb-4 rounded-xl border px-4 py-3 ${healthy ? 'bg-emerald-950/20 border-emerald-800/40' : 'bg-rose-950/20 border-rose-800/50'}`}>
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-x-6 gap-y-2">
-                  <div>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">Cash now</p>
-                    <p className="text-lg font-bold text-white">{cents(p.cash_available_cents)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">+ Incoming 7d</p>
-                    <p className="text-lg font-bold text-emerald-400">{cents(p.incoming_7d_cents)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">− Ad burn × 7d</p>
-                    <p className="text-lg font-bold text-orange-400">{cents(p.ad_burn_daily_cents * 7)}</p>
-                    <p className="text-[10px] text-slate-500">{cents(p.ad_burn_daily_cents)}/day</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">− Owed (cards + FB)</p>
-                    <p className="text-lg font-bold text-amber-400">{cents(p.cards_owed_cents + p.fb_unbilled_cents)}</p>
-                    <p className="text-[10px] text-slate-500">{cents(p.cards_owed_cents)} cards · {cents(p.fb_unbilled_cents)} FB unbilled</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">= Net in 7 days</p>
-                    <p className={`text-lg font-bold ${healthy ? 'text-emerald-400' : 'text-rose-400'}`}>{p.after_obligations_7d_cents < 0 ? '−' : ''}{cents(Math.abs(p.after_obligations_7d_cents))}</p>
-                    <p className="text-[10px] text-slate-500">after everything owed</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">Safe to pay today</p>
-                    <p className="text-lg font-bold text-blue-300">{cents(p.safe_to_pay_today_cents)}</p>
-                    <p className="text-[10px] text-slate-500">keeps 7 days of ad spend</p>
-                  </div>
-                </div>
-                <p className="text-[11px] mt-2 text-slate-400">
-                  {healthy
-                    ? `✓ Covered — cash + this week's landings clear all obligations${p.clear_date ? ` by ${dayLabel(p.clear_date)}` : ''} while funding ads.`
-                    : p.clear_date
-                      ? `⚠ Short this week — obligations are fully covered by ${dayLabel(p.clear_date)} as landings arrive. Pay cards in steps, not all at once.`
-                      : `⚠ Obligations exceed cash + the entire ${projection.horizon_days}-day horizon of landings — money must come from outside this projection.`}
-                </p>
-              </div>
-            );
-          })()}
-
-          {/* Total incoming headline */}
-          <div className="mb-4 bg-gradient-to-r from-emerald-950/40 to-slate-900 border border-emerald-800/40 rounded-xl px-4 py-3 flex items-center justify-between">
-            <div>
-              <p className="text-[10px] text-emerald-400 uppercase tracking-wider">Total incoming</p>
-              <p className="text-2xl font-bold text-white">{cents((t.landed_today_cents || 0) + t.in_transit_cents + t.scheduled_cents + (t.projected_cents || 0))}</p>
+          {/* ── Position today ── */}
+          <section className={`rounded-xl border px-5 py-4 ${cashUnknown ? 'bg-slate-900/60 border-slate-800' : healthy ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-rose-500/5 border-rose-500/25'}`}>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Position today · {p.scope.storeName}</p>
+              <p className="text-[11px] text-slate-500">{dayLabel(pr.generated_at_date)} · {data.took_ms} ms</p>
             </div>
-            <p className="text-[11px] text-slate-400 text-right max-w-md">
-              Every dollar Shopify is holding or moving for you, dated.<br />
-              <span className="text-green-300">landed</span> = bank-confirmed · <span className="text-blue-300">arriving</span> = Shopify sent it (±1 day) · <span className="text-emerald-300">scheduled</span> = date committed · <span className="text-violet-300">projected</span> = your sales, dated by measured delay
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-x-6 gap-y-4">
+              <Tile label="Cash in bank" value={money(p.cash.cents)} href={p.cash.href}
+                sub={p.cash.cents == null ? p.cash.note : `${p.cash.rows?.length || 0} account${p.cash.rows?.length === 1 ? '' : 's'} · ${ago(p.cash.asOf)}`} />
+              <Tile label="+ Landing next 7 days" value={money(pos.incoming_7d_cents, { sign: true })} tone="text-emerald-300" sub={`${money(incoming14)} over ${pr.horizon_days} days`} />
+              <Tile label="− Owed in 7 days" value={money(ob.totalCents)} tone="text-amber-300" sub={`cards ${money(ob.cardCharges.cents)} · Meta ${money(ob.fbUnbilled.cents)} · ads ${money(ob.adBurn7d.cents)}`} />
+              <Tile label="= Net after 7 days" value={cashUnknown ? '—' : money(net7, { sign: true })} tone={cashUnknown ? 'text-slate-500' : healthy ? 'text-emerald-300' : 'text-rose-300'} sub={cashUnknown ? 'needs a bank account on this store' : 'cash + landings − everything owed'} />
+              <Tile label="Safe to pay today" value={money(pos.safe_to_pay_today_cents)} tone="text-blue-300" sub="keeps 7 days of ad spend in the bank" />
+              <Tile label="Obligations clear by" value={pos.clear_date ? dayLabel(pos.clear_date) : cashUnknown ? '—' : 'beyond ' + pr.horizon_days + 'd'} tone={pos.clear_date ? 'text-slate-100' : 'text-rose-300'} sub={pos.clear_date ? 'first day landings cover what is owed' : cashUnknown ? '' : 'money must come from outside this view'} />
+            </div>
+            <p className="text-[12px] mt-3 text-slate-300">
+              {cashUnknown
+                ? <>No bank account is assigned to {p.scope.storeName}, so its position cannot be computed. Assign one on <Link href="/dashboard/banking" className="text-blue-300">Bank Accounts</Link>.</>
+                : healthy
+                  ? <>✓ Covered. Cash plus this week&apos;s landings clear everything owed{pos.clear_date ? ` by ${dayLabel(pos.clear_date)}` : ''} while funding ads.</>
+                  : pos.clear_date
+                    ? <>⚠ Short this week. Landings cover what is owed by {dayLabel(pos.clear_date)}. Pay cards in steps as money lands, not all at once.</>
+                    : <>⚠ What is owed exceeds cash plus every landing in the next {pr.horizon_days} days.</>}
             </p>
-          </div>
+          </section>
 
-          {/* Totals strip */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
-            <div className="bg-slate-900 border border-green-800/50 rounded-xl p-3">
-              <p className="text-[10px] text-green-400 uppercase tracking-wider">✓ Landed today</p>
-              <p className="text-lg font-bold text-white">{cents(t.landed_today_cents || 0)}</p>
-              <p className="text-[10px] text-slate-500">bank-confirmed deposits</p>
-            </div>
-            <div className="bg-slate-900 border border-blue-900/40 rounded-xl p-3">
-              <p className="text-[10px] text-blue-400 uppercase tracking-wider">Paid out — arriving</p>
-              <p className="text-lg font-bold text-white">{cents(t.in_transit_cents)}</p>
-              <p className="text-[10px] text-slate-500">Shopify sent it; bank not confirmed yet</p>
-            </div>
-            <div className="bg-slate-900 border border-emerald-900/40 rounded-xl p-3">
-              <p className="text-[10px] text-emerald-400 uppercase tracking-wider">Scheduled</p>
-              <p className="text-lg font-bold text-white">{cents(t.scheduled_cents)}</p>
-              <p className="text-[10px] text-slate-500">date committed by Shopify</p>
-            </div>
-            <div className="bg-slate-900 border border-violet-900/40 rounded-xl p-3">
-              <p className="text-[10px] text-violet-400 uppercase tracking-wider">Projected</p>
-              <p className="text-lg font-bold text-white">{cents(t.projected_cents || 0)}</p>
-              <p className="text-[10px] text-slate-500">sales made, payout date pending</p>
-            </div>
-            <div className="bg-slate-900 border border-amber-900/40 rounded-xl p-3">
-              <p className="text-[10px] text-amber-400 uppercase tracking-wider">Reserves held</p>
-              <p className="text-lg font-bold text-white">{cents(t.reserves_held_cents)}</p>
-              <p className="text-[10px] text-slate-500">held by Shopify — not spendable</p>
-            </div>
-            <div className="bg-slate-900 border border-rose-900/40 rounded-xl p-3">
-              <p className="text-[10px] text-rose-400 uppercase tracking-wider">Losses 30d</p>
-              <p className="text-lg font-bold text-white">{cents((t.refunds_30d_cents || 0) + (t.chargebacks_30d_cents || 0))}</p>
-              <p className="text-[10px] text-slate-500">{cents(t.refunds_30d_cents || 0)} refunds · {cents(t.chargebacks_30d_cents || 0)} chargebacks</p>
-            </div>
-          </div>
-
-          {/* Data notes — collapsed by default; the math above is the signal */}
-          {projection.data_gaps.length > 0 && (
-            <div className="mb-4 bg-slate-900/60 border border-slate-800 rounded-lg">
-              <button onClick={() => setGapsOpen(v => !v)}
-                className="w-full flex items-center justify-between px-4 py-2 text-left">
-                <span className="text-[11px] text-amber-400/90">⚠ {projection.data_gaps.length} data note{projection.data_gaps.length === 1 ? '' : 's'} <span className="text-slate-500">— coverage &amp; verification, not incoming money</span></span>
-                <span className="text-slate-500 text-xs">{gapsOpen ? '▾ hide' : '▸ show'}</span>
-              </button>
-              {gapsOpen && (
-                <div className="px-4 pb-3 max-h-56 overflow-y-auto">
-                  {projection.data_gaps.map((g: string, i: number) => (
-                    <p key={i} className="text-[11px] text-amber-300/80 mt-0.5">⚠ {g}</p>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-5">
-            {/* Landing calendar */}
-            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-slate-800">
-                <h2 className="text-sm font-semibold text-white">Landing calendar</h2>
-                <p className="text-[10px] text-slate-500">Live from Shopify — what arrives in your bank, each day. Click a day for the breakdown.</p>
+          <div className="grid grid-cols-1 xl:grid-cols-[1fr_1.1fr] gap-5">
+            {/* ── What is owed ── */}
+            <section className="rounded-xl bg-slate-900/60 overflow-hidden self-start">
+              <div className="px-4 py-3 border-b border-slate-800/60 flex items-center justify-between">
+                <p className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">What is owed</p>
+                <p className="text-[11px] text-slate-500">each line is the same number its own page shows</p>
               </div>
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-[10px] text-slate-500 uppercase">
-                    <th className="text-left px-4 py-2">Date</th>
-                    <th className="text-right px-2 py-2">Landing</th>
-                    <th className="text-right px-2 py-2">Cumulative</th>
-                    <th className="text-right px-4 py-2" title="cash now + landings through this day − daily ad burn">Position</th>
-                  </tr>
-                </thead>
+              <table className="w-full">
                 <tbody>
-                  {projection.calendar.map((day: any) => (
-                    <>
-                      <tr key={day.date} onClick={() => day.events.length && toggleDate(day.date)}
-                        className={`border-t border-slate-800/60 ${day.events.length ? 'cursor-pointer hover:bg-slate-800/40' : ''} ${day.confirmed_cents > 0 ? 'bg-emerald-950/10' : ''}`}>
-                        <td className="px-4 py-2 text-slate-300">
-                          {dayLabel(day.date)}
-                          {day.date === projection.generated_at_date && <span className="ml-1.5 text-[9px] bg-blue-900/50 text-blue-300 px-1 rounded">today</span>}
-                          {day.events.length > 0 && <span className="ml-1.5 text-slate-600">{expandedDates.has(day.date) ? '▾' : '▸'}</span>}
-                        </td>
-                        <td className={`px-2 py-2 text-right font-mono ${day.confirmed_cents > 0 ? 'text-emerald-400 font-bold' : 'text-slate-600'}`}>
-                          {day.confirmed_cents !== 0 ? cents(day.confirmed_cents) : '—'}
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-slate-400">{cents(day.cumulative_cents)}</td>
-                        <td className={`px-4 py-2 text-right font-mono ${day.position_cents >= 0 ? 'text-slate-200' : 'text-rose-400 font-bold'}`}>
-                          {day.position_cents != null ? cents(day.position_cents) : '—'}
-                        </td>
-                      </tr>
-                      {expandedDates.has(day.date) && day.events.map((e: any, i: number) => (
-                        <tr key={`${day.date}-${i}`} className="bg-slate-800/30">
-                          <td className="px-4 py-1 pl-8 text-slate-400">{e.store_name}</td>
-                          <td className="px-2 py-1 text-slate-500" colSpan={2}>
-                            <span className={`text-[9px] px-1.5 py-0.5 rounded mr-1.5 ${(KIND_STYLE[e.kind] || KIND_STYLE.scheduled).chip}`}>{(KIND_STYLE[e.kind] || KIND_STYLE.scheduled).label}</span>
-                            {e.source}
-                          </td>
-                          <td className="px-4 py-1 text-right font-mono text-slate-300">{cents(e.amount_cents)}</td>
-                        </tr>
-                      ))}
-                    </>
-                  ))}
+                  <ObligationRow name={storeId && !p.scope.note ? 'Card charges paired to this store' : 'Card charges paired to Shopify stores'} f={ob.cardCharges} included open={open.has('cards')} onToggle={() => toggle('cards')} />
+                  <ObligationRow name="Card payments already leaving" f={{ ...ob.inFlight, note: ob.inFlight.note || 'logged payments the bank has not debited yet — inside card debt, shown so you do not pay twice' }} included={false} open={open.has('inflight')} onToggle={() => toggle('inflight')} />
+                  <ObligationRow name="Meta unbilled ad spend" f={ob.fbUnbilled} included open={open.has('fb')} onToggle={() => toggle('fb')} />
+                  <ObligationRow name="Subscriptions due in 14 days" f={ob.recurringDue14d} included open={open.has('subs')} onToggle={() => toggle('subs')} />
+                  <ObligationRow name="Ad spend, next 7 days" f={ob.adBurn7d} included open={false} onToggle={() => {}} />
+                  {ob.manualCards.cents > 0 && <ObligationRow name="Manual liabilities (no due date)" f={ob.manualCards} included={false} open={open.has('manual')} onToggle={() => toggle('manual')} />}
+                  <tr className="border-t border-slate-700/60 bg-slate-950/40">
+                    <td className="px-4 py-2.5 text-[13px] font-semibold text-slate-100">Owed in the next 7 days</td><td />
+                    <td className="px-3 py-2.5 text-right tabular-nums font-bold text-amber-300">{money(ob.totalCents)}</td><td />
+                  </tr>
                 </tbody>
               </table>
-            </div>
+            </section>
 
-            <div className="space-y-5">
-              {/* Per-store snapshot */}
-              <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-                <div className="px-4 py-3 border-b border-slate-800">
-                  <h2 className="text-sm font-semibold text-white">Stores</h2>
-                </div>
-                <div className="divide-y divide-slate-800/60">
-                  {stores.map((s: any) => (
-                    <div key={s.store_id} className="px-4 py-2.5">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-white">{s.store_name}
-                          {!s.has_evidence && <span className="ml-1.5 text-[9px] bg-amber-900/40 text-amber-400 px-1 rounded" title="Upload the Shopify transactions + bank exports to get landing dates">no data</span>}
-                          {s.landing_lag_days != null && <span className="ml-1.5 text-[9px] text-slate-500">lands +{s.landing_lag_days}d ({s.matched_payouts} matched)</span>}
-                        </span>
-                        <span className="text-xs font-mono text-emerald-400">{cents(s.in_transit_cents + s.scheduled_cents)}</span>
-                      </div>
-                      <div className="flex flex-wrap gap-3 mt-1 text-[10px] text-slate-500">
-                        <span>ad burn/day {cents(s.avg_daily_ad_burn_cents)}</span>
-                        {s.reserves_held_cents > 0 && <span className="text-amber-500">reserve {cents(s.reserves_held_cents)}</span>}
-                        {(s.refunds_30d_cents !== 0 || s.chargebacks_30d_cents !== 0) && (
-                          <span className="text-rose-400/80">30d: refunds {cents(s.refunds_30d_cents)} · chargebacks {cents(s.chargebacks_30d_cents)}</span>
-                        )}
-                        {s.last_export_payout_date && <span>export covers → {s.last_export_payout_date}</span>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+            {/* ── Incoming ── */}
+            <section className="rounded-xl bg-slate-900/60 overflow-hidden">
+              <div className="px-4 py-3 border-b border-slate-800/60 flex items-center justify-between">
+                <p className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Landing calendar</p>
+                <p className="text-[11px] text-slate-500">from Shopify · click a day for the breakdown</p>
               </div>
-
-              {/* AI payment plan */}
-              <div className="bg-slate-900 border border-violet-900/40 rounded-xl overflow-hidden">
-                <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-                  <h2 className="text-sm font-semibold text-violet-300">🧠 Fable payment plan</h2>
-                  <button onClick={runPlan} disabled={planLoading}
-                    className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg">
-                    {planLoading ? 'Planning… (1-2 min)' : plan ? 'Re-plan' : 'Build plan'}
-                  </button>
-                </div>
-                <div className="p-4">
-                  {planError && <p className="text-[11px] text-red-400 mb-2">{planError}</p>}
-                  {planLoading && <p className="text-[11px] text-slate-500 animate-pulse">Matching card obligations against landing dates…</p>}
-                  {!plan && !planLoading && (
-                    <p className="text-[11px] text-slate-500">Builds a day-by-day plan: which card to pay, how much, on which date — covered by cash that has actually landed.</p>
-                  )}
-                  {plan && !planLoading && (
-                    <div className="space-y-3">
-                      <p className="text-xs text-slate-200 bg-violet-950/30 rounded-lg px-3 py-2">{plan.summary}</p>
-                      {(plan.daily_plan || []).filter((d: any) => (d.payments || []).length > 0).map((d: any, i: number) => (
-                        <div key={i} className="bg-slate-800/50 rounded-lg px-3 py-2">
-                          <div className="flex items-center justify-between text-[11px]">
-                            <span className="text-white font-medium">{dayLabel(d.date)}</span>
-                            <span className="text-slate-500 font-mono">landed by then: {cents(d.expected_landed_cents || 0)}</span>
-                          </div>
-                          {(d.payments || []).map((p: any, j: number) => (
-                            <div key={j} className="flex items-center justify-between mt-1 text-[11px]">
-                              <span className="text-slate-300">→ pay <span className="text-white">{p.card_name}</span> <span className="text-slate-500">({p.store})</span></span>
-                              <span className="font-mono text-emerald-400 font-bold">{cents(p.amount_cents)}</span>
-                            </div>
-                          ))}
-                          {d.note && <p className="text-[10px] text-slate-500 mt-1">{d.note}</p>}
-                        </div>
-                      ))}
-                      {(plan.risks || []).length > 0 && (
-                        <div className="text-[10px] text-amber-400 space-y-0.5">
-                          {plan.risks.map((r: string, i: number) => <p key={i}>⚠ {r}</p>)}
-                        </div>
-                      )}
-                      {(plan.data_gaps || []).length > 0 && (
-                        <div className="text-[10px] text-slate-500 space-y-0.5">
-                          {plan.data_gaps.map((g: string, i: number) => <p key={i}>· {g}</p>)}
-                        </div>
-                      )}
-                      {planMeta?.created_at && <p className="text-[9px] text-slate-600">{planMeta.created_at}</p>}
-                    </div>
-                  )}
-                </div>
+              <div className="grid grid-cols-3 md:grid-cols-6 gap-px bg-slate-800/40 border-b border-slate-800/60 text-center">
+                {[['Landed today', t.landed_today_cents || 0, 'text-emerald-300'], ['Arriving', t.in_transit_cents, 'text-blue-300'], ['Scheduled', t.scheduled_cents, 'text-teal-300'], ['Projected', t.projected_cents || 0, 'text-violet-300'], ['Reserves held', t.reserves_held_cents, 'text-amber-300'], ['Losses 30d', (t.refunds_30d_cents || 0) + (t.chargebacks_30d_cents || 0), 'text-rose-300']].map(([l, v, c]: any) => (
+                  <div key={l} className="bg-slate-900/80 px-2 py-2"><p className="text-[10px] uppercase tracking-wider text-slate-500">{l}</p><p className={`text-[13px] font-semibold tabular-nums ${c}`}>{money(v, { sign: true })}</p></div>
+                ))}
               </div>
-            </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[12px]">
+                  <thead><tr className="text-[10px] uppercase tracking-wider text-slate-500"><th className="text-left px-4 py-2">Day</th><th className="text-right px-2 py-2">Lands</th><th className="text-right px-2 py-2">Cumulative</th><th className="text-right px-4 py-2" title="cash + landings through this day − daily ad spend">Bank position</th></tr></thead>
+                  <tbody>
+                    {pr.calendar.map((day: any) => (
+                      <FragmentRow key={day.date} day={day} today={pr.generated_at_date} open={expandedDates.has(day.date)} onToggle={() => day.events.length && toggleDate(day.date)} showStore={!storeId} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
           </div>
+
+          {/* ── Stores (all-stores view) ── */}
+          {p.storeRows && (
+            <section className="rounded-xl bg-slate-900/60 overflow-hidden">
+              <div className="px-4 py-3 border-b border-slate-800/60 flex items-center justify-between">
+                <p className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Per store</p>
+                <p className="text-[11px] text-slate-500">click a store for its own position</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[12px]">
+                  <thead><tr className="text-[10px] uppercase tracking-wider text-slate-500">
+                    <th className="text-left px-4 py-2">Store</th><th className="text-right px-2 py-2">Cash</th><th className="text-right px-2 py-2">Landing {pr.horizon_days}d</th><th className="text-right px-2 py-2">Card charges</th><th className="text-right px-2 py-2">Meta unbilled</th><th className="text-right px-2 py-2">Subs 14d</th><th className="text-right px-2 py-2">Ads / day</th><th className="text-right px-2 py-2">Reserves</th><th className="text-right px-4 py-2">Losses 30d</th>
+                  </tr></thead>
+                  <tbody>
+                    {p.storeRows.map((r: any) => {
+                      const s = (pr.stores || []).find((x: any) => x.store_id === r.storeId);
+                      const landing = s ? (s.landed_today_cents || 0) + s.in_transit_cents + s.scheduled_cents + (s.projected_cents || 0) : null;
+                      return (
+                        <tr key={r.storeId} onClick={() => selectStore(r.storeId)} className="border-t border-slate-800/50 cursor-pointer hover:bg-slate-800/30">
+                          <td className="px-4 py-2 text-slate-100 font-medium">{r.storeName}{s?.landing_lag_days != null && <span className="ml-1.5 text-[10px] text-slate-500">lands +{s.landing_lag_days}d</span>}</td>
+                          <td className="px-2 py-2 text-right tabular-nums text-slate-200" title={r.cashCents == null ? 'no bank account assigned' : ''}>{money(r.cashCents)}</td>
+                          <td className="px-2 py-2 text-right tabular-nums text-emerald-300">{money(landing, { sign: true })}</td>
+                          <td className="px-2 py-2 text-right tabular-nums text-slate-200">{money(r.cardChargesCents)}</td>
+                          <td className="px-2 py-2 text-right tabular-nums text-slate-200">{money(r.fbCents)}</td>
+                          <td className="px-2 py-2 text-right tabular-nums text-slate-200">{money(r.recurring14dCents)}</td>
+                          <td className="px-2 py-2 text-right tabular-nums text-slate-400">{money(s?.avg_daily_ad_burn_cents ?? null)}</td>
+                          <td className="px-2 py-2 text-right tabular-nums text-amber-300">{money(s?.reserves_held_cents ?? null)}</td>
+                          <td className="px-4 py-2 text-right tabular-nums text-rose-300">{s ? money((s.refunds_30d_cents || 0) + (s.chargebacks_30d_cents || 0), { sign: true }) : '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          {pr.data_gaps?.length > 0 && (
+            <div className="rounded-xl bg-slate-900/60">
+              <button onClick={() => setGapsOpen(v => !v)} className="w-full flex items-center justify-between px-4 py-2.5 text-left">
+                <span className="text-[11px] text-amber-300">⚠ {pr.data_gaps.length} data note{pr.data_gaps.length === 1 ? '' : 's'} <span className="text-slate-500">— coverage and verification, not incoming money</span></span>
+                <span className="text-slate-500 text-xs">{gapsOpen ? 'hide' : 'show'}</span>
+              </button>
+              {gapsOpen && <div className="px-4 pb-3 max-h-56 overflow-y-auto">{pr.data_gaps.map((g: string, i: number) => <p key={i} className="text-[11px] text-amber-300/80 mt-0.5">⚠ {g}</p>)}</div>}
+            </div>
+          )}
         </>
       )}
     </div>
+  );
+}
+
+function FragmentRow({ day, today, open, onToggle, showStore }: { day: any; today: string; open: boolean; onToggle: () => void; showStore: boolean }) {
+  return (
+    <>
+      <tr onClick={onToggle} className={`border-t border-slate-800/50 ${day.events.length ? 'cursor-pointer hover:bg-slate-800/30' : ''} ${day.confirmed_cents > 0 ? 'bg-emerald-500/5' : ''}`}>
+        <td className="px-4 py-1.5 text-slate-300 whitespace-nowrap">{dayLabel(day.date)}{day.date === today && <span className="ml-1.5 text-[9px] bg-blue-500/15 text-blue-300 px-1 rounded">today</span>}{day.events.length > 0 && <span className="ml-1.5 text-slate-600">{open ? '▾' : '▸'}</span>}</td>
+        <td className={`px-2 py-1.5 text-right tabular-nums ${day.confirmed_cents > 0 ? 'text-emerald-300 font-semibold' : day.confirmed_cents < 0 ? 'text-rose-300' : 'text-slate-600'}`}>{day.confirmed_cents !== 0 ? money(day.confirmed_cents, { sign: true }) : '—'}</td>
+        <td className="px-2 py-1.5 text-right tabular-nums text-slate-400">{money(day.cumulative_cents, { sign: true })}</td>
+        <td className={`px-4 py-1.5 text-right tabular-nums ${day.position_cents == null ? 'text-slate-600' : day.position_cents >= 0 ? 'text-slate-200' : 'text-rose-300 font-semibold'}`}>{money(day.position_cents, { sign: true })}</td>
+      </tr>
+      {open && day.events.map((e: any, i: number) => (
+        <tr key={i} className="bg-slate-950/40">
+          <td className="pl-8 pr-2 py-1 text-slate-400 whitespace-nowrap">{showStore ? e.store_name : ''}</td>
+          <td className="px-2 py-1 text-slate-500" colSpan={2}><span className={`text-[9px] px-1.5 py-0.5 rounded mr-1.5 ${(KIND[e.kind] || KIND.scheduled).chip}`}>{(KIND[e.kind] || KIND.scheduled).label}</span>{e.source}</td>
+          <td className="px-4 py-1 text-right tabular-nums text-slate-300">{money(e.amount_cents, { sign: true })}</td>
+        </tr>
+      ))}
+    </>
   );
 }

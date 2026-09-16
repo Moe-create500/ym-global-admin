@@ -2,18 +2,91 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  @apply bg-slate-950 text-gray-100;
+/* Daylight ledger theme — tokens live in tailwind.config.ts (inverted slate =
+   surface/ink scale, purple-500 = the one accent). This file carries what
+   utilities can't: the canvas, the edge every card shares, type features,
+   the few dark-theme utilities that must read as ink on white, and the
+   single entrance motion. See DESIGN.md. */
+:root {
+  --ink: #141626;
+  --ink-2: #2a3047;
+  --edge: #e3e6ef;
+  --edge-strong: #cfd4e2;
+  --glow: rgba(124, 92, 255, 0.10);
+  --shadow: 0 1px 2px rgba(20, 22, 38, 0.04), 0 8px 24px -12px rgba(20, 22, 38, 0.10);
 }
 
-::selection { background: rgba(225, 78, 202, 0.35); }
+body {
+  @apply bg-slate-950 text-slate-100;
+  color: var(--ink);
+  font-feature-settings: 'cv01', 'ss03', 'zero', 'tnum';
+  background-image:
+    radial-gradient(900px 520px at -10% -10%, var(--glow), transparent 60%),
+    radial-gradient(700px 420px at 110% 0%, rgba(47, 111, 224, 0.06), transparent 60%);
+  background-attachment: fixed;
+  letter-spacing: -0.005em;
+}
 
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #171826; }
-::-webkit-scrollbar-thumb { background: #3b4368; border-radius: 3px; }
+h1, h2, h3 { letter-spacing: -0.02em; text-wrap: balance; }
+h1 { font-weight: 600; }
+strong, b { font-weight: 600; }
+.tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* Utilities written for the old dark theme, read as ink on white. Placed after
+   @tailwind utilities so they win on order, not specificity. */
+.text-white { color: var(--ink); }
+.hover\:text-white:hover { color: var(--ink); }
+.text-black { color: var(--ink); }
+.border-white\/5, .border-white\/10 { border-color: var(--edge); }
+.bg-black\/50, .bg-black\/60, .bg-black\/70, .bg-black\/80 { background-color: rgba(20, 22, 38, 0.35); }
+.bg-black { background-color: #ffffff; }
+
+/* Cards: `rounded-xl bg-slate-900/60` everywhere → white with a hairline
+   edge and a soft lift. */
+[class~="bg-slate-900/60"].rounded-xl,
+[class~="bg-slate-900/40"].rounded-xl,
+[class~="bg-slate-900/70"],
+.rounded-xl.bg-slate-900 {
+  background-color: #ffffff;
+  border: 1px solid var(--edge);
+  box-shadow: var(--shadow);
+}
+[class~="bg-slate-900/60"].rounded-xl > .border-slate-800\/60,
+.rounded-xl.bg-slate-900 > .border-slate-800\/60 { border-color: var(--edge); }
+
+/* Tables: quiet header, clear rows. */
+thead th { color: #7a819b; font-weight: 600; }
+tbody tr { border-color: var(--edge); }
+tbody tr:hover { background-color: #f7f8fc; }
+
+/* Floating panels (sidebar, top bars, drawers) are frosted white. */
+.glass {
+  background-color: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border-color: var(--edge);
+}
+aside.bg-slate-950 { background-color: rgba(255, 255, 255, 0.96); border-color: var(--edge); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: -12px 0 40px -24px rgba(20, 22, 38, 0.25); }
+
+/* Controls */
+select, input[type="search"], input[type="date"], input[type="text"], input[type="number"], textarea {
+  border-radius: 8px;
+  color: var(--ink);
+  background-color: #ffffff;
+  border-color: var(--edge-strong);
+}
+[class~="bg-slate-950"] select, [class~="bg-slate-950"] input { background-color: #ffffff; }
+:focus-visible { outline: 2px solid rgba(124, 92, 255, 0.55); outline-offset: 2px; }
+
+/* One entrance, nothing else moves on its own. */
+@keyframes rise-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.rise-in { animation: rise-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+@media (prefers-reduced-motion: reduce) { .rise-in { animation: none; } * { transition-duration: 0.01ms !important; } }
+
+::selection { background: rgba(124, 92, 255, 0.22); }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #f4f5fa; }
+::-webkit-scrollbar-thumb { background: #cfd4e2; border-radius: 4px; }
 
 input[type="number"]::-webkit-inner-spin-button,
-input[type="number"]::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
+input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }

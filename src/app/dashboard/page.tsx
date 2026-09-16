@@ -221,10 +221,18 @@ function DashboardContent() {
   const [syncResult, setSyncResult] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [autoSynced, setAutoSynced] = useState(false);
-  const [range, setRange] = useState<'daily' | 'yesterday' | 'monthly' | 'yearly'>('monthly');
+  const [range, setRange] = useState<'daily' | 'yesterday' | 'monthly' | 'yearly'>('daily');
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<SortKey>('revenue');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [hiddenOpen, setHiddenOpen] = useState(false);
+  const [confirmHide, setConfirmHide] = useState<string | null>(null);
+  // Hide a shut-down store from the dashboard (stores.dashboard_hidden — the P&L totals use the same flag); reversible below the table.
+  const setHidden = async (id: string, hidden: boolean) => {
+    setConfirmHide(null);
+    await fetch(`/api/stores/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dashboard_hidden: hidden ? 1 : 0 }) }).catch(() => {});
+    setStores(prev => prev.map(s => s.id === id ? { ...s, dashboard_hidden: hidden ? 1 : 0 } as any : s));
+  };
 
   function getPacificDate(offset = 0): string {
     const now = new Date();
@@ -592,34 +600,6 @@ function DashboardContent() {
         ))}
       </div>
 
-      {/* Trend Chart */}
-      {rows.length >= 2 && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
-          <h2 className="text-sm font-semibold text-white mb-3">30-Day Trend</h2>
-          <TrendChart rows={rows} />
-        </div>
-      )}
-
-      {/* Cost Breakdown */}
-      {totals && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
-          <h2 className="text-sm font-semibold text-white mb-4">Cost Breakdown ({rangeLabel})</h2>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-            {[
-              { label: 'Fulfillment', value: (totals.cogs_cents || 0) + (totals.shipping_cents || 0) },
-              { label: 'Ad Spend', value: totals.ad_spend_cents },
-              { label: 'Platform Fees', value: totals.shopify_fees_cents },
-              { label: 'Other Costs', value: totals.other_costs_cents },
-              { label: 'Total Costs', value: (totals.cogs_cents || 0) + (totals.shipping_cents || 0) + (totals.ad_spend_cents || 0) + (totals.shopify_fees_cents || 0) + (totals.other_costs_cents || 0) },
-            ].map((item) => (
-              <div key={item.label}>
-                <p className="text-xs text-slate-500 mb-0.5">{item.label}</p>
-                <p className={`text-sm font-semibold ${item.label === 'Total Costs' ? 'text-orange-400' : 'text-slate-300'}`}>{cents(item.value || 0)}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Product tests — every recent Launch Flow product, tracked to a verdict */}
       {!storeId && (productPerf?.tests?.length || 0) > 0 && (
@@ -690,7 +670,7 @@ function DashboardContent() {
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
               <h2 className="text-sm font-semibold text-white">Stores ({rangeLabel})</h2>
-              <span className="text-xs text-slate-500">{filteredStores.length} stores</span>
+              <span className="text-xs text-slate-500">{filteredStores.length} stores{!storeId && stores.filter(s => (s as any).dashboard_hidden && s.platform === 'shopify').length > 0 && <button onClick={() => setHiddenOpen(v => !v)} className="ml-2 text-slate-500 hover:text-slate-300 underline decoration-dotted">{stores.filter(s => (s as any).dashboard_hidden && s.platform === 'shopify').length} hidden</button>}</span>
             </div>
             <div className="flex items-center gap-3">
               {/* Search */}
@@ -773,7 +753,17 @@ function DashboardContent() {
                           <td className={`px-3 py-2.5 text-right tabular-nums ${storeRoas == null ? 'text-slate-600' : storeRoas >= 2 ? 'text-emerald-300' : storeRoas >= 1.3 ? 'text-slate-300' : 'text-amber-300'}`}>{storeRoas == null ? '—' : `${storeRoas.toFixed(1)}x`}</td>
                           <td className="px-3 py-2.5 text-right tabular-nums text-slate-400">{(store.mtd_orders || 0).toLocaleString()}</td>
                           <td className="px-3 py-2.5 text-center">{spark.length >= 2 && <Sparkline data={spark.map(pt => pt.rev)} color={profit >= 0 ? '#6ee7b7' : '#fca5a5'} />}</td>
-                          <td className="px-4 py-2.5 text-center"><span title={health.title} className={`${health.cls} text-sm cursor-help`}>{health.label}</span></td>
+                          <td className="px-4 py-2.5 text-center whitespace-nowrap">
+                            <span title={health.title} className={`${health.cls} text-sm cursor-help`}>{health.label}</span>
+                            {!storeId && (confirmHide === store.id
+                              ? <span className="ml-2 inline-flex items-center gap-1 text-[10px]" onClick={e => e.stopPropagation()}>
+                                  <button onClick={() => setHidden(store.id, true)} className="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 hover:bg-rose-500/25">hide</button>
+                                  <button onClick={() => setConfirmHide(null)} className="text-slate-500 hover:text-slate-300">cancel</button>
+                                </span>
+                              : <button onClick={e => { e.stopPropagation(); setConfirmHide(store.id); }} title="Hide this store from the dashboard (shut down / inactive)" className="ml-2 text-slate-600 hover:text-slate-300 align-middle">
+                                  <svg className="w-3.5 h-3.5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}><path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                                </button>)}
+                          </td>
                         </tr>
                       );
                     })}
@@ -800,6 +790,16 @@ function DashboardContent() {
                     })()}
                   </tbody>
                 </table>
+                {hiddenOpen && !storeId && (
+                  <div className="px-4 py-2.5 border-t border-slate-800/60 flex flex-wrap items-center gap-2 text-[11px]">
+                    <span className="text-slate-500">Hidden from the dashboard:</span>
+                    {stores.filter(s => (s as any).dashboard_hidden && s.platform === 'shopify').map(s => (
+                      <span key={s.id} className="inline-flex items-center gap-1.5 rounded-md bg-slate-800/60 px-2 py-1 text-slate-300">
+                        {s.name}<button onClick={() => setHidden(s.id, false)} className="text-blue-300 hover:text-blue-200">show</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}

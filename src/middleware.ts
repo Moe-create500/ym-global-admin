@@ -75,10 +75,13 @@ function isClientAllowedApi(pathname: string): boolean {
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
+  // Internal system: the root is not a landing page — go straight to the dashboard (→ /login without a session).
+  if (pathname === '/') return NextResponse.redirect(new URL('/dashboard', req.url));
+
   // Public paths
   if (
-    pathname === '/' ||
     pathname === '/login' ||
+    pathname === '/robots.txt' ||
     pathname.startsWith('/api/auth') ||
     pathname.startsWith('/_next/') ||
     pathname.startsWith('/favicon') ||

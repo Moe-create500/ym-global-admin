@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { reconcileSnapshot } from '@/lib/cfo-reconcile';
 import { getPaymentsInFlight } from '@/lib/payments-in-flight';
 import { fetchOpenOrdersEstimate } from '@/lib/ss-open-orders';
+import { cardOwedCents } from '@/lib/bank-balances';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -293,10 +294,9 @@ export async function GET(req: NextRequest) {
   // only the fallback for cards the clarity engine doesn't cover.
   // Card owed = limit − available (Brain card-clarity refinement removed
   // 2026-09-09 with the engine teardown; bank-reported numbers stand).
-  const cardOwedOf = (a: any) => {
-    const creditLimit = a.credit_limit_cents || ((a.balance_available_cents || 0) + (a.balance_ledger_cents || 0));
-    return creditLimit - (a.balance_available_cents || 0);
-  };
+  // One shared definition with the Credit Cards page (src/lib/bank-balances.ts):
+  // owed = |ledger| as the bank reports it; limit − available only as fallback.
+  const cardOwedOf = (a: any) => cardOwedCents(a);
 
   const bankTotal = bankAccounts.reduce((s: number, a: any) => {
     if (a.account_type === 'credit') return s - cardOwedOf(a);

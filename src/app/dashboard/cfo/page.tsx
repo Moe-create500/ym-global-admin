@@ -1,8 +1,12 @@
 'use client';
 
 import { useEffect, useState, useCallback, Suspense } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import StoreSelector from '@/components/StoreSelector';
+import { readGlobalStore, onGlobalStoreChange } from '@/components/GlobalStore';
+import { CfoTabs, type CfoTab } from '@/components/cfo/CfoTabs';
+import { PnlTab } from '@/components/cfo/PnlTab';
+import { StoreCharges } from '@/components/cfo/StoreCharges';
 
 function cents(amount: number): string {
   return (amount / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -549,81 +553,33 @@ function ReconciliationPanel({ recon, onRecompute }: { recon: ReconResult | null
 // Card charges linked to THIS store — each individually markable as paid.
 // Data = proven attribution (classification_results); settlement state lives
 // on the transaction row itself and survives categorizer re-runs.
-function StoreCardCharges({ storeId }: { storeId: string }) {
-  const [data, setData] = useState<any>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [showSettled, setShowSettled] = useState(false);
-  const load = useCallback(() => {
-    fetch(`/api/store-charges?storeId=${storeId}`).then(r => r.json()).then(setData).catch(() => {});
-  }, [storeId]);
-  useEffect(() => { load(); }, [load]);
-
-  async function toggle(txnId: string, settled: boolean) {
-    setBusy(txnId);
-    await fetch('/api/store-charges', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ txnId, settled }),
-    }).catch(() => {});
-    setBusy(null);
-    load();
-  }
-
-  if (!data) return null;
-  const visible = (data.charges || []).filter((c: any) => showSettled || !c.settled_at);
-  return (
-    <div className="rounded-xl bg-slate-900/60 overflow-hidden">
-      <div className="px-5 py-3 border-b border-slate-800/60 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Card charges linked to this store</p>
-          <p className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
-            <span className="text-amber-300">{cents(data.summary.open_cents)} unpaid</span>
-            {data.summary.settled_cents > 0 && <span> · {cents(data.summary.settled_cents)} paid</span>}
-            <span> · {data.summary.count} charges (proven attribution)</span>
-          </p>
-        </div>
-        <label className="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer select-none">
-          <input type="checkbox" checked={showSettled} onChange={e => setShowSettled(e.target.checked)} className="accent-blue-500" />
-          Show paid
-        </label>
-      </div>
-      {visible.length === 0 ? (
-        <p className="px-5 py-6 text-center text-[13px] text-slate-500">
-          {data.summary.count === 0 ? 'No card charges are linked to this store yet — pair them on the Transactions page.' : 'All linked card charges are marked paid ✓'}
-        </p>
-      ) : (
-        <table className="w-full text-[13px]">
-          <tbody>
-            {visible.map((c: any) => (
-              <tr key={c.id} className={`border-b border-slate-800/30 last:border-b-0 ${c.settled_at ? 'opacity-50' : ''}`}>
-                <td className="px-5 py-2 text-slate-500 whitespace-nowrap w-24">{c.date}</td>
-                <td className="px-3 py-2 max-w-[340px]"><span className="text-slate-100 truncate block">{c.description}</span></td>
-                <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{c.card}</td>
-                <td className="px-3 py-2 text-right tabular-nums font-medium text-slate-100 whitespace-nowrap">{cents(Math.abs(c.amount_cents))}</td>
-                <td className="px-5 py-2 text-right w-28">
-                  {c.settled_at ? (
-                    <button onClick={() => toggle(c.id, false)} disabled={busy === c.id}
-                      className="text-[11px] text-emerald-400 hover:text-emerald-300 disabled:opacity-50">✓ paid · undo</button>
-                  ) : (
-                    <button onClick={() => toggle(c.id, true)} disabled={busy === c.id}
-                      className="text-[11px] px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 font-medium">
-                      {busy === c.id ? '…' : 'Mark paid'}
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  );
-}
 
 function CFOContent() {
   const searchParams = useSearchParams();
   const storeId = searchParams.get('storeId') || '';
+  // CFO v2 sections (feature-flagged): the same page, split into Position /
+  // P&L / Money Flow & Reconciliation / History. Flag off = untouched page.
+  const section = ((searchParams.get('tab') as CfoTab) || 'position');
+  const [v2, setV2] = useState(false);
+  useEffect(() => { fetch('/api/cfo/v2/flag').then(r => r.json()).then(j => setV2(!!j.enabled)).catch(() => {}); }, []);
+  const show = (s: CfoTab) => !v2 || section === s;
+  const router = useRouter();
 
   const [tab, setTab] = useState<'overview' | 'store'>(storeId ? 'store' : 'overview');
+  // With v2 on there is ONE navigation: the section tabs. The old
+  // "overview / store detail" pills go away; a store is always in view —
+  // from the URL, else the globally pinned store — and the all-stores
+  // snapshot table shows only when no store is chosen.
+  const effTab: 'overview' | 'store' = v2 ? (storeId ? 'store' : 'overview') : tab;
+  useEffect(() => {
+    if (!v2 || storeId) return;
+    const g = readGlobalStore();
+    if (g) router.replace(`/dashboard/cfo?storeId=${encodeURIComponent(g)}&tab=${section}`);
+  }, [v2, storeId, section]);
+  useEffect(() => {
+    if (!v2) return;
+    return onGlobalStoreChange(id => { if (id && id !== storeId) router.replace(`/dashboard/cfo?storeId=${encodeURIComponent(id)}&tab=${section}`); });
+  }, [v2, storeId, section]);
   const [data, setData] = useState<CFOData | null>(null);
   const [loading, setLoading] = useState(true);
   const [stores, setStores] = useState<{ id: string; name: string }[]>([]);
@@ -679,7 +635,7 @@ function CFOContent() {
   }, [storeId]);
 
   useEffect(() => {
-    if (tab === 'overview') loadOverview();
+    if (effTab === 'overview') loadOverview();
     else if (storeId) loadData();
     else { setData(null); setLoading(false); }
   }, [tab, storeId]);
@@ -884,12 +840,12 @@ function CFOContent() {
           <div>
             <h1 className="text-2xl font-bold text-white">CFO Dashboard</h1>
             <p className="text-sm text-slate-400 mt-1">
-              {tab === 'overview' ? 'All Stores Overview' : selectedStore ? `${selectedStore.name} — Balance Sheet` : 'Select a store'}
+              {effTab === 'overview' ? (v2 ? 'Pick a store — every store has its own CFO' : 'All Stores Overview') : selectedStore ? `${selectedStore.name} — ${v2 ? ({ position: 'Position', pnl: 'P&L', recon: 'Money Flow & Reconciliation', history: 'History', overview: 'Overview' } as Record<string, string>)[section] : 'Balance Sheet'}` : 'Select a store'}
             </p>
           </div>
-          {tab === 'store' && <StoreSelector />}
+          {(effTab === 'store' || v2) && <StoreSelector />}
         </div>
-        {tab === 'store' && data && (
+        {effTab === 'store' && data && (
           <div className="flex items-center gap-3">
             {snapshotSaved && (
               <span className="text-xs text-emerald-300">Saved {snapshotSaved}</span>
@@ -908,12 +864,14 @@ function CFOContent() {
         )}
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1.5 mb-6 w-fit">
+      {v2 && <CfoTabs active={section} storeId={storeId || undefined} />}
+
+      {/* Tabs (v1 only — v2 uses the section tabs above) */}
+      {!v2 && <div className="flex gap-1.5 mb-6 w-fit">
         <button
           onClick={() => setTab('overview')}
           className={`px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
-            tab === 'overview' ? 'bg-slate-100 text-slate-900' : 'text-slate-400 hover:text-white bg-slate-900/70'
+            effTab === 'overview' ? 'bg-slate-100 text-slate-900' : 'text-slate-400 hover:text-white bg-slate-900/70'
           }`}
         >
           OVERVIEW CFO&apos;S
@@ -921,15 +879,15 @@ function CFOContent() {
         <button
           onClick={() => setTab('store')}
           className={`px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
-            tab === 'store' ? 'bg-slate-100 text-slate-900' : 'text-slate-400 hover:text-white bg-slate-900/70'
+            effTab === 'store' ? 'bg-slate-100 text-slate-900' : 'text-slate-400 hover:text-white bg-slate-900/70'
           }`}
         >
           Store Detail
         </button>
-      </div>
+      </div>}
 
       {/* OVERVIEW TAB */}
-      {tab === 'overview' ? (
+      {effTab === 'overview' ? (
         overviewLoading ? (
           <div className="flex items-center justify-center h-32">
             <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400" />
@@ -1056,6 +1014,7 @@ function CFOContent() {
         </div>
       ) : data ? (
         <>
+          {show('position') && (<>
           {/* Top-Level Summary */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
             <div className="rounded-xl bg-slate-900/60 p-5">
@@ -1634,7 +1593,7 @@ function CFOContent() {
           </div>
 
           {/* CARD CHARGES LINKED TO THIS STORE (individually payable) */}
-          {storeId && <StoreCardCharges storeId={storeId} />}
+          {storeId && <StoreCharges storeId={storeId} />}
 
           {/* EQUITY */}
           <div className="mt-6 rounded-xl bg-slate-900/60 p-5">
@@ -1651,15 +1610,21 @@ function CFOContent() {
             </div>
           </div>
 
+          </>)}
+
+          {v2 && section === 'pnl' && <PnlTab storeId={storeId} isShipSourced={selectedStore?.name === 'ShipSourced'} />}
+
           {/* RECONCILIATION — does the balance sheet tie out to the P&L? */}
+          {show('recon') && (
           <ReconciliationPanel recon={recon} onRecompute={async () => {
             const r = await fetch(`/api/cfo/reconcile?storeId=${storeId}&recompute=1`);
             const rd = await r.json();
             setRecon(rd.latest || null);
           }} />
+          )}
 
           {/* SNAPSHOT HISTORY */}
-          {snapshots.length > 0 && (
+          {show('history') && snapshots.length > 0 && (
             <div className="mt-6 rounded-xl bg-slate-900/60 overflow-hidden">
               <div className="px-5 py-3 border-b border-slate-800/60">
                 <h2 className="text-[12px] font-semibold text-slate-200 uppercase tracking-wider">Saved Snapshots</h2>
