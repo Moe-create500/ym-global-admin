@@ -10,8 +10,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'YM Global Enterprise Ventures',
-  description: 'CFO Dashboard — Multi-Store P&L Management',
+  title: 'YM Global Ventures',
+  description: 'Internal finance and operations system',
+  robots: { index: false, follow: false, nocache: true, googleBot: { index: false, follow: false } },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
