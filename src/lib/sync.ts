@@ -374,30 +374,46 @@ export async function syncStore(storeId: string): Promise<SyncResult> {
  * Sets revenue_cents and order_count in daily_pnl using Shopify's "Total sales" metric
  * (new order revenue - refunds processed that day).
  */
-export async function syncShopifyRevenue(storeId: string): Promise<{ synced: number; error?: string }> {
+export async function syncShopifyRevenue(storeId: string, window?: { from: string; to: string }): Promise<{ synced: number; error?: string }> {
   const db = getDb();
   const store: any = db.prepare('SELECT * FROM stores WHERE id = ? AND is_active = 1').get(storeId);
+  if (!store) return { synced: 0 };
 
-  if (!store?.shopify_domain || !store?.shopify_access_token) {
-    return { synced: 0 };
+  // Revenue source of truth is the store's own Shopify. Credentials come from the
+  // custom-app connection (shopify_credentials — the same one that syncs payouts),
+  // with the legacy per-store token as a fallback. ShipSourced's order feed is only
+  // used for revenue when neither exists (its ingestion can lag or drop prices).
+  let domain: string | null = store.shopify_domain || null;
+  let token: string | null = store.shopify_access_token || null;
+  if (!token) {
+    try {
+      const { getCreds, getAccessToken } = await import('@/lib/shopify-sync');
+      const creds = getCreds(db, storeId);
+      if (creds) { domain = creds.shop_domain; token = await getAccessToken(db, storeId, Date.now()); }
+    } catch (err: any) {
+      console.error(`[shopify-sync] ${store.name}: token unavailable: ${err.message}`);
+      reportSource(db, `shopify_revenue:${storeId}`, { ok: false, error: err.message, label: `Shopify revenue — ${store.name}`, cadenceMin: 60, storeId });
+      return { synced: 0, error: err.message };
+    }
   }
+  if (!domain || !token) return { synced: 0 };
 
   try {
     const { getShopifyDailySales } = await import('@/lib/shopify');
 
-    const to = pacificDate();
+    const to = window?.to || pacificDate();
 
     // Determine start date: first sync = full history, subsequent = last 7 days
     const hasShopifyData: any = db.prepare(
       "SELECT COUNT(*) as cnt FROM daily_pnl WHERE store_id = ? AND source = 'shopify'"
     ).get(storeId);
 
-    const from = hasShopifyData?.cnt > 0
+    const from = window?.from || (hasShopifyData?.cnt > 0
       ? pacificDate(Date.now() - 7 * 86400000)
-      : (store.sync_start_date || pacificDate(Date.now() - 365 * 86400000));
+      : (store.sync_start_date || pacificDate(Date.now() - 365 * 86400000)));
 
     console.log(`[shopify-sync] ${store.name}: fetching ${from} to ${to}`);
-    const dailySales = await getShopifyDailySales(store.shopify_domain, store.shopify_access_token, from, to);
+    const dailySales = await getShopifyDailySales(domain, token, from, to);
 
     let synced = 0;
 
@@ -462,6 +478,19 @@ export async function syncShopifyRevenue(storeId: string): Promise<{ synced: num
  * write logic exactly (source/platform-fee/cost handling) so today's row is identical to
  * what a full sync would produce. Skips confirmed rows. Returns today's revenue + orders.
  */
+/** Shopify is the revenue truth when the store's custom app is connected: after the
+ *  ShipSourced today-write, refresh today from Shopify so its revenue/orders win. */
+async function finishTodayFromShopify(db: any, store: any, today: string, fallback: { synced: number; revenue_cents: number; order_count: number }) {
+  try {
+    const r = await syncShopifyRevenue(store.id, { from: today, to: today });
+    if (r.synced > 0) {
+      const row: any = db.prepare('SELECT revenue_cents, order_count FROM daily_pnl WHERE store_id = ? AND date = ?').get(store.id, today);
+      if (row) return { synced: 1, revenue_cents: row.revenue_cents || 0, order_count: row.order_count || 0 };
+    }
+  } catch (err: any) { console.error(`[today-sync] ${store.name}: shopify refresh failed: ${err.message}`); }
+  return fallback;
+}
+
 export async function syncTodayRevenue(storeId: string): Promise<{ synced: number; revenue_cents: number; order_count: number; error?: string }> {
   const db = getDb();
   const store: any = db.prepare('SELECT * FROM stores WHERE id = ? AND is_active = 1').get(storeId);
@@ -554,7 +583,7 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
           WHERE id = ?
         `).run(productCost, usCogs, chinaCogs, fulfillmentCharges, fulfillmentEst, platformFees, netProfit, margin, existing.id);
       }
-      return { synced: 1, revenue_cents: effectiveRevenue, order_count: useShipSourcedRevenue ? orderCount : 0 };
+      return await finishTodayFromShopify(db, store, today, { synced: 1, revenue_cents: effectiveRevenue, order_count: useShipSourcedRevenue ? orderCount : 0 });
     } else {
       const platformFees = (store.platform === 'amazon' || store.platform === 'ebay')
         ? calculateDailyPlatformFees(db, store.id, today, store.platform, storeCategory, revenueCents, platformFeePct)
@@ -573,7 +602,7 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'sync', datetime('now'))
       `).run(crypto.randomUUID(), store.id, today, revenueCents, orderCount, productCost,
         usCogs, chinaCogs, fulfillmentCharges, fulfillmentEst, platformFees, netProfit, margin);
-      return { synced: 1, revenue_cents: revenueCents, order_count: orderCount };
+      return await finishTodayFromShopify(db, store, today, { synced: 1, revenue_cents: revenueCents, order_count: orderCount });
     }
   } catch (err: any) {
     console.error(`[today-sync] ${store.name}: ${err.message}`);
