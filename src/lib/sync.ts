@@ -528,7 +528,21 @@ export async function syncTodayRevenue(storeId: string): Promise<{ synced: numbe
     try {
       const est = await computeFulfillmentEstimates(db, store, { full: false });
       fulfillmentEst = est.estByDay[today] || 0;
-    } catch { /* estimate is best-effort */ }
+    } catch (err: any) {
+      console.error(`[today-sync] ${store.name}: fulfillment estimate failed: ${err.message}`);
+    }
+    // Same fallback as the full sync: with ShipSourced's order list locked, price today's
+    // unshipped orders at the store's own recent per-order rate from daily_pnl history.
+    if (!fulfillmentEst && (d.orderCount || 0) > 0) {
+      const hist: Record<string, { orders: number; charges: number }> = {};
+      const rows: any[] = db.prepare(
+        'SELECT date, order_count, shipping_cost_cents, fulfillment_est_cents FROM daily_pnl WHERE store_id = ? AND date >= ? AND date < ?'
+      ).all(store.id, pacificDate(Date.now() - 20 * 86400000), today);
+      for (const r of rows) hist[r.date] = { orders: r.order_count || 0, charges: Math.max(0, (r.shipping_cost_cents || 0) - (r.fulfillment_est_cents || 0)) };
+      hist[today] = { orders: d.orderCount || 0, charges: d.chargesCents || 0 };
+      const fb = fallbackEstimatesFromHistory(hist, today);
+      fulfillmentEst = fb.estByDay[today] || 0;
+    }
     const fulfillmentCharges = (d.chargesCents || 0) + fulfillmentEst;
 
     const existing: any = db.prepare(
