@@ -57,10 +57,21 @@ export async function GET(req: NextRequest) {
     shopifyPayments.push({ error: (e?.message || String(e)).slice(0, 200) });
   }
 
+  // Link each invoice to the card charge that paid it, now that ad payments,
+  // Shopify invoices and card transactions are all current. Without this every
+  // invoice reads "NO CARD CHARGE" even when the charge is sitting on the card.
+  let chargeMatch: any = null;
+  try {
+    const { matchInvoicesToCharges } = await import('@/lib/charge-matching');
+    chargeMatch = matchInvoicesToCharges(getDb(), { days: 60 });
+  } catch (e: any) {
+    chargeMatch = { error: (e?.message || String(e)).slice(0, 200) };
+  }
 
   return NextResponse.json({
     success: true,
     synced: totalSynced,
+    chargeMatch,
     fbAdsSynced: fbResult.synced,
     fbInvoicesImported: fbResult.invoicesImported,
     bankAccountsSynced: bankResult.accounts_synced,
