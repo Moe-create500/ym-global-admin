@@ -25,14 +25,17 @@ type Data = {
 
 const money = (c: number) => (c < 0 ? '-' : '') + '$' + (Math.abs(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const iso = (d: Date) => d.toISOString().slice(0, 10);
+/** "Today" is Pacific everywhere in this system — a payment logged at 6pm in
+ *  California must not be dated tomorrow. */
+const todayPacific = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
 
 function presetRange(p: string): { from: string; to: string } {
   const now = new Date(); const y = now.getFullYear(), m = now.getMonth();
   switch (p) {
-    case 'month': return { from: iso(new Date(Date.UTC(y, m, 1))), to: iso(now) };
+    case 'month': return { from: iso(new Date(Date.UTC(y, m, 1))), to: todayPacific() };
     case 'last': return { from: iso(new Date(Date.UTC(y, m - 1, 1))), to: iso(new Date(Date.UTC(y, m, 0))) };
-    case '90': return { from: iso(new Date(now.getTime() - 90 * 864e5)), to: iso(now) };
-    case 'ytd': return { from: `${y}-01-01`, to: iso(now) };
+    case '90': return { from: iso(new Date(now.getTime() - 90 * 864e5)), to: todayPacific() };
+    case 'ytd': return { from: `${y}-01-01`, to: todayPacific() };
     default: return { from: '', to: '' };
   }
 }
@@ -64,7 +67,7 @@ export function StoreCharges({ storeId }: { storeId: string }) {
   const [bulkLine, setBulkLine] = useState('');
   const [bulkCenter, setBulkCenter] = useState('');
   const [payOpen, setPayOpen] = useState(false);
-  const [payForm, setPayForm] = useState({ date: iso(new Date()), cardLast4: '', amount: '', method: 'ach', notes: '' });
+  const [payForm, setPayForm] = useState({ date: todayPacific(), cardLast4: '', amount: '', method: 'ach', notes: '' });
 
   const load = useCallback(() => fetch(`/api/store-charges?storeId=${storeId}`).then(r => r.json()).then(setData).catch(() => {}), [storeId]);
   useEffect(() => { load(); }, [load]);
@@ -196,7 +199,7 @@ export function StoreCharges({ storeId }: { storeId: string }) {
     const head = ['date', 'description', 'card', 'amount', 'paid_at', 'merchant', ...(isSs ? ['fulfilment_part', 'fulfilment_centre', 'classified_by'] : [])];
     const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const lines = [head.join(','), ...filtered.map(c => [c.date, c.description, c.card, (Math.abs(c.amount_cents) / 100).toFixed(2), c.settled_at || '', c.merchant || '', ...(c.fulfilment ? [c.fulfilment.lineLabel, c.fulfilment.centerLabel, c.fulfilment.source] : [])].map(esc).join(','))];
-    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' })); a.download = `card-charges-${storeId.slice(0, 8)}-${iso(new Date())}.csv`; a.click();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' })); a.download = `card-charges-${storeId.slice(0, 8)}-${todayPacific()}.csv`; a.click();
   }
   const toggleSel = (id: string) => setSelected(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const allVisibleSelected = visible.length > 0 && visible.every(c => selected.has(c.id));
