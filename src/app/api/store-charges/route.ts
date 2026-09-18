@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { classifyRow, setRowClass, SS_LINE_LABEL, SS_CENTER_LABEL } from '@/lib/cfo/ss-costs';
 import { merchantKey } from '@/lib/subscriptions/normalize';
+import { logChargePayment, paymentsForCharges, deleteChargePayment } from '@/lib/charge-payments';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +21,7 @@ export async function GET(req: NextRequest) {
   ensureSettlementSchema(db);
   const charges: any[] = db.prepare(`
     SELECT bt.id, bt.date, bt.description, bt.amount_cents, bt.settled_at, bt.custom_category,
-      COALESCE(a.nickname, a.account_name) || ' ····' || a.last_four AS card, a.id AS card_id,
+      COALESCE(a.nickname, a.account_name) || ' ····' || a.last_four AS card, a.id AS card_id, a.last_four AS card_last4,
       r.method, r.category, r.confidence, r.evidence_json
     FROM bank_transactions bt
     JOIN bank_accounts a ON a.id = bt.bank_account_id AND a.account_type = 'credit' AND a.status = 'active'
@@ -39,6 +40,9 @@ export async function GET(req: NextRequest) {
       AND LOWER(bt.description) NOT LIKE '%google%'
     ORDER BY bt.date DESC, bt.id DESC LIMIT 5000`).all(storeId);
   for (const c of charges) c.merchant = merchantKey(c.description)?.key || null;
+  // Which logged payment (if any) paid each charge off.
+  const paidBy = paymentsForCharges(db, charges.map(c => c.id));
+  for (const c of charges) { const p = paidBy.get(c.id); if (p) c.paid_by = p; }
   const openCents = charges.filter(c => !c.settled_at).reduce((s, c) => s + Math.abs(c.amount_cents), 0);
   const settledCents = charges.filter(c => c.settled_at).reduce((s, c) => s + Math.abs(c.amount_cents), 0);
   // ShipSourced's own charges also carry a fulfilment line × centre so the
@@ -86,11 +90,40 @@ export async function PATCH(req: NextRequest) {
     if (!changed) return NextResponse.json({ error: 'transaction not found' }, { status: 404 });
     return NextResponse.json({ ok: true, changed, rules: [...rules] });
   }
-  if (typeof body.settled !== 'boolean') return NextResponse.json({ error: 'settled or line/center required' }, { status: 400 });
+  // { txnIds, payment: {...} } — record the payment that pays these charges off.
+  // Ad spend and app invoices have their own logs; this is every OTHER card
+  // charge (software, supplies, Whop…), which had nowhere to record a payment.
+  if (body.payment) {
+    const p = body.payment;
+    try {
+      const store: any = db.prepare('SELECT id FROM stores WHERE id = ?').get(p.storeId);
+      if (!store) return NextResponse.json({ error: 'unknown store' }, { status: 400 });
+      const r = logChargePayment(db, {
+        storeId: p.storeId, cardLast4: String(p.cardLast4 || '').trim(), date: String(p.date || '').slice(0, 10),
+        amountCents: Math.round(Number(p.amountCents)), txnIds: ids,
+        method: p.method || null, notes: p.notes || null, actor: body.actor || 'admin',
+      });
+      return NextResponse.json({ success: true, ...r });
+    } catch (e: any) {
+      return NextResponse.json({ error: e?.message || 'could not record the payment' }, { status: 400 });
+    }
+  }
+
+  if (typeof body.settled !== 'boolean') return NextResponse.json({ error: 'settled, line/center or payment required' }, { status: 400 });
   const upd = db.prepare('UPDATE bank_transactions SET settled_at = ? WHERE id = ?');
   const at = body.settled ? new Date().toISOString() : null;
   let changed = 0;
   db.transaction(() => { for (const id of ids) changed += upd.run(at, id).changes; })();
   if (!changed) return NextResponse.json({ error: 'transaction not found' }, { status: 404 });
   return NextResponse.json({ success: true, changed });
+}
+
+// DELETE ?paymentId= — undo a logged charge payment; its charges go back to unpaid.
+export async function DELETE(req: NextRequest) {
+  const paymentId = req.nextUrl.searchParams.get('paymentId');
+  if (!paymentId) return NextResponse.json({ error: 'paymentId required' }, { status: 400 });
+  const db = getDb();
+  const r = deleteChargePayment(db, paymentId);
+  if (!r.deleted) return NextResponse.json({ error: 'payment not found' }, { status: 404 });
+  return NextResponse.json({ success: true, ...r });
 }

@@ -13,7 +13,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 type Charge = {
   id: string; date: string; description: string; amount_cents: number; settled_at: string | null;
-  card: string; card_id: string; merchant: string | null; method: string | null; category: string | null; custom_category: string | null;
+  card: string; card_id: string; card_last4: string | null; merchant: string | null;
+  paid_by?: { paymentId: string; date: string; amountCents: number; cardLast4: string | null; notes: string | null }; method: string | null; category: string | null; custom_category: string | null;
   fulfilment?: { line: string; center: string; source: 'manual' | 'rule' | 'default'; needsReview: boolean; ruleKey: string | null; lineLabel: string; centerLabel: string };
 };
 type Data = {
@@ -62,6 +63,8 @@ export function StoreCharges({ storeId }: { storeId: string }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLine, setBulkLine] = useState('');
   const [bulkCenter, setBulkCenter] = useState('');
+  const [payOpen, setPayOpen] = useState(false);
+  const [payForm, setPayForm] = useState({ date: iso(new Date()), cardLast4: '', amount: '', method: 'ach', notes: '' });
 
   const load = useCallback(() => fetch(`/api/store-charges?storeId=${storeId}`).then(r => r.json()).then(setData).catch(() => {}), [storeId]);
   useEffect(() => { load(); }, [load]);
@@ -132,6 +135,14 @@ export function StoreCharges({ storeId }: { storeId: string }) {
   const selectedCents = selectedRows.reduce((s, c) => s + Math.abs(c.amount_cents), 0);
   const visible = filtered.slice(0, limit);
 
+  // Pre-fill the payment from the selection: its total, and the card when they all share one.
+  useEffect(() => {
+    if (!payOpen) return;
+    const cards = new Set(selectedRows.map(c => c.card_last4).filter(Boolean) as string[]);
+    setPayForm(f => ({ ...f, amount: (selectedCents / 100).toFixed(2), cardLast4: cards.size === 1 ? [...cards][0] : f.cardLast4 }));
+  }, [payOpen, selectedCents, selectedRows]);
+
+
   async function patch(ids: string[], body: Record<string, unknown>, done: string) {
     if (!ids.length) return;
     setBusy(true);
@@ -140,6 +151,37 @@ export function StoreCharges({ storeId }: { storeId: string }) {
     if (r && !r.error) { setFlash(done + (r.rules?.length ? ` · rule saved for ${r.rules.length} merchant${r.rules.length > 1 ? 's' : ''}` : '')); setSelected(new Set()); load(); }
     else setFlash('Failed: ' + (r?.error || 'network'));
   }
+  // Ad spend and app invoices have their own payment logs. Every OTHER card
+  // charge — software, supplies, Whop — had nowhere to record the payment that
+  // cleared it, so the money left the bank invisibly. This records it.
+  async function logPayment() {
+    const ids = [...selected];
+    const cents = Math.round(parseFloat(payForm.amount || '0') * 100);
+    if (!cents || !payForm.cardLast4) { setFlash('Enter the amount and the card that was paid'); return; }
+    setBusy(true);
+    const r = await fetch('/api/store-charges', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ txnIds: ids, payment: { storeId, date: payForm.date, cardLast4: payForm.cardLast4, amountCents: cents, method: payForm.method, notes: payForm.notes || null } }),
+    }).then(r => r.json()).catch(() => null);
+    setBusy(false);
+    if (r?.success) {
+      const diff = r.differenceCents || 0;
+      setFlash(`Payment of ${money(r.amountCents)} recorded against ${r.linked} charge${r.linked === 1 ? '' : 's'} (${money(r.appliedCents)})`
+        + (diff ? ` · ${money(Math.abs(diff))} ${diff < 0 ? 'of those charges is still unpaid' : 'more than the charges selected'}` : '')
+        + (r.skipped?.length ? ` · ${r.skipped.length} skipped (already paid by another payment)` : '')
+        + ' · shows as a payment in flight until the bank takes it');
+      setPayOpen(false); setSelected(new Set()); setPayForm(f => ({ ...f, amount: '', notes: '' })); load();
+    } else setFlash('Failed: ' + (r?.error || 'network'));
+  }
+
+  async function undoPayment(paymentId: string) {
+    setBusy(true);
+    const r = await fetch(`/api/store-charges?paymentId=${paymentId}`, { method: 'DELETE' }).then(r => r.json()).catch(() => null);
+    setBusy(false);
+    if (r?.success) { setFlash(`Payment removed · ${r.unsettled} charge${r.unsettled === 1 ? '' : 's'} back to unpaid`); load(); }
+    else setFlash('Failed: ' + (r?.error || 'network'));
+  }
+
   async function moveToStore(ids: string[], target: string) {
     if (!ids.length || !target) return;
     setBusy(true);
@@ -322,7 +364,9 @@ export function StoreCharges({ storeId }: { storeId: string }) {
                   )}
                   <td className="px-3 py-2 text-right tabular-nums font-medium text-slate-100 whitespace-nowrap">{money(Math.abs(c.amount_cents))}</td>
                   <td className="pl-2 pr-5 py-2 text-right whitespace-nowrap">
-                    {c.settled_at
+                    {c.paid_by
+                      ? <button onClick={() => undoPayment(c.paid_by!.paymentId)} disabled={busy} title={`Paid by the ${money(c.paid_by.amountCents)} payment logged ${c.paid_by.date} to ··${c.paid_by.cardLast4} — click to undo that payment`} className="text-[11px] text-emerald-400 hover:text-emerald-300 disabled:opacity-50">✓ paid {c.paid_by.date.slice(5)}</button>
+                      : c.settled_at
                       ? <button onClick={() => patch([c.id], { settled: false }, 'Marked unpaid')} disabled={busy} className="text-[11px] text-emerald-400 hover:text-emerald-300 disabled:opacity-50">✓ paid · undo</button>
                       : <button onClick={() => patch([c.id], { settled: true }, 'Marked paid')} disabled={busy} className={`${btn} bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/25`}>Mark paid</button>}
                   </td>
@@ -352,12 +396,33 @@ export function StoreCharges({ storeId }: { storeId: string }) {
               <button disabled={busy} onClick={() => classifyRows([...selected], 'movement', 'shared', true)} className={`${btn} bg-slate-800/60 text-slate-300 hover:bg-slate-700/60`} title="Card payment / own transfer — never a cost">Not a cost</button>
             </>
           )}
-          <button disabled={busy} onClick={() => patch([...selected], { settled: true }, `${selected.size} marked paid`)} className={`${btn} bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/25`}>Mark paid</button>
+          <button disabled={busy} onClick={() => setPayOpen(v => !v)} className={`${btn} ${payOpen ? 'bg-emerald-500/30 text-emerald-100' : 'bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/30'}`} title="Record the payment that pays these charges off — it shows as a payment in flight until the bank takes it">Log payment…</button>
+          <button disabled={busy} onClick={() => patch([...selected], { settled: true }, `${selected.size} marked paid`)} className={`${btn} bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/25`} title="Mark settled without recording a payment">Mark paid</button>
           <button disabled={busy} onClick={() => patch([...selected], { settled: false }, `${selected.size} marked unpaid`)} className={`${btn} bg-slate-800/60 text-slate-300 hover:bg-slate-700/60`}>Mark unpaid</button>
           <select defaultValue="" disabled={busy} onChange={e => { const v = e.target.value; e.target.value = ''; if (v) moveToStore([...selected], v); }} className={sel} title="Re-pair these charges to another store (same rules as the Transactions page)">
             <option value="">⇢ Move to store…</option>{stores.filter(s => s.id !== storeId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}<option value="none">✕ Unpair from this store</option>
           </select>
           <button onClick={() => setSelected(new Set())} className="ml-auto text-[11px] text-slate-400 hover:text-slate-200">Clear</button>
+          {payOpen && (
+            <div className="w-full mt-1 pt-2 border-t border-slate-800 flex flex-wrap items-end gap-2">
+              <label className="text-[11px] text-slate-400">Paid on<input type="date" value={payForm.date} onChange={e => setPayForm(f => ({ ...f, date: e.target.value }))} className={`${sel} block mt-0.5`} /></label>
+              <label className="text-[11px] text-slate-400">Card paid
+                <select value={payForm.cardLast4} onChange={e => setPayForm(f => ({ ...f, cardLast4: e.target.value }))} className={`${sel} block mt-0.5`}>
+                  <option value="">choose…</option>
+                  {[...new Set((data.charges || []).map(c => c.card_last4).filter(Boolean) as string[])].map(l4 => <option key={l4} value={l4}>····{l4}</option>)}
+                </select>
+              </label>
+              <label className="text-[11px] text-slate-400">Amount paid<input value={payForm.amount} onChange={e => setPayForm(f => ({ ...f, amount: e.target.value }))} inputMode="decimal" placeholder="0.00" className={`${sel} block mt-0.5 w-28`} /></label>
+              <label className="text-[11px] text-slate-400">How
+                <select value={payForm.method} onChange={e => setPayForm(f => ({ ...f, method: e.target.value }))} className={`${sel} block mt-0.5`}>
+                  <option value="ach">ACH / bank</option><option value="card">card</option><option value="zelle">Zelle</option><option value="wire">wire</option><option value="other">other</option>
+                </select>
+              </label>
+              <input value={payForm.notes} onChange={e => setPayForm(f => ({ ...f, notes: e.target.value }))} placeholder="Note (optional)" className={`${sel} flex-1 min-w-[160px]`} />
+              <button disabled={busy} onClick={logPayment} className={`${btn} bg-emerald-500/25 text-emerald-100 hover:bg-emerald-500/40`}>Record payment</button>
+              <span className="text-[11px] text-slate-500 basis-full">Marks the selected charges paid and records the money leaving the bank, so it shows in Payments in Flight until the debit lands. Selected: {money(selectedCents)}.</span>
+            </div>
+          )}
         </div>
       )}
     </div>
