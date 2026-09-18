@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { findCrossStoreConflicts, summariseConflicts, findExistingDuplicates, inferSeriesOwners } from '@/lib/invoice-ownership';
 import { getDb } from '@/lib/db';
 import { getCardAliasMap } from '@/lib/funding-cards';
 import crypto from 'crypto';
@@ -230,7 +231,8 @@ function parseChargeflowCsv(lines: string[], headers: string[]) {
 
 // POST: Import invoices CSV (auto-detects Shopify or Chargeflow)
 export async function POST(req: NextRequest) {
-  const { storeId, csvText, source: forcedSource, employeeId, fileName, billingInfo } = await req.json();
+  const body = await req.json();
+  const { storeId, csvText, source: forcedSource, employeeId, fileName, billingInfo } = body;
   if (!storeId || !csvText) {
     return NextResponse.json({ error: 'storeId and csvText required' }, { status: 400 });
   }
@@ -258,6 +260,17 @@ export async function POST(req: NextRequest) {
 
   if (parsed.error) {
     return NextResponse.json({ error: parsed.error }, { status: 400 });
+  }
+
+  // A Shopify bill number is issued per shop, so a bill that already sits under
+  // another store means this file is that shop's billing, not this one's.
+  // Importing it here counts the same cost twice — which is how 658 bill
+  // numbers ended up under more than one store. Refuse unless forced.
+  const storeRow: any = db.prepare('SELECT name FROM stores WHERE id = ?').get(storeId);
+  const conflicts = findCrossStoreConflicts(db, storeId, parsed.invoices.map((i: any) => i.billNumber));
+  const conflictSummary = summariseConflicts(conflicts, storeRow?.name || 'this store');
+  if (conflictSummary && !body.force) {
+    return NextResponse.json({ error: conflictSummary.message, conflict: conflictSummary }, { status: 409 });
   }
 
   let imported = 0;
@@ -352,6 +365,12 @@ export async function POST(req: NextRequest) {
 
 // GET: List invoices with items
 export async function GET(req: NextRequest) {
+  // ?report=duplicates — bill numbers sitting under more than one store, and
+  // who each series actually belongs to.
+  if (req.nextUrl.searchParams.get('report') === 'duplicates') {
+    const db = getDb();
+    return NextResponse.json({ ...findExistingDuplicates(db, { limit: 40 }), series: inferSeriesOwners(db) });
+  }
   const { searchParams } = req.nextUrl;
   const storeId = searchParams.get('storeId');
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
