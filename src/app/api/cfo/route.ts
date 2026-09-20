@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { reconcileSnapshot } from '@/lib/cfo-reconcile';
 import { getPaymentsInFlight } from '@/lib/payments-in-flight';
-import { fetchOpenOrdersEstimate } from '@/lib/ss-open-orders';
+import { getUnfulfilledLiability } from '@/lib/unfulfilled-liability';
 import { cardOwedCents } from '@/lib/bank-balances';
 import crypto from 'crypto';
 
@@ -66,28 +66,40 @@ export async function GET(req: NextRequest) {
   }
   const projectedCents = estimatedCents + (withoutEstimate * avgPerOrder);
 
-  // Prefer ShipSourced's own view of the open orders: it knows exactly which
-  // orders are open and prices the product cost per line; the label/pick-pack
-  // part comes from this client's last-60-day billed average. YM's local
-  // projection is only the fallback, and the response says which one it is.
-  const ssOpen = store.name === 'ShipSourced' ? { ok: false as const, reason: '3PL itself' } : await fetchOpenOrdersEstimate(db, storeId);
+  // What still has to be fulfilled, and what it will cost.
+  //
+  // The count comes from the store's own Shopify — it knows which orders are
+  // unfulfilled, and it is current. YM's `orders` table is NOT usable for this:
+  // it froze on 2026-08-31 when ShipSourced locked /api/orders/list, so it was
+  // reporting a months-old count (Elvris: 56, when Shopify had 157 and
+  // ShipSourced was holding 138 of them as NEW).
+  //
+  // The price is what ShipSourced has actually been billing this store per
+  // order, measured from the ledger. Orders unfulfilled for months are counted
+  // separately, not added to the bill — they are abandoned or never reached
+  // the 3PL, and calling them a fulfilment cost overstates what is owed.
+  const unf = store.name === 'ShipSourced'
+    ? null
+    : await getUnfulfilledLiability(db, storeId).catch(() => null);
   const fulfillment = {
     billed_cents: store.ss_charges_pending_cents || 0,
-    estimated_cents: ssOpen.ok ? ssOpen.estimate.estimatedCents : projectedCents,
+    estimated_cents: unf ? unf.cents : projectedCents,
     estimated_order_count: ssCharges?.estimated_order_count || 0,
-    total_unfulfilled: ssOpen.ok ? ssOpen.estimate.openCount : totalUnfulfilled,
+    total_unfulfilled: unf ? unf.openCount : totalUnfulfilled,
+    stale_unfulfilled: unf ? unf.staleCount : 0,
     unfulfilled_with_estimate: withEstimate,
     without_estimate: withoutEstimate,
-    avg_per_order_cents: avgPerOrder,
-    avg_source: avgSource,
+    avg_per_order_cents: unf?.perOrderCents ?? avgPerOrder,
+    avg_source: unf ? unf.rate.note : avgSource,
     paid_cents: ssPaid?.total || 0,
     total_owed_cents: (store.ss_net_owed_cents || 0),
     balance_cents: store.ss_net_owed_cents || 0,
-    source: ssOpen.ok ? 'shipsourced' : 'projection',
-    source_note: ssOpen.ok ? null : ssOpen.reason,
+    source: unf ? unf.source : 'projection',
+    source_note: unf ? unf.note : null,
+    as_of: unf?.asOf || null,
     local_unfulfilled: totalUnfulfilled,
     local_projected_cents: projectedCents,
-    ss: ssOpen.ok ? ssOpen.estimate : null,
+    ss: null,
   };
 
   // 2. Ad Spend Debt — from card payments (charged - paid per card)
