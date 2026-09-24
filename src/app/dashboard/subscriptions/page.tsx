@@ -56,12 +56,17 @@ function SubscriptionsContent() {
   // about to bill". Anything with no next date sorts last.
   const rows = useMemo(() => {
     const list = [...(data?.subscriptions || [])];
+    // Upcoming first, soonest at the top — the page exists to answer "what is
+    // about to bill". A date that has already passed is a different question
+    // (did it stop? did we miss it?), so those go below, most recent first.
+    const today = todayPacific();
+    const rank = (r: Sub) => (!r.nextExpectedDate ? 2 : r.nextExpectedDate >= today ? 0 : 1);
     list.sort((a, b) => {
+      const ra = rank(a), rb = rank(b);
+      if (ra !== rb) return ra - rb;
       const da = a.nextExpectedDate, db = b.nextExpectedDate;
-      if (da && db) return da.localeCompare(db) || b.monthlyCents - a.monthlyCents;
-      if (da) return -1;
-      if (db) return 1;
-      return b.monthlyCents - a.monthlyCents;
+      if (!da || !db) return b.monthlyCents - a.monthlyCents;
+      return (ra === 0 ? da.localeCompare(db) : db.localeCompare(da)) || b.monthlyCents - a.monthlyCents;
     });
     return list;
   }, [data]);
