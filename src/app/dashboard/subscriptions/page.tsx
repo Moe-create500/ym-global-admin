@@ -18,6 +18,24 @@ const STATUS: Record<Sub['status'], { label: string; cls: string }> = {
   needs_review: { label: 'Needs review', cls: 'bg-amber-500/10 text-amber-300' },
 };
 const FILTERS: [string, string][] = [['all', 'All'], ['active', 'Active'], ['new', 'New'], ['price_increased', 'Price increased'], ['possible_duplicate', 'Possible duplicate'], ['needs_attribution', 'Needs attribution'], ['needs_review', 'Needs review'], ['cancelled', 'Cancelled']];
+/** Today in Pacific — the rest of the system dates in Pacific, and an
+ *  evening in California must not read as tomorrow. */
+const todayPacific = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+const dayNum = (d: string) => Math.round(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) / 86400000);
+
+/** When the next charge lands, said the way a person would.
+ *  A date already past means the charge is late — the vendor usually still
+ *  takes it, so it is called out rather than hidden. */
+function nextCharge(dateStr: string | null): { label: string; days: number | null; tone: string } {
+  if (!dateStr) return { label: '—', days: null, tone: 'text-slate-600' };
+  const days = dayNum(dateStr) - dayNum(todayPacific());
+  if (days < 0) return { label: `${-days}d overdue`, days, tone: 'text-amber-300' };
+  if (days === 0) return { label: 'today', days, tone: 'text-rose-300 font-semibold' };
+  if (days === 1) return { label: 'tomorrow', days, tone: 'text-rose-300' };
+  if (days <= 7) return { label: `in ${days} days`, days, tone: 'text-amber-300' };
+  return { label: `in ${days} days`, days, tone: 'text-slate-500' };
+}
+
 const cadenceLabel = (c: string) => ({ weekly: 'Weekly', biweekly: 'Every 2 weeks', monthly: 'Monthly', bimonthly: 'Every 2 months', quarterly: 'Quarterly', semiannual: 'Every 6 months', yearly: 'Yearly', irregular: 'Irregular' } as Record<string, string>)[c] || c;
 
 function SubscriptionsContent() {
@@ -34,7 +52,25 @@ function SubscriptionsContent() {
     fetch(`/api/subscriptions?filter=${filter}&store=${encodeURIComponent(store)}&account=${encodeURIComponent(account)}&q=${encodeURIComponent(q)}`)
       .then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(j.error || r.status))).then(setData).catch(e => setErr(String(e)));
   }, [filter, store, account, q, reloadKey]);
-  const rows = data?.subscriptions || [];
+  // Soonest charge first — the reason to open this page is usually "what's
+  // about to bill". Anything with no next date sorts last.
+  const rows = useMemo(() => {
+    const list = [...(data?.subscriptions || [])];
+    list.sort((a, b) => {
+      const da = a.nextExpectedDate, db = b.nextExpectedDate;
+      if (da && db) return da.localeCompare(db) || b.monthlyCents - a.monthlyCents;
+      if (da) return -1;
+      if (db) return 1;
+      return b.monthlyCents - a.monthlyCents;
+    });
+    return list;
+  }, [data]);
+  const due7 = useMemo(() => {
+    const live = rows.filter(r => r.status === 'active' || r.status === 'possibly_active');
+    const soon = live.filter(r => { const n = nextCharge(r.nextExpectedDate); return n.days != null && n.days >= 0 && n.days <= 7; });
+    const overdue = live.filter(r => { const n = nextCharge(r.nextExpectedDate); return n.days != null && n.days < 0; });
+    return { soon, overdue, cents: soon.reduce((t, r) => t + r.currentAmountCents, 0) };
+  }, [rows]);
   const s = data?.summary;
 
   return (
@@ -82,10 +118,25 @@ function SubscriptionsContent() {
             <input type="search" defaultValue={q} placeholder="Search vendor, card, store…" onKeyDown={e => { if (e.key === 'Enter') setParam('q', (e.target as HTMLInputElement).value); }} className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-100 min-w-[220px]" />
             <span className="text-slate-500 ml-auto">{rows.length} of {data?.total ?? '…'}</span>
           </div>
+          {(due7.soon.length > 0 || due7.overdue.length > 0) && (
+            <div className="mb-3 rounded-lg bg-slate-900/60 px-4 py-2.5 text-[12px] flex flex-wrap items-center gap-x-4 gap-y-1">
+              {due7.soon.length > 0 && (
+                <span className="text-slate-300">
+                  <span className="text-amber-300 font-semibold">{money(due7.cents)}</span> billing in the next 7 days
+                  <span className="text-slate-500"> · {due7.soon.length} charge{due7.soon.length === 1 ? '' : 's'}: {due7.soon.slice(0, 5).map(r => `${r.name} ${nextCharge(r.nextExpectedDate).label}`).join(' · ')}{due7.soon.length > 5 ? ` · +${due7.soon.length - 5} more` : ''}</span>
+                </span>
+              )}
+              {due7.overdue.length > 0 && (
+                <span className="text-amber-300" title="the expected date has passed — the vendor usually still takes it, or the subscription has quietly stopped">
+                  ⚠ {due7.overdue.length} past its expected date
+                </span>
+              )}
+            </div>
+          )}
           <div className="rounded-xl bg-slate-900/60 overflow-x-auto">
             <table className="min-w-full text-[13px]">
               <thead><tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/60">
-                <th className="text-left px-4 py-2.5">Subscription</th><th className="text-left px-3 py-2.5">Store</th><th className="text-right px-3 py-2.5">Monthly</th><th className="text-right px-3 py-2.5">Annual</th><th className="text-left px-3 py-2.5">Card / account</th><th className="text-left px-3 py-2.5">Last charge</th><th className="text-left px-3 py-2.5">Next</th><th className="text-right px-3 py-2.5">Change</th><th className="text-left px-3 py-2.5">Status</th><th className="text-left px-3 py-2.5">Actions</th>
+                <th className="text-left px-4 py-2.5">Subscription</th><th className="text-left px-3 py-2.5">Store</th><th className="text-right px-3 py-2.5">Monthly</th><th className="text-right px-3 py-2.5">Annual</th><th className="text-left px-3 py-2.5">Card / account</th><th className="text-left px-3 py-2.5">Last charge</th><th className="text-left px-3 py-2.5">Next charge</th><th className="text-right px-3 py-2.5">Change</th><th className="text-left px-3 py-2.5">Status</th><th className="text-left px-3 py-2.5">Actions</th>
               </tr></thead>
               <tbody>
                 {!data && !err && <tr><td colSpan={10} className="px-4 py-8 text-center"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400 inline-block" /></td></tr>}
@@ -110,7 +161,11 @@ function SubscriptionsContent() {
                       <td className="px-3 py-2.5 text-right tabular-nums text-slate-300">{money(r.annualCents)}</td>
                       <td className="px-3 py-2.5 text-slate-300 whitespace-nowrap">{r.accountLabel}</td>
                       <td className="px-3 py-2.5 text-slate-300 whitespace-nowrap">{r.lastDate}</td>
-                      <td className="px-3 py-2.5 text-slate-300 whitespace-nowrap">{r.nextExpectedDate || '—'}</td>
+                      {(() => { const n = nextCharge(r.nextExpectedDate); return (
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          <span className="text-slate-200">{r.nextExpectedDate || '—'}</span>
+                          {r.nextExpectedDate && <span className={`block text-[11px] ${n.tone}`}>{n.label}{r.amountKind === 'variable' ? ` · ~${money(r.currentAmountCents)}` : ` · ${money(r.currentAmountCents)}`}</span>}
+                        </td>); })()}
                       <td className={`px-3 py-2.5 text-right tabular-nums ${r.priceChangePct ? (r.priceChangePct > 0 ? 'text-red-300' : 'text-emerald-300') : 'text-slate-600'}`}>{r.priceChangePct ? `${r.priceChangePct > 0 ? '+' : ''}${r.priceChangePct}%` : '—'}</td>
                       <td className="px-3 py-2.5"><span className={`px-2 py-0.5 rounded-full text-[11px] ${st.cls}`} title={r.statusReason}>{st.label}</span></td>
                       <td className="px-3 py-2.5 text-[11px] text-slate-400 whitespace-nowrap">Open →</td>
