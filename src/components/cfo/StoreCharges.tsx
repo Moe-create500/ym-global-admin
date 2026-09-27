@@ -43,7 +43,7 @@ function presetRange(p: string): { from: string; to: string } {
 const sel = 'text-[11px] rounded-lg px-2 py-1.5 border border-slate-700 bg-slate-950 text-slate-200';
 const btn = 'text-[11px] px-2.5 py-1 rounded-lg font-medium disabled:opacity-50';
 
-export function StoreCharges({ storeId }: { storeId: string }) {
+export function StoreCharges({ storeId, onChanged }: { storeId: string; onChanged?: () => void }) {
   const [data, setData] = useState<Data | null>(null);
   const [stores, setStores] = useState<{ id: string; name: string }[]>([]);
   const [busy, setBusy] = useState(false);
@@ -70,6 +70,8 @@ export function StoreCharges({ storeId }: { storeId: string }) {
   const [payForm, setPayForm] = useState({ date: todayPacific(), cardLast4: '', amount: '', method: 'ach', notes: '' });
 
   const load = useCallback(() => fetch(`/api/store-charges?storeId=${storeId}`).then(r => r.json()).then(setData).catch(() => {}), [storeId]);
+  // marking paid / logging a payment changes what the balance sheet above owes
+  const reload = useCallback(() => { load(); onChanged?.(); }, [load, onChanged]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => { fetch('/api/stores').then(r => r.json()).then(j => setStores((Array.isArray(j) ? j : j.stores || []).map((s: any) => ({ id: s.id, name: s.name })))).catch(() => {}); }, []);
   useEffect(() => { setSelected(new Set()); setLimit(80); }, [q, from, to, card, line, center, source, paid, minAmt, maxAmt, sort, view]);
@@ -151,7 +153,7 @@ export function StoreCharges({ storeId }: { storeId: string }) {
     setBusy(true);
     const r = await fetch('/api/store-charges', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ txnIds: ids, ...body }) }).then(r => r.json()).catch(() => null);
     setBusy(false);
-    if (r && !r.error) { setFlash(done + (r.rules?.length ? ` · rule saved for ${r.rules.length} merchant${r.rules.length > 1 ? 's' : ''}` : '')); setSelected(new Set()); load(); }
+    if (r && !r.error) { setFlash(done + (r.rules?.length ? ` · rule saved for ${r.rules.length} merchant${r.rules.length > 1 ? 's' : ''}` : '')); setSelected(new Set()); reload(); }
     else setFlash('Failed: ' + (r?.error || 'network'));
   }
   // Ad spend and app invoices have their own payment logs. Every OTHER card
@@ -173,7 +175,7 @@ export function StoreCharges({ storeId }: { storeId: string }) {
         + (diff ? ` · ${money(Math.abs(diff))} ${diff < 0 ? 'of those charges is still unpaid' : 'more than the charges selected'}` : '')
         + (r.skipped?.length ? ` · ${r.skipped.length} skipped (already paid by another payment)` : '')
         + ' · shows as a payment in flight until the bank takes it');
-      setPayOpen(false); setSelected(new Set()); setPayForm(f => ({ ...f, amount: '', notes: '' })); load();
+      setPayOpen(false); setSelected(new Set()); setPayForm(f => ({ ...f, amount: '', notes: '' })); reload();
     } else setFlash('Failed: ' + (r?.error || 'network'));
   }
 
@@ -181,7 +183,7 @@ export function StoreCharges({ storeId }: { storeId: string }) {
     setBusy(true);
     const r = await fetch(`/api/store-charges?paymentId=${paymentId}`, { method: 'DELETE' }).then(r => r.json()).catch(() => null);
     setBusy(false);
-    if (r?.success) { setFlash(`Payment removed · ${r.unsettled} charge${r.unsettled === 1 ? '' : 's'} back to unpaid`); load(); }
+    if (r?.success) { setFlash(`Payment removed · ${r.unsettled} charge${r.unsettled === 1 ? '' : 's'} back to unpaid`); reload(); }
     else setFlash('Failed: ' + (r?.error || 'network'));
   }
 
@@ -190,7 +192,7 @@ export function StoreCharges({ storeId }: { storeId: string }) {
     setBusy(true);
     const r = await fetch('/api/transactions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transactionIds: ids, storeId: target }) }).then(r => r.json()).catch(() => null);
     setBusy(false);
-    if (r?.success) { setFlash(target === 'none' ? `${ids.length} unpaired from this store` : `${ids.length} moved to ${stores.find(s => s.id === target)?.name || 'store'}`); setSelected(new Set()); load(); }
+    if (r?.success) { setFlash(target === 'none' ? `${ids.length} unpaired from this store` : `${ids.length} moved to ${stores.find(s => s.id === target)?.name || 'store'}`); setSelected(new Set()); reload(); }
     else setFlash('Failed: ' + (r?.error || 'network'));
   }
   const classifyRows = (ids: string[], l: string, c: string, remember: boolean) => patch(ids, { line: l, center: c, remember }, `${ids.length} classified → ${data!.fulfilment!.lines[l]} · ${data!.fulfilment!.centers[c]}`);
@@ -210,7 +212,7 @@ export function StoreCharges({ storeId }: { storeId: string }) {
   const F = data.fulfilment;
 
   return (
-    <div className="rounded-xl bg-slate-900/60 overflow-hidden">
+    <div id="card-charges-panel" className="rounded-xl bg-slate-900/60 overflow-hidden scroll-mt-4 transition-shadow">
       {/* header */}
       <div className="px-5 py-3 border-b border-slate-800/60 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">

@@ -40,6 +40,8 @@ interface CFOData {
     ad_spend_pending_cents: number;
     fb_pending_balance_cents: number;
     app_invoices_due_cents: number;
+    card_charges_unpaid_cents?: number;
+    card_charges_count?: number;
     loans_payable_cents: number;
     manual_cc_cents: number;
     total_cents: number;
@@ -1473,6 +1475,24 @@ function CFOContent() {
                     <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents(data.liabilities.app_invoices_due_cents)}</td>
                   </tr>
 
+                  {/* Unpaid card charges paired to this store — the same rows the
+                      "Card charges linked to this store" panel lists below, so the
+                      balance sheet and that panel can never disagree. Disjoint from
+                      the ad/app invoice lines above (those merchants are excluded),
+                      so nothing is counted twice. */}
+                  {((data.liabilities as any).card_charges_unpaid_cents || 0) > 0 && (
+                    <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">Card Charges (Unpaid)</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs">
+                        {(data.liabilities as any).card_charges_count} charge{(data.liabilities as any).card_charges_count === 1 ? '' : 's'} on company cards, paired to this store — software, supplies and everything that is not an ad or app invoice
+                        <button
+                          onClick={() => { const el = document.getElementById('card-charges-panel'); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); el.classList.add('ring-2', 'ring-blue-500/50'); setTimeout(() => el.classList.remove('ring-2', 'ring-blue-500/50'), 1800); } }}
+                          className="ml-2 text-blue-400 hover:text-blue-300">mark paid ↓</button>
+                      </td>
+                      <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents((data.liabilities as any).card_charges_unpaid_cents)}</td>
+                    </tr>
+                  )}
+
                   {/* Payments in flight — initiated, not yet debited from any bank.
                       Committed money the bank balance still shows as free. */}
                   {(data.liabilities as any).payments_in_flight_cents > 0 && (
@@ -1593,7 +1613,7 @@ function CFOContent() {
           </div>
 
           {/* CARD CHARGES LINKED TO THIS STORE (individually payable) */}
-          {storeId && <StoreCharges storeId={storeId} />}
+          {storeId && <StoreCharges storeId={storeId} onChanged={() => loadData()} />}
 
           {/* EQUITY */}
           <div className="mt-6 rounded-xl bg-slate-900/60 p-5">

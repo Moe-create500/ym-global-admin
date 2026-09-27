@@ -389,7 +389,27 @@ export async function GET(req: NextRequest) {
       + (ssFinance?.arTotalCents || 0) + manualAssetsCents,
   };
 
+  // Card charges paired to this store that have not been paid off yet. These are
+  // real money owed on a credit card — the same rows the "Card charges linked to
+  // this store" panel lists, so the balance sheet and that panel always agree.
+  // Deliberately DISJOINT from the invoice lines above: the query excludes
+  // invoice-matched rows and the Meta / Google / Shopify merchants, so ad and
+  // app invoices are never double-counted here.
+  const cardChargesRow: any = db.prepare(`
+    SELECT COUNT(*) n, COALESCE(SUM(-bt.amount_cents), 0) cents FROM bank_transactions bt
+    JOIN bank_accounts a ON a.id = bt.bank_account_id AND a.account_type = 'credit' AND a.status = 'active'
+    JOIN classification_results r ON r.txn_id = bt.id AND r.store_id = ?
+    WHERE bt.amount_cents < 0 AND bt.settled_at IS NULL
+      AND COALESCE(r.category, '') NOT IN ('Credit Card Payment', 'Transfer Out', 'Transfer In')
+      AND COALESCE(r.method, '') != 'INVOICE_MATCH'
+      AND COALESCE(r.merchant_name, '') NOT IN ('Meta', 'Google Ads', 'Shopify')
+      AND LOWER(bt.description) NOT LIKE '%shopify%' AND LOWER(bt.description) NOT LIKE '%facebk%'
+      AND LOWER(bt.description) NOT LIKE '%facebook%' AND LOWER(bt.description) NOT LIKE '%google%'`).get(storeId);
+  const cardChargesCents = cardChargesRow?.cents || 0;
+
   const liabilities = {
+    card_charges_unpaid_cents: cardChargesCents,
+    card_charges_count: cardChargesRow?.n || 0,
     fulfillment_owed_cents: fulfillment.balance_cents,
     fulfillment_estimated_cents: fulfillment.estimated_cents,
     ad_spend_pending_cents: adSpend.balance_due_cents,
@@ -402,7 +422,7 @@ export async function GET(req: NextRequest) {
     client_credits_cents: ssFinance?.clientCreditsCents || 0,
     manual_liabilities_cents: manualLiabCents,
     total_cents: fulfillment.balance_cents + fulfillment.estimated_cents + adSpend.balance_due_cents + fbPendingBalanceCents + appInvoices.balance_due_cents + loans.borrowed_remaining_cents + manualCCTotal + paymentsInFlightCents
-      + (ssFinance?.carrierOwedCents || 0) + (ssFinance?.clientCreditsCents || 0) + manualLiabCents,
+      + (ssFinance?.carrierOwedCents || 0) + (ssFinance?.clientCreditsCents || 0) + manualLiabCents + cardChargesCents,
   };
 
   const equity = assets.total_cents - liabilities.total_cents;
