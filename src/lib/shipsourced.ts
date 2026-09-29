@@ -407,6 +407,50 @@ export function getFinanceSummary(): Promise<SSFinanceSummary> {
   return apiFetch<SSFinanceSummary>('/api/integration/finance');
 }
 
+// ── Printed but not yet invoiced ────────────────────────────────────────────
+// `/api/integration/finance` only knows what a carrier has already billed:
+// invoices minus payments. A label printed today is a real cost the carrier
+// has not yet put on paper, so it appears nowhere — and the China carrier
+// invoices us weeks in arrears, which left the CFO sheet showing $1,285.99
+// owed while ~$4.6k of printed China labels sat uncounted.
+//
+// ShipSourced already measures this for its own "SHIPPED, NOT BILLED YET"
+// tile. Read that, per lane, instead of re-deriving the math here.
+
+export interface SSCarrierUninvoiced {
+  carrierType: string;
+  totalCents: number;
+  shipments: number;
+  byClient: { client: string; clientId: string; estCost: number }[];
+}
+
+/** Printed labels on one lane that no carrier invoice line has matched yet. */
+async function carrierUninvoicedLane(carrierType: string): Promise<SSCarrierUninvoiced> {
+  const r = await apiFetch<{ totalEst: number; totalShipments: number; byClient: any[] }>(
+    `/api/admin/carrier-invoices/uninvoiced?carrierType=${encodeURIComponent(carrierType)}`
+  );
+  return {
+    carrierType,
+    totalCents: Math.round((Number(r.totalEst) || 0) * 100),
+    shipments: Number(r.totalShipments) || 0,
+    byClient: (r.byClient || []).map(c => ({ client: c.client, clientId: c.clientId, estCost: Number(c.estCost) || 0 })),
+  };
+}
+
+/** Printed-not-invoiced cost for the lanes a carrier actually bills us for.
+ *
+ *  Only lanes that issue invoices accrue: the China lane (Hualei/Intelink)
+ *  bills monthly in arrears, so a printed label is money we still owe. USPS,
+ *  UPS and DHL eCommerce labels are bought from a prepaid balance at print
+ *  time — already paid, never owed — so they are deliberately NOT counted.
+ *  Passing the lanes from `/api/integration/finance` keeps that self-
+ *  maintaining: if a lane ever starts sending invoices it starts accruing. */
+export async function getCarrierUninvoiced(lanes: string[]): Promise<SSCarrierUninvoiced[]> {
+  const wanted = [...new Set(lanes.filter(Boolean))];
+  const out = await Promise.all(wanted.map(l => carrierUninvoicedLane(l).catch(() => null)));
+  return out.filter(Boolean) as SSCarrierUninvoiced[];
+}
+
 // ── Accounting feeds (ShipSourced /api/integration/accounting and friends) ──
 // Every feed: server-to-server, read-only, amounts in cents, timestamps ISO.
 export type SSAccountingFeed = 'receivables' | 'payments' | 'payables' | 'subscriptions' | 'inventory-value' | 'chargebacks' | 'write-offs';

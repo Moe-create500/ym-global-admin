@@ -1508,11 +1508,20 @@ function CFOContent() {
                     </tr>
                   )}
 
-                  {/* 3PL mode: owed to carriers */}
+                  {/* 3PL mode: everything owed to carriers — what they have
+                      already invoiced AND the labels printed since. The China
+                      carrier bills weeks in arrears, so invoices-minus-payments
+                      alone hides the current month entirely. */}
                   {(data.liabilities as any).carrier_owed_cents > 0 && (
                     <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
-                      <td className="px-4 py-2 text-white font-medium">Carrier Invoices Owed</td>
-                      <td className="px-4 py-2 text-slate-400 text-xs">Carrier invoices exceeding payments made</td>
+                      <td className="px-4 py-2 text-white font-medium">Carrier Costs Owed</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs">
+                        {cents((data.liabilities as any).carrier_invoiced_owed_cents || 0)} invoiced and unpaid
+                        {((data.liabilities as any).carrier_uninvoiced_cents || 0) > 0 && (
+                          <> {' · '}{cents((data.liabilities as any).carrier_uninvoiced_cents)} printed on{' '}
+                          {(data.liabilities as any).carrier_uninvoiced_shipments} labels the carrier has not invoiced yet</>
+                        )}
+                      </td>
                       <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents((data.liabilities as any).carrier_owed_cents)}</td>
                     </tr>
                   )}

@@ -347,6 +347,7 @@ export async function GET(req: NextRequest) {
   // business lines come from ShipSourced's own books — A/R from client
   // billing, the carrier deposit/owed position, client credit balances.
   let ssFinance: any = null;
+  let ssCarrierUninvoiced: any[] = [];
   if (store.name === 'ShipSourced') {
     try {
       const { getFinanceSummary } = await import('@/lib/shipsourced');
@@ -354,7 +355,22 @@ export async function GET(req: NextRequest) {
     } catch (e) {
       console.error('[cfo] 3PL finance feed failed:', (e as any)?.message);
     }
+    // Labels already printed that the carrier has not invoiced yet. The China
+    // carrier bills weeks in arrears, so "invoices minus payments" alone
+    // understates what we owe — it showed $1,285.99 while ~$4.6k of printed
+    // China labels sat nowhere on the sheet.
+    if (ssFinance?.carrier?.length) {
+      try {
+        const { getCarrierUninvoiced } = await import('@/lib/shipsourced');
+        ssCarrierUninvoiced = await getCarrierUninvoiced(ssFinance.carrier.map((c: any) => c.carrierType));
+      } catch (e) {
+        console.error('[cfo] carrier uninvoiced feed failed:', (e as any)?.message);
+      }
+    }
   }
+  const carrierInvoicedOwedCents = ssFinance?.carrierOwedCents || 0;
+  const carrierUninvoicedCents = ssCarrierUninvoiced.reduce((s, l) => s + (l.totalCents || 0), 0);
+  const carrierOwedTotalCents = carrierInvoicedOwedCents + carrierUninvoicedCents;
 
   // Build balance sheet.
   // 3PL mode (ShipSourced): no Shopify money lines — payments come in via
@@ -418,11 +434,14 @@ export async function GET(req: NextRequest) {
     loans_payable_cents: loans.borrowed_remaining_cents,
     manual_cc_cents: manualCCTotal,
     payments_in_flight_cents: paymentsInFlightCents,
-    carrier_owed_cents: ssFinance?.carrierOwedCents || 0,
+    carrier_owed_cents: carrierOwedTotalCents,
+    carrier_invoiced_owed_cents: carrierInvoicedOwedCents,
+    carrier_uninvoiced_cents: carrierUninvoicedCents,
+    carrier_uninvoiced_shipments: ssCarrierUninvoiced.reduce((s, l) => s + (l.shipments || 0), 0),
     client_credits_cents: ssFinance?.clientCreditsCents || 0,
     manual_liabilities_cents: manualLiabCents,
     total_cents: fulfillment.balance_cents + fulfillment.estimated_cents + adSpend.balance_due_cents + fbPendingBalanceCents + appInvoices.balance_due_cents + loans.borrowed_remaining_cents + manualCCTotal + paymentsInFlightCents
-      + (ssFinance?.carrierOwedCents || 0) + (ssFinance?.clientCreditsCents || 0) + manualLiabCents + cardChargesCents,
+      + carrierOwedTotalCents + (ssFinance?.clientCreditsCents || 0) + manualLiabCents + cardChargesCents,
   };
 
   const equity = assets.total_cents - liabilities.total_cents;
@@ -469,6 +488,7 @@ export async function GET(req: NextRequest) {
       manualCreditCards: manualCCRows.map((c: any) => ({ id: c.id, card_name: c.card_name, amount_owed_cents: c.amount_owed_cents })),
       paymentsInFlight: paymentsInFlightRows,
       ssFinance,
+      carrierUninvoiced: ssCarrierUninvoiced,
     },
     snapshots: db.prepare(
       'SELECT id, snapshot_date, assets_cents, liabilities_cents, equity_cents, created_at, COALESCE(excluded, 0) AS excluded FROM cfo_snapshots WHERE store_id = ? ORDER BY created_at DESC LIMIT 20'
