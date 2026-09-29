@@ -3,13 +3,14 @@ import Link from 'next/link';
 
 /** Section tabs across the CFO surfaces. Overview is the new v2 page; the
  *  other four are the existing CFO page, sectioned — nothing was removed. */
-export type CfoTab = 'overview' | 'position' | 'pnl' | 'recon' | 'history';
+export type CfoTab = 'overview' | 'position' | 'pnl' | 'accounting' | 'recon' | 'history';
 
 export function CfoTabs({ active, storeId }: { active: CfoTab; storeId?: string }) {
   const q = storeId ? `storeId=${encodeURIComponent(storeId)}` : '';
   const tabs: { id: CfoTab; label: string; href: string }[] = [
     { id: 'overview', label: 'Overview', href: `/dashboard/cfo/overview${storeId ? `?scope=store:${encodeURIComponent(storeId)}` : ''}` },
     { id: 'position', label: 'Position', href: `/dashboard/cfo?${q}${q ? '&' : ''}tab=position` },
+    { id: 'accounting', label: 'Accounting', href: `/dashboard/cfo?${q}${q ? '&' : ''}tab=accounting` },
     { id: 'pnl', label: 'P&L', href: `/dashboard/cfo?${q}${q ? '&' : ''}tab=pnl` },
     { id: 'recon', label: 'Money Flow & Reconciliation', href: `/dashboard/cfo?${q}${q ? '&' : ''}tab=recon` },
     { id: 'history', label: 'History', href: `/dashboard/cfo?${q}${q ? '&' : ''}tab=history` },

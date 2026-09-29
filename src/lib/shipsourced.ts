@@ -406,3 +406,19 @@ export interface SSFinanceSummary {
 export function getFinanceSummary(): Promise<SSFinanceSummary> {
   return apiFetch<SSFinanceSummary>('/api/integration/finance');
 }
+
+// ── Accounting feeds (ShipSourced /api/integration/accounting and friends) ──
+// Every feed: server-to-server, read-only, amounts in cents, timestamps ISO.
+export type SSAccountingFeed = 'receivables' | 'payments' | 'payables' | 'subscriptions' | 'inventory-value' | 'chargebacks' | 'write-offs';
+export interface SSReceivablesResponse {
+  asOf: string; windowDays: number; method: string;
+  totals: { openCents: number; clientsOwing: number; creditCents: number; aging: Record<'currentCents' | 'd31_60Cents' | 'd61_90Cents' | 'd90plusCents', number>; avgDaysToPay: number | null; over1000: number; inactiveOwingCents: number };
+  clients: { clientId: string; company: string; email: string | null; isActive: boolean; hasCard: boolean; markupOnly: boolean; openCents: number; storedBalanceCents: number; chargedCents: number; paidCents: number; creditCents: number;
+    aging: Record<'currentCents' | 'd31_60Cents' | 'd61_90Cents' | 'd90plusCents', number>; avgDaysToPay: number | null; medianDaysToPay: number | null; paidChargesInWindow: number; dso: number | null;
+    oldestOpenAt: string | null; lastPaymentAt: string | null; lastChargeAt: string | null; charges: number }[];
+}
+export async function getSsAccounting<T = any>(feed: SSAccountingFeed, query: Record<string, string> = {}): Promise<T> {
+  const q = new URLSearchParams(query).toString();
+  return apiFetch<T>(`/api/integration/${feed}${q ? `?${q}` : ''}`);
+}
+

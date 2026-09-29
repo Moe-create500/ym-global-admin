@@ -6,6 +6,7 @@ import StoreSelector from '@/components/StoreSelector';
 import { readGlobalStore, onGlobalStoreChange } from '@/components/GlobalStore';
 import { CfoTabs, type CfoTab } from '@/components/cfo/CfoTabs';
 import { PnlTab } from '@/components/cfo/PnlTab';
+import { AccountingTab } from '@/components/cfo/AccountingTab';
 import { StoreCharges } from '@/components/cfo/StoreCharges';
 
 function cents(amount: number): string {
@@ -842,7 +843,7 @@ function CFOContent() {
           <div>
             <h1 className="text-2xl font-bold text-white">CFO Dashboard</h1>
             <p className="text-sm text-slate-400 mt-1">
-              {effTab === 'overview' ? (v2 ? 'Pick a store — every store has its own CFO' : 'All Stores Overview') : selectedStore ? `${selectedStore.name} — ${v2 ? ({ position: 'Position', pnl: 'P&L', recon: 'Money Flow & Reconciliation', history: 'History', overview: 'Overview' } as Record<string, string>)[section] : 'Balance Sheet'}` : 'Select a store'}
+              {effTab === 'overview' ? (v2 ? 'Pick a store — every store has its own CFO' : 'All Stores Overview') : selectedStore ? `${selectedStore.name} — ${v2 ? ({ position: 'Position', pnl: 'P&L', accounting: 'Accounting', recon: 'Money Flow & Reconciliation', history: 'History', overview: 'Overview' } as Record<string, string>)[section] : 'Balance Sheet'}` : 'Select a store'}
             </p>
           </div>
           {(effTab === 'store' || v2) && <StoreSelector />}
@@ -1633,6 +1634,7 @@ function CFOContent() {
           </>)}
 
           {v2 && section === 'pnl' && <PnlTab storeId={storeId} isShipSourced={selectedStore?.name === 'ShipSourced'} />}
+          {v2 && section === 'accounting' && (selectedStore?.name === 'ShipSourced' ? <AccountingTab /> : <div className="rounded-xl border border-white/10 p-6 text-sm text-white/60">Accounting feeds are ShipSourced&rsquo;s own books. Pick the ShipSourced store.</div>)}
 
           {/* RECONCILIATION — does the balance sheet tie out to the P&L? */}
           {show('recon') && (
