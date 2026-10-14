@@ -42,6 +42,8 @@ interface Totals {
   chargeback_cents?: number;
   app_costs_cents?: number;
   refunds_cents?: number;
+  fulfillment_est_cents?: number;
+  fulfillment_cents?: number; // same-time-yesterday only
   net_profit_cents: number;
   order_count: number;
   margin_pct: number;
@@ -483,12 +485,18 @@ function DashboardContent() {
   const roas = (totals?.ad_spend_cents || 0) > 0 ? (totals?.revenue_cents || 0) / (totals?.ad_spend_cents || 1) : 0;
   const prevRoas = (prevTotals?.ad_spend_cents || 0) > 0 ? (prevTotals?.revenue_cents || 0) / (prevTotals?.ad_spend_cents || 1) : 0;
 
+  // ShipSourced fulfillment = product + label + pick/pack + packaging (what the P&L subtracts).
+  const fulfillOf = (t: Totals | null) => t ? (t.fulfillment_cents ?? ((t.cogs_cents || 0) + (t.shipping_cents || 0) + (t.pick_pack_cents || 0) + (t.packaging_cents || 0))) : 0;
+  const fulfillNow = fulfillOf(totals), fulfillPrev = fulfillOf(prevTotals);
+  const fulfillEst = totals?.fulfillment_est_cents || 0;
+
   const kpis = [
     { label: 'Revenue', value: cents(totals?.revenue_cents || 0), prev: prevTotals?.revenue_cents || 0, current: totals?.revenue_cents || 0, color: 'text-white' },
     { label: 'Ad Spend', value: cents(totals?.ad_spend_cents || 0), prev: prevTotals?.ad_spend_cents || 0, current: totals?.ad_spend_cents || 0, color: 'text-orange-400', invert: true },
     { label: 'Net Profit', value: cents(totals?.net_profit_cents || 0), prev: prevTotals?.net_profit_cents || 0, current: totals?.net_profit_cents || 0, color: (totals?.net_profit_cents || 0) >= 0 ? 'text-emerald-400' : 'text-red-400' },
     { label: 'ROAS', value: `${roas.toFixed(2)}x`, prev: prevRoas, current: roas, color: roas >= 2 ? 'text-emerald-400' : roas >= 1 ? 'text-yellow-400' : 'text-red-400', raw: true },
     { label: 'Margin', value: pct(totals?.margin_pct || 0), prev: prevTotals?.margin_pct || 0, current: totals?.margin_pct || 0, color: (totals?.margin_pct || 0) >= 20 ? 'text-emerald-400' : (totals?.margin_pct || 0) >= 10 ? 'text-yellow-400' : 'text-red-400', raw: true },
+    { label: 'Fulfillment', value: <>{fulfillEst > 0 && <span className="text-amber-300" title={`includes ${cents(fulfillEst)} estimated for orders ShipSourced hasn't billed yet`}>~</span>}{cents(fulfillNow)}</>, prev: fulfillPrev, current: fulfillNow, color: 'text-sky-400', invert: true },
     { label: 'Orders', value: (totals?.order_count || 0).toLocaleString(), prev: prevTotals?.order_count || 0, current: totals?.order_count || 0, color: 'text-blue-400' },
     { label: 'Chargebacks', value: cents(totals?.chargeback_cents || 0), prev: prevTotals?.chargeback_cents || 0, current: totals?.chargeback_cents || 0, color: 'text-red-400', invert: true },
     { label: 'Refunds', value: cents(totals?.refunds_cents || 0), prev: prevTotals?.refunds_cents || 0, current: totals?.refunds_cents || 0, color: 'text-amber-400', invert: true },
@@ -580,7 +588,7 @@ function DashboardContent() {
       })()}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 2xl:grid-cols-9 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 2xl:grid-cols-10 gap-3 mb-6">
         {kpis.map((kpi) => (
           <div key={kpi.label} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
             <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{kpi.label}</p>

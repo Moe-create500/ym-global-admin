@@ -59,6 +59,7 @@ export async function GET(req: NextRequest) {
       revenue_cents: ord.rev,
       order_count: ord.n,
       ad_spend_cents: ad,
+      fulfillment_cents: Math.round(day.fulfill * rf),
       net_profit_cents: net,
       margin_pct: margin,
     },
