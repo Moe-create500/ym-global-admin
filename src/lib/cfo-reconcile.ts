@@ -44,6 +44,7 @@ export const LIABILITY_KEYS = [
   'app_invoices_due_cents',
   'loans_payable_cents',
   'manual_cc_cents',
+  'connected_cards_cents',
   'payments_in_flight_cents',
   'carrier_owed_cents',
   'client_credits_cents',
@@ -133,6 +134,7 @@ const HUMAN_LABEL: Record<string, string> = {
   app_invoices_due_cents: 'App invoices due',
   loans_payable_cents: 'Loans payable',
   manual_cc_cents: 'Manual credit cards',
+  connected_cards_cents: 'Connected credit cards',
 };
 
 export function ensureReconcileTable(db: DB): void {

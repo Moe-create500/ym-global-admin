@@ -310,10 +310,13 @@ export async function GET(req: NextRequest) {
   // owed = |ledger| as the bank reports it; limit − available only as fallback.
   const cardOwedOf = (a: any) => cardOwedCents(a);
 
+  // Cards are debts, so they sit in liabilities (connected_cards_cents), not netted out of cash.
   const bankTotal = bankAccounts.reduce((s: number, a: any) => {
-    if (a.account_type === 'credit') return s - cardOwedOf(a);
+    if (a.account_type === 'credit') return s;
     return s + (a.balance_available_cents || 0);
   }, 0);
+  const connectedCardsCents = bankAccounts.reduce((s: number, a: any) =>
+    a.account_type === 'credit' ? s + cardOwedOf(a) : s, 0);
 
   // 8. Reserves — live event-sum from the API sync when connected, else manual entries
   const reserveRows: any[] = db.prepare(
@@ -422,8 +425,11 @@ export async function GET(req: NextRequest) {
       AND LOWER(bt.description) NOT LIKE '%shopify%' AND LOWER(bt.description) NOT LIKE '%facebk%'
       AND LOWER(bt.description) NOT LIKE '%facebook%' AND LOWER(bt.description) NOT LIKE '%google%'`).get(storeId);
   const cardChargesCents = cardChargesRow?.cents || 0;
+  // ShipSourced shows its full card balances (connected_cards_cents), so this overlapping figure is kept
+  // in the response as data but left off its page and total.
 
   const liabilities = {
+    connected_cards_cents: connectedCardsCents,
     card_charges_unpaid_cents: cardChargesCents,
     card_charges_count: cardChargesRow?.n || 0,
     fulfillment_owed_cents: fulfillment.balance_cents,
@@ -441,7 +447,7 @@ export async function GET(req: NextRequest) {
     client_credits_cents: ssFinance?.clientCreditsCents || 0,
     manual_liabilities_cents: manualLiabCents,
     total_cents: fulfillment.balance_cents + fulfillment.estimated_cents + adSpend.balance_due_cents + fbPendingBalanceCents + appInvoices.balance_due_cents + loans.borrowed_remaining_cents + manualCCTotal + paymentsInFlightCents
-      + carrierOwedTotalCents + (ssFinance?.clientCreditsCents || 0) + manualLiabCents + cardChargesCents,
+      + carrierOwedTotalCents + (ssFinance?.clientCreditsCents || 0) + manualLiabCents + (is3pl ? 0 : cardChargesCents) + connectedCardsCents,
   };
 
   const equity = assets.total_cents - liabilities.total_cents;

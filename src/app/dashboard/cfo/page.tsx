@@ -41,6 +41,7 @@ interface CFOData {
     ad_spend_pending_cents: number;
     fb_pending_balance_cents: number;
     app_invoices_due_cents: number;
+    connected_cards_cents?: number;
     card_charges_unpaid_cents?: number;
     card_charges_count?: number;
     loans_payable_cents: number;
@@ -54,7 +55,7 @@ interface CFOData {
     appInvoices: { total_charged_cents: number; total_paid_cents: number; balance_due_cents: number; last_invoice: { bill_number: string; date: string; total_cents: number; source: string } | null };
     inventory: { asset_value_cents: number; cost_basis_cents: number };
     loans: { borrowed_total_cents: number; borrowed_remaining_cents: number; lent_total_cents: number; lent_remaining_cents: number };
-    bankAccounts: { id: string; institution_name: string; account_name: string; last_four: string; balance_available_cents: number; balance_ledger_cents: number; balance_updated_at: string | null }[];
+    bankAccounts: { id: string; institution_name: string; account_name: string; last_four: string; account_type?: string; balance_available_cents: number; balance_ledger_cents: number; balance_updated_at: string | null }[];
     shopify_balance_cents: number;
     shopify_live?: { source: string; as_of?: string; pending_balance_cents?: number; scheduled_cents?: number; paid_unlanded_cents?: number; reserves_cents?: number; error?: string };
     shopify_payout_cents: number;
@@ -1057,7 +1058,7 @@ function CFOContent() {
                 </thead>
                 <tbody>
                   {/* Bank Accounts */}
-                  {data.details.bankAccounts.map(acc => (
+                  {data.details.bankAccounts.filter(acc => acc.account_type !== 'credit').map(acc => (
                     <tr key={acc.id} className="border-b border-slate-800/40 hover:bg-slate-800/30">
                       <td className="px-4 py-2 text-white font-medium">{acc.institution_name}</td>
                       <td className="px-4 py-2 text-slate-400 text-xs">
@@ -1084,7 +1085,7 @@ function CFOContent() {
                       <td className={`px-4 py-2 text-right font-medium tabular-nums ${acc.balance_available_cents < 0 ? 'text-red-300' : 'text-emerald-300'}`}>{cents(acc.balance_available_cents)}</td>
                     </tr>
                   ))}
-                  {data.details.bankAccounts.length === 0 && (
+                  {data.details.bankAccounts.filter(acc => acc.account_type !== 'credit').length === 0 && (
                     <tr className="border-b border-slate-800/40">
                       <td className="px-4 py-2 text-white font-medium">Bank Accounts</td>
                       <td className="px-4 py-2 text-slate-500 text-xs">No bank accounts connected</td>
@@ -1481,7 +1482,7 @@ function CFOContent() {
                       balance sheet and that panel can never disagree. Disjoint from
                       the ad/app invoice lines above (those merchants are excluded),
                       so nothing is counted twice. */}
-                  {((data.liabilities as any).card_charges_unpaid_cents || 0) > 0 && (
+                  {!(data.details as any).ssFinance && ((data.liabilities as any).card_charges_unpaid_cents || 0) > 0 && (
                     <tr className="border-b border-slate-800/40 hover:bg-slate-800/30">
                       <td className="px-4 py-2 text-white font-medium">Card Charges (Unpaid)</td>
                       <td className="px-4 py-2 text-slate-400 text-xs">
@@ -1544,6 +1545,18 @@ function CFOContent() {
                       <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents(data.liabilities.loans_payable_cents)}</td>
                     </tr>
                   )}
+
+                  {/* Connected Credit Cards (live bank balances) */}
+                  {data.details.bankAccounts.filter(acc => acc.account_type === 'credit').map(acc => (
+                    <tr key={acc.id} className="border-b border-slate-800/40 hover:bg-slate-800/30">
+                      <td className="px-4 py-2 text-white font-medium">Credit Card</td>
+                      <td className="px-4 py-2 text-slate-400 text-xs">
+                        {acc.institution_name} · {acc.account_name} ****{acc.last_four}
+                        <span className="text-slate-600 ml-2">Updated {timeAgo(acc.balance_updated_at)}</span>
+                      </td>
+                      <td className="px-4 py-2 text-right text-red-300 font-medium tabular-nums">{cents(Math.abs(acc.balance_available_cents))}</td>
+                    </tr>
+                  ))}
 
                   {/* Manual Credit Cards */}
                   {(data.details.manualCreditCards || []).map(cc => (
